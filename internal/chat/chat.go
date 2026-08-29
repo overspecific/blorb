@@ -109,7 +109,12 @@ func Run(ctx context.Context, opts Options) error {
 	input := make(chan inputResult, 1)
 	go readLines(opts.Stdin, input)
 
+	needHeading := true
 	for {
+		if needHeading {
+			fmt.Fprint(opts.Stderr, "\n>>> User:\n")
+			needHeading = false
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -123,6 +128,7 @@ func Run(ctx context.Context, opts Options) error {
 				return fmt.Errorf("read input: %w", r.err)
 			}
 			if r.line == "" {
+				needHeading = true
 				continue
 			}
 			switch strings.ToLower(r.line) {
@@ -140,6 +146,7 @@ func Run(ctx context.Context, opts Options) error {
 
 			setTurn(nil)
 			cancel()
+			needHeading = true
 			interrupted := wasInterrupted()
 
 			if runErr == nil {
@@ -175,21 +182,27 @@ func readLines(r io.Reader, out chan<- inputResult) {
 	close(out)
 }
 
-// chatEvents returns the event callback: assistant text to stdout, tool
-// activity as indented stderr lines.
+// chatEvents returns the event callback: assistant text to stdout under a
+// ">>> Assistant:" heading, tool activity as heading blocks on stderr.
 func chatEvents(stdout, stderr io.Writer) func(engine.Event) error {
+	printedHeading := false
 	return func(ev engine.Event) error {
 		switch ev.Kind {
 		case engine.EventAssistantText:
+			if !printedHeading {
+				fmt.Fprintln(stdout, "\n>>> Assistant:")
+				printedHeading = true
+			}
 			fmt.Fprintln(stdout, ev.Text)
 		case engine.EventToolCall:
-			fmt.Fprintf(stderr, "  → %s(%s)\n", ev.Name, ev.Args)
+			fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
+			fmt.Fprintln(stderr, ev.Args)
 		case engine.EventToolResult:
-			marker := "←"
+			marker := "Result:"
 			if ev.Failed {
-				marker = "✗"
+				marker = "Error:"
 			}
-			fmt.Fprintf(stderr, "  %s %s: %s\n", marker, ev.Name, ev.Output)
+			fmt.Fprintf(stderr, "\n>>> %s Tool: %s\n%s\n", marker, ev.Name, ev.Output)
 		}
 		return nil
 	}

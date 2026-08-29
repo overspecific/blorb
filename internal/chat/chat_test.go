@@ -73,12 +73,16 @@ func TestRunPlainReplySession(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, "hi!") {
-		t.Errorf("stdout = %q, want the assistant reply", out)
+	if !strings.Contains(out, ">>> Assistant:\nhi!") {
+		t.Errorf("stdout = %q, want the reply under a >>> Assistant heading", out)
 	}
 	errOut := stderr.String()
 	if !strings.Contains(errOut, "tester") || !strings.Contains(errOut, "gpt-test") {
 		t.Errorf("stderr = %q, want a banner naming agent and model", errOut)
+	}
+	// Heading prints before reading: initially, and again after the turn.
+	if strings.Count(errOut, ">>> User:\n") != 2 {
+		t.Errorf("stderr = %q, want a >>> User heading before each read (2 total)", errOut)
 	}
 	if strings.Contains(out, "blorb") {
 		t.Errorf("stdout = %q, want no banner on stdout", out)
@@ -158,17 +162,17 @@ func TestRunToolEventsOnStderr(t *testing.T) {
 	}
 
 	errOut := stderr.String()
-	if !strings.Contains(errOut, "→ write_marker") {
-		t.Errorf("stderr = %q, want a tool call line", errOut)
+	if !strings.Contains(errOut, ">>> Tool: write_marker") {
+		t.Errorf("stderr = %q, want a tool call heading", errOut)
 	}
-	if !strings.Contains(errOut, "← write_marker") {
-		t.Errorf("stderr = %q, want a tool result line", errOut)
+	if !strings.Contains(errOut, ">>> Result: Tool: write_marker") {
+		t.Errorf("stderr = %q, want a tool result heading", errOut)
 	}
 	if strings.Contains(stdout.String(), "write_marker") {
 		t.Errorf("stdout = %q, want tool activity only on stderr", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "made it") {
-		t.Errorf("stdout = %q, want the final text", stdout.String())
+	if !strings.Contains(stdout.String(), ">>> Assistant:\nmade it") {
+		t.Errorf("stdout = %q, want the final text under a >>> Assistant heading", stdout.String())
 	}
 }
 
