@@ -188,6 +188,8 @@ func chatEvents(stdout, stderr io.Writer) func(engine.Event) error {
 	printedHeading := false
 	return func(ev engine.Event) error {
 		switch ev.Kind {
+		case engine.EventAssistantThinking:
+			fmt.Fprintf(stdout, "\n>>> Assistant (thinking):\n%s\n", ev.Text)
 		case engine.EventAssistantText:
 			if !printedHeading {
 				fmt.Fprintln(stdout, "\n>>> Assistant:")

@@ -286,6 +286,55 @@ func TestRunTurnMalformedToolCallArgsRecover(t *testing.T) {
 	}
 }
 
+func TestRunTurnEmitsThinkingBeforeText(t *testing.T) {
+	t.Parallel()
+
+	resp := llm.Response{
+		ID: "resp",
+		Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			Content:   "the answer",
+			Reasoning: "step by step...",
+		},
+		FinishReason: llm.FinishStop,
+	}
+	fc := &fakeClient{responses: []llm.Response{resp}}
+	e := engine.New(engine.EngineConfig{Client: fc})
+
+	var events []engine.Event
+	final, err := e.RunTurn(context.Background(), "q", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if final != "the answer" {
+		t.Errorf("final = %q, want %q", final, "the answer")
+	}
+
+	want := []struct {
+		kind engine.EventKind
+		text string
+	}{
+		{engine.EventAssistantThinking, "step by step..."},
+		{engine.EventAssistantText, "the answer"},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("events = %+v, want %d events", events, len(want))
+	}
+	for i, w := range want {
+		if events[i].Kind != w.kind || events[i].Text != w.text {
+			t.Errorf("event[%d] = %+v, want kind %v text %q", i, events[i], w.kind, w.text)
+		}
+	}
+
+	// Reasoning is kept in history for subsequent requests.
+	if h := e.History(); h[1].Reasoning != "step by step..." {
+		t.Errorf("history reasoning = %q, want the model's thinking", h[1].Reasoning)
+	}
+}
+
 func TestRunTurnTooManyTurns(t *testing.T) {
 	t.Parallel()
 

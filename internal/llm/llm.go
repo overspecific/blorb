@@ -28,8 +28,13 @@ const ToolCallType = "function"
 // OpenAI wire shape. Wire conversion lives in the provider packages (see
 // internal/llm/openai).
 type Message struct {
-	Role       Role       `json:"role"`
-	Content    string     `json:"content"`
+	Role    Role   `json:"role"`
+	Content string `json:"content"`
+	// Reasoning holds chain-of-thought the server extracted into its own
+	// field (e.g. reasoning_content). It is preserved in history and
+	// re-sent with assistant messages so reasoning models keep their
+	// context across tool call rounds. Not shown as final answer text.
+	Reasoning  string     `json:"reasoning,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }

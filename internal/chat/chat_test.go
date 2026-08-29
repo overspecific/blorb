@@ -89,6 +89,32 @@ func TestRunPlainReplySession(t *testing.T) {
 	}
 }
 
+func TestRunThinkingDisplayedOnStdout(t *testing.T) {
+	t.Parallel()
+
+	thinkingResp := llm.Response{
+		Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			Content:   "the answer",
+			Reasoning: "pondering...",
+		},
+		FinishReason: llm.FinishStop,
+	}
+	o, stdout, _ := newTestOptions(minimalConfig(), "why?\nexit\n", thinkingResp)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, ">>> Assistant (thinking):\npondering...") {
+		t.Errorf("stdout = %q, want the reasoning under a >>> Assistant (thinking) heading", out)
+	}
+	if !strings.Contains(out, ">>> Assistant:\nthe answer") {
+		t.Errorf("stdout = %q, want the text under a >>> Assistant heading", out)
+	}
+}
+
 func TestRunExitCommand(t *testing.T) {
 	t.Parallel()
 

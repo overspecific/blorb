@@ -139,9 +139,19 @@ type wireRequest struct {
 // wireMessage is the OpenAI-compatible message shape. Messages carrying tool
 // calls or tool results use the nested forms here; the neutral llm.Message is
 // converted to and from this shape by wireMessages and neutralMessage.
+//
+// Content has no omitempty: servers (llama-server among them) reject
+// non-assistant messages that lack a content field altogether, so empty
+// content is sent as "".
 type wireMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// Reasoning carries server-extracted chain-of-thought. It is decoded
+	// from responses and re-sent only with assistant messages that carry
+	// tool calls: reasoning exists to keep the model's thinking continuous
+	// across tool call rounds, while a final answer's reasoning is stale
+	// by the next request and is dropped. See wireMessages.
+	Reasoning  string         `json:"reasoning_content,omitempty"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
@@ -163,7 +173,14 @@ type wireToolCallFn struct {
 func wireMessages(msgs []llm.Message) []wireMessage {
 	out := make([]wireMessage, 0, len(msgs))
 	for _, m := range msgs {
-		wm := wireMessage{Role: string(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
+		// Only tool-call rounds carry reasoning back to the server. A
+		// final answer's thinking served its purpose and resending it
+		// pollutes the next prompt (some servers reject it outright).
+		reasoning := m.Reasoning
+		if len(m.ToolCalls) == 0 {
+			reasoning = ""
+		}
+		wm := wireMessage{Role: string(m.Role), Content: m.Content, Reasoning: reasoning, ToolCallID: m.ToolCallID}
 		for _, tc := range m.ToolCalls {
 			wm.ToolCalls = append(wm.ToolCalls, wireToolCall{
 				ID:       tc.ID,
@@ -178,7 +195,7 @@ func wireMessages(msgs []llm.Message) []wireMessage {
 
 // neutralMessage converts a wire message back to the neutral shape.
 func neutralMessage(wm wireMessage) llm.Message {
-	m := llm.Message{Role: llm.Role(wm.Role), Content: wm.Content, ToolCallID: wm.ToolCallID}
+	m := llm.Message{Role: llm.Role(wm.Role), Content: wm.Content, Reasoning: wm.Reasoning, ToolCallID: wm.ToolCallID}
 	for _, wtc := range wm.ToolCalls {
 		m.ToolCalls = append(m.ToolCalls, llm.ToolCall{
 			ID:           wtc.ID,

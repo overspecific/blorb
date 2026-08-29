@@ -168,6 +168,8 @@ func TestChatToolResultMessagesOnWire(t *testing.T) {
 // wire JSON, without importing the unexported openai wire types.
 type wireMessageForTest struct {
 	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Reasoning string `json:"reasoning_content"`
 	ToolCalls []struct {
 		ID       string `json:"id"`
 		Type     string `json:"type"`
@@ -399,11 +401,12 @@ func TestChatToolCallsRoundTripNestedShape(t *testing.T) {
 		t.Fatalf("Chat error = %v, want nil", err)
 	}
 
-	// Outgoing history uses the nested wire shape.
+	// Outgoing history uses the nested wire shape, with content always
+	// present (servers reject non-assistant messages lacking the field).
 	if len(gotReq.Messages) != 2 {
 		t.Fatalf("wire messages = %d, want 2", len(gotReq.Messages))
 	}
-	historyCall := `{"role":"assistant","tool_calls":[{"id":"call_0","type":"function","function":{"name":"echo","arguments":"{\"msg\":\"hi\"}"}}]}`
+	historyCall := `{"role":"assistant","content":"","tool_calls":[{"id":"call_0","type":"function","function":{"name":"echo","arguments":"{\"msg\":\"hi\"}"}}]}`
 	if string(gotReq.Messages[0]) != historyCall {
 		t.Errorf("wire assistant message = %s, want %s", gotReq.Messages[0], historyCall)
 	}
@@ -415,6 +418,80 @@ func TestChatToolCallsRoundTripNestedShape(t *testing.T) {
 	tc := resp.Message.ToolCalls[0]
 	if tc.ID != "call_1" || tc.FunctionName != "current_time" || tc.FunctionArgs != "{}" || tc.Type != "function" {
 		t.Errorf("decoded tool call = %+v, want call_1/current_time/{}", tc)
+	}
+}
+
+func TestChatReasoningContentRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	var gotReq struct {
+		Messages []wireMessageForTest `json:"messages"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotReq); err != nil {
+			t.Errorf("unmarshal request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"2 + 2 = 4","reasoning_content":"The user asks a sum. 2+2 = 4."},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	// An assistant message carrying reasoning survives the round trip:
+	// decoded reasoning_content comes back as Reasoning, and re-sent
+	// history includes it under the wire field name.
+	c := newTestClient(t, srv.URL)
+	first, err := c.Chat(context.Background(), llm.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+	if got, want := first.Message.Reasoning, "The user asks a sum. 2+2 = 4."; got != want {
+		t.Errorf("decoded reasoning = %q, want %q", got, want)
+	}
+	if got, want := first.Message.Content, "2 + 2 = 4"; got != want {
+		t.Errorf("decoded content = %q, want %q", got, want)
+	}
+
+	req := llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			// Tool-call round: reasoning is resent alongside the calls.
+			{
+				Role:      llm.RoleAssistant,
+				Content:   "",
+				Reasoning: "The user asks a sum. 2+2 = 4.",
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_0", Type: "function", FunctionName: "echo", FunctionArgs: "{}"},
+				},
+			},
+			llm.NewToolResultMessage("call_0", "echo: {}", false),
+			// Final answer: reasoning is dropped, not resent.
+			{
+				Role:      llm.RoleAssistant,
+				Content:   "2 + 2 = 4",
+				Reasoning: "The user asks a sum. 2+2 = 4.",
+			},
+			llm.NewTextMessage(llm.RoleUser, "and 3 + 3?"),
+		},
+	}
+	if _, err := c.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+
+	if len(gotReq.Messages) != 4 {
+		t.Fatalf("wire messages = %d, want 4", len(gotReq.Messages))
+	}
+	toolRound := gotReq.Messages[0]
+	if got, want := toolRound.Reasoning, "The user asks a sum. 2+2 = 4."; got != want {
+		t.Errorf("wire reasoning_content on tool-call message = %q, want %q", got, want)
+	}
+	finalAnswer := gotReq.Messages[2]
+	if got := finalAnswer.Reasoning; got != "" {
+		t.Errorf("wire reasoning_content on final answer = %q, want empty and omitted", got)
+	}
+	// Messages without reasoning must not carry the field at all.
+	if gotReq.Messages[3].Reasoning != "" {
+		t.Errorf("wire reasoning_content on user message = %q, want empty and omitted", gotReq.Messages[3].Reasoning)
 	}
 }
 

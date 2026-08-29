@@ -29,11 +29,16 @@ const (
 	EventToolCall
 	// EventToolResult carries the outcome of a tool execution.
 	EventToolResult
+	// EventAssistantThinking carries extracted chain-of-thought
+	// (reasoning_content) from an assistant message. It precedes the
+	// matching EventAssistantText, and a single message may contain both
+	// thinking and content.
+	EventAssistantThinking
 )
 
 // Event is emitted as a turn progresses. Text is set for
-// EventAssistantText; Name and Args for EventToolCall; Name, Output and
-// Failed for EventToolResult.
+// EventAssistantText and EventAssistantThinking; Name and Args for
+// EventToolCall; Name, Output and Failed for EventToolResult.
 type Event struct {
 	Kind   EventKind
 	Text   string
@@ -96,6 +101,12 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 		resp, err := e.call(ctx)
 		if err != nil {
 			return "", err
+		}
+
+		if resp.Message.Reasoning != "" {
+			if err := onEvent(Event{Kind: EventAssistantThinking, Text: resp.Message.Reasoning}); err != nil {
+				return "", err
+			}
 		}
 
 		if resp.Message.Content != "" {
