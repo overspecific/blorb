@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+if [ -d "$HOME/.local/share/mise/shims" ]; then
+	export PATH="$HOME/.local/share/mise/shims:$PATH"
+fi
+
+version=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}
+
+echo "==> go build -o blorb"
+go build -trimpath -ldflags "-s -w -X main.version=$version" -o blorb .
+echo "==> built blorb ($version)"

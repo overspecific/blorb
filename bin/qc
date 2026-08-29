@@ -1,0 +1,37 @@
+#!/bin/sh
+set -e
+
+if [ -d "$HOME/.local/share/mise/shims" ]; then
+	export PATH="$HOME/.local/share/mise/shims:$PATH"
+fi
+
+fmt() {
+	echo "==> gofmt -l ."
+	out=$(gofmt -l .)
+	if [ -n "$out" ]; then
+		echo "error: unformatted files:"
+		echo "$out"
+		exit 1
+	fi
+}
+
+vet() {
+	echo "==> go vet ./..."
+	go vet ./...
+}
+
+build() {
+	echo "==> go build ./..."
+	go build ./...
+}
+
+test() {
+	echo "==> go test ./..."
+	go test ./...
+}
+
+fmt
+vet
+build
+test
+echo "==> all checks passed"
