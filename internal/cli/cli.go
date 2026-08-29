@@ -27,10 +27,15 @@ type ChatFlags struct {
 //	--help            -h
 //	--                          (terminates flag parsing)
 //
-// Short boolean flags may be combined (e.g. -hV). Any positional argument
-// is an error; the chat subcommand takes none.
+// Short boolean flags may be combined (e.g. -hV). A value taken from the
+// next argument must not look like a flag (i.e. start with '-'). Any
+// positional argument is an error; the chat subcommand takes none.
 func ParseChatFlags(args []string) (ChatFlags, error) {
 	flags := ChatFlags{ConfigPath: DefaultConfigPath}
+
+	fail := func(err error) (ChatFlags, error) {
+		return ChatFlags{}, err
+	}
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -38,7 +43,7 @@ func ParseChatFlags(args []string) (ChatFlags, error) {
 		switch {
 		case arg == "--":
 			if i+1 < len(args) {
-				return flags, fmt.Errorf("unexpected argument %q", args[i+1])
+				return fail(fmt.Errorf("unexpected argument %q", args[i+1]))
 			}
 			return flags, nil
 
@@ -48,14 +53,17 @@ func ParseChatFlags(args []string) (ChatFlags, error) {
 			case "config":
 				if hasValue {
 					if value == "" {
-						return flags, fmt.Errorf("--config requires a non-empty path")
+						return fail(fmt.Errorf("--config requires a non-empty path"))
 					}
 					flags.ConfigPath = value
 					continue
 				}
 				i++
 				if i >= len(args) {
-					return flags, fmt.Errorf("--config requires a path")
+					return fail(fmt.Errorf("--config requires a path"))
+				}
+				if looksLikeFlag(args[i]) {
+					return fail(fmt.Errorf("--config requires a path"))
 				}
 				flags.ConfigPath = args[i]
 			case "version":
@@ -63,7 +71,7 @@ func ParseChatFlags(args []string) (ChatFlags, error) {
 			case "help":
 				flags.ShowHelp = true
 			default:
-				return flags, fmt.Errorf("unknown flag --%s", name)
+				return fail(fmt.Errorf("unknown flag --%s", name))
 			}
 
 		case strings.HasPrefix(arg, "-") && arg != "-":
@@ -73,7 +81,7 @@ func ParseChatFlags(args []string) (ChatFlags, error) {
 				case 'c':
 					value, err := shortValue(shorts[j+1:], args, &i)
 					if err != nil {
-						return flags, err
+						return fail(err)
 					}
 					flags.ConfigPath = value
 					j = len(shorts)
@@ -82,15 +90,21 @@ func ParseChatFlags(args []string) (ChatFlags, error) {
 				case 'h':
 					flags.ShowHelp = true
 				default:
-					return flags, fmt.Errorf("unknown flag -%c", shorts[j])
+					return fail(fmt.Errorf("unknown flag -%c", shorts[j]))
 				}
 			}
 
 		default:
-			return flags, fmt.Errorf("unexpected argument %q", arg)
+			return fail(fmt.Errorf("unexpected argument %q", arg))
 		}
 	}
 	return flags, nil
+}
+
+// looksLikeFlag reports whether s starts with '-' and is not exactly "-",
+// which conventionally means stdin.
+func looksLikeFlag(s string) bool {
+	return strings.HasPrefix(s, "-") && s != "-"
 }
 
 // shortValue extracts a short flag's value from the attached portion (which
@@ -99,7 +113,7 @@ func ParseChatFlags(args []string) (ChatFlags, error) {
 func shortValue(attached string, args []string, next *int) (string, error) {
 	var value string
 	switch {
-	case attached == "=" || strings.HasPrefix(attached, "=") && len(attached) == 1:
+	case attached == "=":
 		return "", fmt.Errorf("-c requires a path")
 	case strings.HasPrefix(attached, "="):
 		value = attached[1:]
@@ -108,6 +122,9 @@ func shortValue(attached string, args []string, next *int) (string, error) {
 	default:
 		*next++
 		if *next >= len(args) {
+			return "", fmt.Errorf("-c requires a path")
+		}
+		if looksLikeFlag(args[*next]) {
 			return "", fmt.Errorf("-c requires a path")
 		}
 		value = args[*next]

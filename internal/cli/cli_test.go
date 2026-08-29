@@ -115,6 +115,9 @@ func TestParseChatFlagsErrors(t *testing.T) {
 		{"empty config attached", []string{"-c="}, "-c requires a path"},
 		{"positional argument", []string{"stray"}, `unexpected argument "stray"`},
 		{"positional after terminator", []string{"--", "stray"}, `unexpected argument "stray"`},
+		{"config value looks like short flag", []string{"-c", "-V"}, "-c requires a path"},
+		{"config value looks like long flag", []string{"-c", "--config"}, "-c requires a path"},
+		{"long config value looks like flag", []string{"--config", "-V"}, "--config requires a path"},
 	}
 
 	for _, tc := range cases {
