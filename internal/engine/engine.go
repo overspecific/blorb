@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/overspecific/goblorb/internal/llm"
-	"github.com/overspecific/goblorb/internal/tools"
+	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/tools"
 )
 
 // DefaultMaxTurns bounds API calls per turn when MaxTurns is unset.

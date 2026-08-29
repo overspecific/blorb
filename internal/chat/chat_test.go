@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/overspecific/goblorb/internal/chat"
-	"github.com/overspecific/goblorb/internal/config"
-	"github.com/overspecific/goblorb/internal/llm"
+	"github.com/overspecific/blorb/internal/chat"
+	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/llm"
 )
 
 // fakeClient returns canned responses in order and records requests.

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/overspecific/goblorb/internal/llm"
-	"github.com/overspecific/goblorb/internal/llm/openai"
+	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/llm/openai"
 )
 
 func newTestClient(t *testing.T, baseURL string, opts ...func(*openai.Config)) *openai.Client {

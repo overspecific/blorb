@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/overspecific/goblorb/internal/config"
-	"github.com/overspecific/goblorb/internal/llm"
+	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/llm"
 )
 
 // DefaultTimeout bounds each tool execution.

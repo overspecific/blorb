@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/overspecific/goblorb/internal/chat"
-	"github.com/overspecific/goblorb/internal/cli"
-	"github.com/overspecific/goblorb/internal/config"
+	"github.com/overspecific/blorb/internal/chat"
+	"github.com/overspecific/blorb/internal/cli"
+	"github.com/overspecific/blorb/internal/config"
 )
 
 // version is set at build time via -ldflags "-X main.version=..." (see bin/build).

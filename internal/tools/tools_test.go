@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/overspecific/goblorb/internal/config"
-	"github.com/overspecific/goblorb/internal/llm"
-	"github.com/overspecific/goblorb/internal/tools"
+	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/tools"
 )
 
 func requireExecTools(t *testing.T) {
@@ -217,7 +217,7 @@ func TestRunTimeoutKillsChild(t *testing.T) {
 	r, err := tools.NewRegistry([]config.ToolEntry{
 		// The tool spawns a child that outlives it unless the whole group
 		// is killed.
-		entry("spawner", "Spawns a child sleeper.", "sh", "-c", `sleep 30 & echo "$!" > /tmp/goblorb_test_child.pid; wait`),
+		entry("spawner", "Spawns a child sleeper.", "sh", "-c", `sleep 30 & echo "$!" > /tmp/blorb_test_child.pid; wait`),
 	}, tools.WithTimeout(300*time.Millisecond))
 	if err != nil {
 		t.Fatalf("NewRegistry error = %v, want nil", err)
@@ -228,12 +228,12 @@ func TestRunTimeoutKillsChild(t *testing.T) {
 	}
 
 	// The spawned child must be gone (killed alongside the tool process).
-	check := exec.Command("sh", "-c", `while kill -0 "$(cat /tmp/goblorb_test_child.pid 2>/dev/null)" 2>/dev/null; do sleep 0.05; done; echo gone`)
+	check := exec.Command("sh", "-c", `while kill -0 "$(cat /tmp/blorb_test_child.pid 2>/dev/null)" 2>/dev/null; do sleep 0.05; done; echo gone`)
 	out, err := check.CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != "gone" {
 		t.Errorf("child process still alive after timeout: out=%q err=%v", out, err)
 	}
-	_ = os.Remove("/tmp/goblorb_test_child.pid")
+	_ = os.Remove("/tmp/blorb_test_child.pid")
 }
 
 func TestRunUnknownTool(t *testing.T) {

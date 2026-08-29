@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/overspecific/goblorb/internal/config"
+	"github.com/overspecific/blorb/internal/config"
 )
 
 func loadTestdata(t *testing.T, name string) (config.Config, error) {

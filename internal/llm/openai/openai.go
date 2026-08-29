@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/overspecific/goblorb/internal/llm"
+	"github.com/overspecific/blorb/internal/llm"
 )
 
 const chatCompletionsPath = "/chat/completions"

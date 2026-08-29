@@ -12,11 +12,11 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/overspecific/goblorb/internal/config"
-	"github.com/overspecific/goblorb/internal/engine"
-	"github.com/overspecific/goblorb/internal/llm"
-	"github.com/overspecific/goblorb/internal/llm/openai"
-	"github.com/overspecific/goblorb/internal/tools"
+	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/engine"
+	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/llm/openai"
+	"github.com/overspecific/blorb/internal/tools"
 )
 
 // Options configure a chat session.

@@ -3,7 +3,7 @@ package cli_test
 import (
 	"testing"
 
-	"github.com/overspecific/goblorb/internal/cli"
+	"github.com/overspecific/blorb/internal/cli"
 )
 
 func TestParseChatFlagsDefaults(t *testing.T) {

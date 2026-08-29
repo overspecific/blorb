@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/overspecific/goblorb/internal/llm"
+	"github.com/overspecific/blorb/internal/llm"
 )
 
 func TestMessageMarshalJSON(t *testing.T) {
