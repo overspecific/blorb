@@ -4,12 +4,12 @@ Builds the core of Blorb end to end: reading `blorb.json`, calling an LLM throug
 
 ## Todo
 
-- [ ] Commit 1: Skeleton + `blorb.json` config loading
-- [ ] Commit 2: Provider-neutral LLM types and `Client` interface
-- [ ] Commit 3: OpenAI-compatible client implementation
-- [ ] Commit 4: Tool registry and runner
-- [ ] Commit 5: Agent engine turn loop
-- [ ] Commit 6: Chat mode and main wiring
+- [x] Commit 1: Skeleton + `blorb.json` config loading
+- [x] Commit 2: Provider-neutral LLM types and `Client` interface
+- [x] Commit 3: OpenAI-compatible client implementation
+- [x] Commit 4: Tool registry and runner
+- [x] Commit 5: Agent engine turn loop
+- [x] Commit 6: Chat mode and main wiring
 
 ---
 

@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -56,11 +57,18 @@ func TestLoadValid(t *testing.T) {
 	if len(first.Command) != 3 || first.Command[0] != "ls" || first.Command[1] != "-la" || first.Command[2] != "." {
 		t.Errorf("Tools[0].Command = %v, want [ls -la .]", first.Command)
 	}
-	if first.ArgsSchema != "" {
-		t.Errorf("Tools[0].ArgsSchema = %q, want empty", first.ArgsSchema)
+	if len(first.ArgsSchema) != 0 {
+		t.Errorf("Tools[0].ArgsSchema = %s, want empty", first.ArgsSchema)
 	}
-	if cfg.Tools[1].ArgsSchema != `{"type":"object"}` {
-		t.Errorf("Tools[1].ArgsSchema = %q, want %q", cfg.Tools[1].ArgsSchema, `{"type":"object"}`)
+	if len(cfg.Tools[1].ArgsSchema) == 0 || !json.Valid(cfg.Tools[1].ArgsSchema) {
+		t.Fatalf("Tools[1].ArgsSchema = %s, want valid JSON", cfg.Tools[1].ArgsSchema)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(cfg.Tools[1].ArgsSchema, &schema); err != nil {
+		t.Fatalf("unmarshal ArgsSchema: %v", err)
+	}
+	if schema["type"] != "object" {
+		t.Errorf("Tools[1].ArgsSchema type = %v, want object", schema["type"])
 	}
 }
 

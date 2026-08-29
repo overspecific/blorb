@@ -46,10 +46,10 @@ type Provider struct {
 
 // ToolEntry is a tool declaration in blorb.json.
 type ToolEntry struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Command     []string `json:"command"`
-	ArgsSchema  string   `json:"args_schema,omitempty"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Command     []string        `json:"command"`
+	ArgsSchema  json.RawMessage `json:"args_schema,omitempty"`
 }
 
 // Load reads and parses the blorb.json file at path, then validates it.

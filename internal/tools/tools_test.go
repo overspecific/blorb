@@ -82,7 +82,7 @@ func TestDefinitions(t *testing.T) {
 	t.Parallel()
 
 	r, err := tools.NewRegistry([]config.ToolEntry{
-		{Name: "a_tool", Description: "With schema.", Command: []string{"echo"}, ArgsSchema: `{"type":"object","properties":{"x":{"type":"number"}}}`},
+		{Name: "a_tool", Description: "With schema.", Command: []string{"echo"}, ArgsSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"number"}}}`)},
 		entry("b_tool", "Without schema.", "echo"),
 	})
 	if err != nil {

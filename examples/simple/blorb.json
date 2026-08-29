@@ -1,0 +1,32 @@
+{
+  "name": "simple",
+  "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short. You love using your echo tool.",
+  "provider": {
+    "type": "openai",
+    "model": "gpt-4o-mini",
+    "base_url": "http://localhost:11434/v1"
+  },
+  "max_turns": 10,
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echoes back whatever text you pass in, prefixed with 'echo: '. Use it whenever the user asks you to repeat something.",
+      "command": ["echo"],
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "The text to echo back"
+          }
+        },
+        "required": ["message"]
+      }
+    },
+    {
+      "name": "current_time",
+      "description": "Returns the current date and time.",
+      "command": ["date"]
+    }
+  ]
+}

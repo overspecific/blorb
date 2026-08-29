@@ -28,9 +28,9 @@ const maxStderrLen = 4 << 10
 type Tool struct {
 	Name        string
 	Description string
-	// ArgsSchema is free-form JSON schema text passed through to the API.
-	// When empty, "{}" is used.
-	ArgsSchema string
+	// ArgsSchema is the JSON schema describing the arguments, passed
+	// through to the API. When nil, "{}" is used.
+	ArgsSchema json.RawMessage
 	Command    []string
 }
 
@@ -112,13 +112,13 @@ func (r *Registry) Definitions() []llm.Tool {
 	for _, name := range r.Names() {
 		t := r.tools[name]
 		schema := t.ArgsSchema
-		if schema == "" {
-			schema = "{}"
+		if len(schema) == 0 {
+			schema = json.RawMessage("{}")
 		}
 		defs = append(defs, llm.Tool{
 			Name:        t.Name,
 			Description: t.Description,
-			Parameters:  json.RawMessage(schema),
+			Parameters:  schema,
 		})
 	}
 	return defs
