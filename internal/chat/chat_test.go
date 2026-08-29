@@ -32,8 +32,8 @@ func (f *fakeClient) Chat(_ context.Context, req llm.Request) (*llm.Response, er
 	return &resp, nil
 }
 
-func newTestOptions(cfg config.Config, input string, responses ...llm.Response) (chat.Options, *strings.Builder, *strings.Builder) {
-	var stdout, stderr strings.Builder
+func newTestOptions(cfg config.Config, input string, responses ...llm.Response) (chat.Options, *syncBuffer, *syncBuffer) {
+	var stdout, stderr syncBuffer
 	o := chat.Options{
 		Config:  cfg,
 		Version: "test",
@@ -326,7 +326,7 @@ func TestRunSigintWhileIdleExits(t *testing.T) {
 }
 
 // awaitBanner waits until the stderr builder contains the banner text.
-func awaitBanner(t *testing.T, stderr *strings.Builder) {
+func awaitBanner(t *testing.T, stderr *syncBuffer) {
 	t.Helper()
 	deadline := time.After(2 * time.Second)
 	for {
@@ -339,6 +339,25 @@ func awaitBanner(t *testing.T, stderr *strings.Builder) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
+}
+
+// syncBuffer is a mutex-guarded strings.Builder for tests that read a
+// buffer while Run writes to it from another goroutine.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 // TestRunInterruptedTurnThenSuccessKeepsSession is a regression test: the

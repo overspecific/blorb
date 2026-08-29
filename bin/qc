@@ -1,5 +1,8 @@
 #!/bin/sh
+# qc is the quality gate for coding agents to run during development. It
+# formats, checks style, and runs the tests; it must pass before moving on.
 set -e
+set -o pipefail
 
 if [ -d "$HOME/.local/share/mise/shims" ]; then
 	export PATH="$HOME/.local/share/mise/shims:$PATH"
@@ -20,17 +23,43 @@ vet() {
 	go vet ./...
 }
 
+mod() {
+	echo "==> go mod tidy -diff"
+	go mod tidy -diff
+}
+
 build() {
 	echo "==> go build ./..."
 	go build ./...
 }
 
 test() {
-	echo "==> go test ./..."
-	go test ./...
+	echo "==> go test -race -count=1 -shuffle=on -coverpkg=./... -coverprofile=coverage.out ./..."
+	go test -race -count=1 -shuffle=on -coverpkg=./... -coverprofile=coverage.out ./... | sed 's/coverage: [0-9.]*% of statements in \.\/\.\.\.//'
+	echo "==> coverage by package"
+	go tool cover -func=coverage.out | awk '
+		/^total:/ { next }
+		{
+			split($1, pos, ":")
+			file = pos[1]
+			sub(/\/[^/]+\.go$/, "", file)
+			pct = $NF
+			sub(/%$/, "", pct)
+			sum[file] += pct
+			n[file]++
+		}
+		END {
+			for (pkg in sum) {
+				printf "%6.1f%%  %s\n", sum[pkg] / n[pkg], pkg
+			}
+		}
+	' | sort -k2
+	go tool cover -func=coverage.out | tail -n 1
+	rm -f coverage.out
 }
 
 fmt
+mod
 lint
 vet
 build

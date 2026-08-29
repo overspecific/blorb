@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -54,16 +55,17 @@ func (c *Client) httpClient() *http.Client {
 	if c.cfg.HTTPClient != nil {
 		return c.cfg.HTTPClient
 	}
-	if defaultHTTPClient == nil {
+	defaultHTTPClientOnce.Do(func() {
 		defaultHTTPClient = &http.Client{Timeout: defaultTimeout}
-	}
+	})
 	return defaultHTTPClient
 }
 
-// defaultHTTPClient caches the fallback client with its timeout. Not
-// safe for concurrent first use, but New assigns it eagerly in practice
-// and the race would only ever construct an equivalent client.
-var defaultHTTPClient *http.Client
+// defaultHTTPClient caches the fallback client with its timeout.
+var (
+	defaultHTTPClient     *http.Client
+	defaultHTTPClientOnce sync.Once
+)
 
 // New returns a Client for the given configuration. It returns an error when
 // the base URL is unusable.
