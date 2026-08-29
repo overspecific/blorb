@@ -1,0 +1,21 @@
+{
+  "name": "helper",
+  "system_prompt": "You are helpful.",
+  "provider": {
+    "type": "openai",
+    "model": "gpt-4o-mini",
+    "base_url": "https://api.example.com/v1"
+  },
+  "tools": [
+    {
+      "name": "t",
+      "description": "Duplicate.",
+      "command": ["echo"]
+    },
+    {
+      "name": "t",
+      "description": "Duplicate.",
+      "command": ["echo"]
+    }
+  ]
+}

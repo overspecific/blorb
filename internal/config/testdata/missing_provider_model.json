@@ -1,0 +1,8 @@
+{
+  "name": "helper",
+  "system_prompt": "You are helpful.",
+  "provider": {
+    "type": "openai",
+    "base_url": "https://api.example.com/v1"
+  }
+}

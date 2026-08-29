@@ -1,0 +1,9 @@
+{
+  "name": "helper",
+  "system_prompt": "You are helpful.",
+  "provider": {
+    "type": "anthropic",
+    "model": "claude-3",
+    "base_url": "https://api.example.com"
+  }
+}

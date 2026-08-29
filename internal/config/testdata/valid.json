@@ -1,0 +1,23 @@
+{
+  "name": "helper",
+  "system_prompt": "You are helpful.",
+  "provider": {
+    "type": "openai",
+    "model": "gpt-4o-mini",
+    "base_url": "https://api.example.com/v1"
+  },
+  "max_turns": 5,
+  "tools": [
+    {
+      "name": "list_files",
+      "description": "List files in a directory.",
+      "command": ["ls", "-la", "."]
+    },
+    {
+      "name": "greet",
+      "description": "Return a greeting.",
+      "command": ["echo", "hello"],
+      "args_schema": "{\"type\":\"object\"}"
+    }
+  ]
+}

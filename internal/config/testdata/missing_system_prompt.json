@@ -1,0 +1,8 @@
+{
+  "name": "helper",
+  "provider": {
+    "type": "openai",
+    "model": "gpt-4o-mini",
+    "base_url": "https://api.example.com/v1"
+  }
+}

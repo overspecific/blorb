@@ -1,0 +1,16 @@
+{
+  "name": "helper",
+  "system_prompt": "You are helpful.",
+  "provider": {
+    "type": "openai",
+    "model": "gpt-4o-mini",
+    "base_url": "https://api.example.com/v1"
+  },
+  "tools": [
+    {
+      "name": "bad name.dotted",
+      "description": "Name contains characters outside the allowed set.",
+      "command": ["echo"]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "helper",
+  "system_prompt": "You are helpful.",
+  "provider": {
+    "type": "openai",
+    "model": "gpt-4o-mini",
+    "base_url": "https://api.example.com/v1",
+    "api_key_env": "MY_API_KEY"
+  }
+}
