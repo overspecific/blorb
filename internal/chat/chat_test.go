@@ -19,9 +19,11 @@ import (
 // fakeClient returns canned responses in order and records requests.
 type fakeClient struct {
 	responses []llm.Response
+	requests  []llm.Request
 }
 
-func (f *fakeClient) Chat(_ context.Context, _ llm.Request) (*llm.Response, error) {
+func (f *fakeClient) Chat(_ context.Context, req llm.Request) (*llm.Response, error) {
+	f.requests = append(f.requests, req)
 	if len(f.responses) == 0 {
 		return nil, errors.New("fakeClient: no more canned responses")
 	}
@@ -484,4 +486,106 @@ func TestNewClient(t *testing.T) {
 
 func ptr(s string) *string {
 	return &s
+}
+
+// TestRunUsesInjectedGetenv verifies Options.Getenv replaces the
+// environment lookup when no NewClient override is set.
+func TestRunUsesInjectedGetenv(t *testing.T) {
+	t.Parallel()
+
+	cfg := minimalConfig()
+	cfg.Provider.APIKeyEnv = ptr("INJECTED_MISSING_VAR")
+
+	// No NewClient override and an injected Getenv that resolves nothing:
+	// Run must fail startup with the missing-env error, proving the
+	// injected lookup was consulted.
+	o := chat.Options{
+		Config:  cfg,
+		Version: "test",
+		Stdin:   strings.NewReader("hi\n"),
+		Stdout:  &strings.Builder{},
+		Stderr:  &strings.Builder{},
+		Getenv:  func(string) string { return "" },
+	}
+
+	err := chat.Run(context.Background(), o)
+	if err == nil || !strings.Contains(err.Error(), "INJECTED_MISSING_VAR") {
+		t.Errorf("error = %v, want a missing-env error naming the variable", err)
+	}
+}
+
+// TestRunInjectedGetenvResolvesKey pins the positive path: the injected
+// lookup supplies the key, so startup gets past env resolution (the turn
+// fails with a connection error on stderr, not an env error).
+func TestRunInjectedGetenvResolvesKey(t *testing.T) {
+	t.Parallel()
+
+	// The test base URL points at a dead port, so a client that gets past
+	// env resolution fails on connect; the env error must not appear.
+	cfg := minimalConfig()
+	cfg.Provider.APIKeyEnv = ptr("INJECTED_ENV_VAR")
+
+	var stderr strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Version: "test",
+		Stdin:   strings.NewReader("hi\nexit\n"),
+		Stdout:  &strings.Builder{},
+		Stderr:  &stderr,
+		Getenv: func(key string) string {
+			if key == "INJECTED_ENV_VAR" {
+				return "injected-key"
+			}
+			return ""
+		},
+	}
+
+	err := chat.Run(context.Background(), o)
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (turn errors keep the session alive)", err)
+	}
+	errOut := stderr.String()
+	if strings.Contains(errOut, "api_key_env") {
+		t.Errorf("stderr = %q, want no env resolution failure (key was injected)", errOut)
+	}
+	if !strings.Contains(errOut, "connection refused") {
+		t.Errorf("stderr = %q, want a connect error proving the turn ran past env resolution", errOut)
+	}
+}
+
+// TestRunLongLineDeliveredAsOneTurn verifies the scanner accepts lines well
+// beyond 64 KiB without splitting them into multiple turns.
+func TestRunLongLineDeliveredAsOneTurn(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("x", 200_000)
+	cfg := minimalConfig()
+
+	fc := &fakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "ok"), FinishReason: llm.FinishStop},
+	}}
+	var stdout, stderr strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Version: "test",
+		Stdin:   strings.NewReader(long + "\nexit\n"),
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+		NewClient: func(config.Config) (llm.Client, error) {
+			return fc, nil
+		},
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	// Only one user turn must have hit the API, carrying the whole line.
+	if len(fc.requests) != 1 {
+		t.Fatalf("API calls = %d, want 1 (long line split would call twice)", len(fc.requests))
+	}
+	last := fc.requests[0].Messages[len(fc.requests[0].Messages)-1]
+	if last.Content != long {
+		t.Errorf("user message length = %d, want %d (full line)", len(last.Content), len(long))
+	}
 }

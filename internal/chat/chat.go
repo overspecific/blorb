@@ -28,6 +28,9 @@ type Options struct {
 	Stderr     io.Writer
 	NewClient  func(cfg config.Config) (llm.Client, error)
 	SigintChan <-chan os.Signal
+	// Getenv overrides the environment lookup used to resolve
+	// provider.api_key_env; os.Getenv when nil. Tests only.
+	Getenv func(string) string
 }
 
 // Run drives one interactive chat session. It returns nil on graceful exit
@@ -258,13 +261,14 @@ func chatEvents(stdout, stderr io.Writer) func(engine.Event) error {
 
 // NewClient builds the LLM client described by a config, switching on
 // provider.type. When a second provider lands this graduates to a registry
-// map.
-func NewClient(cfg config.Config) (llm.Client, error) {
+// map. getenv is the environment lookup, injectable for tests; pass
+// os.Getenv in production.
+func NewClientWithGetenv(cfg config.Config, getenv func(string) string) (llm.Client, error) {
 	switch cfg.Provider.Type {
 	case config.ProviderTypeOpenAI:
 		apiKey := ""
 		if envName := cfg.Provider.APIKeyEnvOrDefault(); envName != "" {
-			apiKey = os.Getenv(envName)
+			apiKey = getenv(envName)
 			if apiKey == "" {
 				return nil, fmt.Errorf("api_key_env %q is set but the environment variable is empty", envName)
 			}
@@ -279,9 +283,18 @@ func NewClient(cfg config.Config) (llm.Client, error) {
 	}
 }
 
+// NewClient builds the LLM client described by a config using os.Getenv.
+func NewClient(cfg config.Config) (llm.Client, error) {
+	return NewClientWithGetenv(cfg, os.Getenv)
+}
+
 func (o Options) newClient() (llm.Client, error) {
 	if o.NewClient != nil {
 		return o.NewClient(o.Config)
 	}
-	return NewClient(o.Config)
+	getenv := o.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	return NewClientWithGetenv(o.Config, getenv)
 }
