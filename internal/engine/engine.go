@@ -33,6 +33,22 @@ const (
 	// matching EventAssistantText, and a single message may contain both
 	// thinking and content.
 	EventAssistantThinking
+	// EventAssistantTextDelta carries an incremental fragment of
+	// assistant text, emitted only when streaming. The concatenation of
+	// all EventAssistantTextDelta events in a round equals the round's
+	// assistant text.
+	EventAssistantTextDelta
+	// EventAssistantThinkingDelta carries an incremental fragment of
+	// extracted chain-of-thought, emitted only when streaming. The
+	// concatenation of all EventAssistantThinkingDelta events in a round
+	// equals the round's reasoning, and they interleave with text deltas
+	// in arrival order.
+	EventAssistantThinkingDelta
+	// EventToolCallDelta carries a fragment of a streamed tool call:
+	// Name when the fragment includes it, and Args as an arguments
+	// fragment. Emitted only when streaming; fragments assemble into the
+	// round's tool calls.
+	EventToolCallDelta
 )
 
 // Event is emitted as a turn progresses. Text is set for
@@ -58,6 +74,11 @@ type EngineConfig struct {
 	// MaxTurns bounds API calls per RunTurn; zero means
 	// config.DefaultMaxTurns.
 	MaxTurns int
+	// Stream enables incremental streaming: when true and the client
+	// implements llm.StreamingClient, assistant text, reasoning, and
+	// tool calls are emitted incrementally as delta events; otherwise
+	// the whole-message path is used.
+	Stream bool
 }
 
 // Engine owns conversation state and drives turns.
@@ -103,20 +124,25 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 
 	var text strings.Builder
 	for {
-		resp, err := e.call(ctx)
+		resp, streamed, err := e.call(ctx, onEvent)
 		if err != nil {
 			return "", err
 		}
 
-		if resp.Message.Reasoning != "" {
-			if err := onEvent(Event{Kind: EventAssistantThinking, Text: resp.Message.Reasoning}); err != nil {
-				return "", err
+		// When the response was streamed the fragments were already
+		// emitted as they arrived; only the whole-message path emits
+		// them here.
+		if !streamed {
+			if resp.Message.Reasoning != "" {
+				if err := onEvent(Event{Kind: EventAssistantThinking, Text: resp.Message.Reasoning}); err != nil {
+					return "", err
+				}
 			}
-		}
 
-		if resp.Message.Content != "" {
-			if err := onEvent(Event{Kind: EventAssistantText, Text: resp.Message.Content}); err != nil {
-				return "", err
+			if resp.Message.Content != "" {
+				if err := onEvent(Event{Kind: EventAssistantText, Text: resp.Message.Content}); err != nil {
+					return "", err
+				}
 			}
 		}
 
@@ -162,14 +188,17 @@ func (e *Engine) RepairUnansweredToolCallsForTest() {
 }
 
 // call performs one API call, seeding the system prompt and enforcing
-// MaxTurns.
-func (e *Engine) call(ctx context.Context) (*llm.Response, error) {
+// MaxTurns. When streaming is enabled and the client implements
+// llm.StreamingClient, the streaming path is used and each delta is emitted
+// via onEvent as it arrives; the returned streamed flag reports which path
+// was taken so callers can avoid double-emitting whole-message events.
+func (e *Engine) call(ctx context.Context, onEvent func(Event) error) (resp *llm.Response, streamed bool, err error) {
 	if e.currentCalls >= e.maxTurns {
 		msg := e.lastAssistantMessage()
 		if msg != nil {
-			return nil, fmt.Errorf("%w: last assistant message: %s", ErrTooManyTurns, msg.Content)
+			return nil, false, fmt.Errorf("%w: last assistant message: %s", ErrTooManyTurns, msg.Content)
 		}
-		return nil, fmt.Errorf("%w: made %d API calls without a final text", ErrTooManyTurns, e.maxTurns)
+		return nil, false, fmt.Errorf("%w: made %d API calls without a final text", ErrTooManyTurns, e.maxTurns)
 	}
 	e.currentCalls++
 
@@ -183,7 +212,38 @@ func (e *Engine) call(ctx context.Context) (*llm.Response, error) {
 	if e.cfg.Tools != nil {
 		req.Tools = e.cfg.Tools.Definitions()
 	}
-	return e.cfg.Client.Chat(ctx, req)
+
+	if e.cfg.Stream {
+		if sc, ok := e.cfg.Client.(llm.StreamingClient); ok {
+			resp, err := e.streamCall(ctx, sc, req, onEvent)
+			return resp, err == nil && resp != nil, err
+		}
+	}
+	resp, err = e.cfg.Client.Chat(ctx, req)
+	return resp, false, err
+}
+
+// streamCall performs one streaming API call, emitting each fragment as an
+// event in the order it arrives.
+func (e *Engine) streamCall(ctx context.Context, sc llm.StreamingClient, req llm.Request, onEvent func(Event) error) (*llm.Response, error) {
+	return sc.ChatStream(ctx, req, func(d llm.Delta) error {
+		if d.Reasoning != "" {
+			if err := onEvent(Event{Kind: EventAssistantThinkingDelta, Text: d.Reasoning}); err != nil {
+				return err
+			}
+		}
+		if d.Content != "" {
+			if err := onEvent(Event{Kind: EventAssistantTextDelta, Text: d.Content}); err != nil {
+				return err
+			}
+		}
+		if d.ToolCall != nil {
+			if err := onEvent(Event{Kind: EventToolCallDelta, Name: d.ToolCall.Name, Args: d.ToolCall.Arguments}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // runToolCalls executes each tool call, emits events, and appends the

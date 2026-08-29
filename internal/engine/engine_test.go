@@ -33,6 +33,63 @@ func (f *fakeClient) Chat(_ context.Context, req llm.Request) (*llm.Response, er
 	return nil, errors.New("fakeClient: no more canned responses")
 }
 
+// streamingClient is a streaming fake: each canned response is broken into
+// deltas that are emitted in order before the complete response is returned.
+type streamingClient struct {
+	responses []llm.Response
+	err       error
+	requests  []llm.Request
+}
+
+func (f *streamingClient) Chat(_ context.Context, req llm.Request) (*llm.Response, error) {
+	f.requests = append(f.requests, req)
+	if len(f.responses) > 0 {
+		resp := f.responses[0]
+		f.responses = f.responses[1:]
+		return &resp, nil
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	return nil, errors.New("streamingClient: no more canned responses")
+}
+
+func (f *streamingClient) ChatStream(_ context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	f.requests = append(f.requests, req)
+	if len(f.responses) == 0 {
+		if f.err != nil {
+			return nil, f.err
+		}
+		return nil, errors.New("streamingClient: no more canned responses")
+	}
+	resp := f.responses[0]
+	f.responses = f.responses[1:]
+
+	msg := resp.Message
+	if msg.Reasoning != "" {
+		if err := onDelta(llm.Delta{Reasoning: msg.Reasoning}); err != nil {
+			return nil, err
+		}
+	}
+	if msg.Content != "" {
+		if err := onDelta(llm.Delta{Content: msg.Content}); err != nil {
+			return nil, err
+		}
+	}
+	for i, tc := range msg.ToolCalls {
+		if err := onDelta(llm.Delta{ToolCall: &llm.ToolCallDelta{
+			Index:     i,
+			ID:        tc.ID,
+			Type:      tc.Type,
+			Name:      tc.FunctionName,
+			Arguments: tc.FunctionArgs,
+		}}); err != nil {
+			return nil, err
+		}
+	}
+	return &resp, nil
+}
+
 func toolRegistry(t *testing.T) *tools.Registry {
 	t.Helper()
 
@@ -319,6 +376,198 @@ func TestRunTurnEmitsThinkingBeforeText(t *testing.T) {
 	if h := e.History(); h[1].Reasoning != "step by step..." {
 		t.Errorf("history reasoning = %q, want the model's thinking", h[1].Reasoning)
 	}
+}
+
+func TestRunTurnStreamTextDeltas(t *testing.T) {
+	t.Parallel()
+
+	fc := &streamingClient{responses: []llm.Response{
+		llm.Response{
+			ID: "resp",
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				Content:   "the answer",
+				Reasoning: "hmm...",
+			},
+			FinishReason: llm.FinishStop,
+		},
+	}}
+	e := engine.New(engine.EngineConfig{Client: fc, Stream: true})
+
+	var events []engine.Event
+	final, err := e.RunTurn(context.Background(), "hi", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if final != "the answer" {
+		t.Errorf("final = %q, want %q", final, "the answer")
+	}
+
+	var text, thinking strings.Builder
+	for _, ev := range events {
+		switch ev.Kind {
+		case engine.EventAssistantTextDelta:
+			text.WriteString(ev.Text)
+		case engine.EventAssistantThinkingDelta:
+			thinking.WriteString(ev.Text)
+		default:
+			t.Errorf("unexpected event kind %v", ev.Kind)
+		}
+	}
+	if text.String() != "the answer" {
+		t.Errorf("text deltas concatenate to %q, want %q", text.String(), "the answer")
+	}
+	if thinking.String() != "hmm..." {
+		t.Errorf("thinking deltas concatenate to %q, want %q", thinking.String(), "hmm...")
+	}
+
+	// Reasoning fragments arrive before text, in arrival order.
+	if len(events) != 2 || events[0].Kind != engine.EventAssistantThinkingDelta ||
+		events[1].Kind != engine.EventAssistantTextDelta {
+		t.Errorf("events = %+v, want thinking delta then text delta in order", events)
+	}
+
+	// The whole-message events must not be emitted when streaming.
+	for _, ev := range events {
+		if ev.Kind == engine.EventAssistantText || ev.Kind == engine.EventAssistantThinking {
+			t.Errorf("whole-message event %v emitted during streaming", ev.Kind)
+		}
+	}
+}
+
+func TestRunTurnStreamToolCallDeltas(t *testing.T) {
+	t.Parallel()
+
+	r := toolRegistry(t)
+	fc := &streamingClient{responses: []llm.Response{
+		toolCallResp(call("call_1", "echo", `{"msg":"streamed"}`)),
+		textResp("done"),
+	}}
+	e := engine.New(engine.EngineConfig{Client: fc, Tools: r, Stream: true})
+
+	var events []engine.Event
+	final, err := e.RunTurn(context.Background(), "run it", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if final != "done" {
+		t.Errorf("final = %q, want %q", final, "done")
+	}
+
+	var deltaCalls []engine.Event
+	for _, ev := range events {
+		if ev.Kind == engine.EventToolCallDelta {
+			deltaCalls = append(deltaCalls, ev)
+		}
+	}
+	if len(deltaCalls) != 1 {
+		t.Fatalf("tool call delta events = %+v, want 1", deltaCalls)
+	}
+	if deltaCalls[0].Name != "echo" || deltaCalls[0].Args != `{"msg":"streamed"}` {
+		t.Errorf("tool call delta = %+v, want echo with %q", deltaCalls[0], `{"msg":"streamed"}`)
+	}
+
+	// The turn still drove tool execution and the whole-message flow.
+	if len(fc.requests) != 2 {
+		t.Fatalf("API calls = %d, want 2", len(fc.requests))
+	}
+	toolMsg := fc.requests[1].Messages[2]
+	if toolMsg.Role != llm.RoleTool || toolMsg.ToolCallID != "call_1" || toolMsg.Content != `{"msg":"streamed"}` {
+		t.Errorf("tool result message = %+v, want echo result via streamed call", toolMsg)
+	}
+	if !hasEvent(events, engine.EventToolCall) || !hasEvent(events, engine.EventToolResult) {
+		t.Errorf("events = %+v, want tool call and result events", events)
+	}
+}
+
+func TestRunTurnStreamInterleavingAcrossRounds(t *testing.T) {
+	t.Parallel()
+
+	r := toolRegistry(t)
+	fc := &streamingClient{responses: []llm.Response{
+		llm.Response{
+			ID: "resp",
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: "checking",
+				ToolCalls: []llm.ToolCall{
+					call("call_1", "echo", "{}"),
+				},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		textResp("final"),
+	}}
+	e := engine.New(engine.EngineConfig{Client: fc, Tools: r, Stream: true})
+
+	var textEvents []string
+	_, err := e.RunTurn(context.Background(), "go", func(ev engine.Event) error {
+		if ev.Kind == engine.EventAssistantTextDelta {
+			textEvents = append(textEvents, ev.Text)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if len(textEvents) != 2 || textEvents[0] != "checking" || textEvents[1] != "final" {
+		t.Errorf("text delta events = %v, want [checking final]", textEvents)
+	}
+}
+
+func TestRunTurnStreamOffUsesWholeMessage(t *testing.T) {
+	t.Parallel()
+
+	fc := &streamingClient{responses: []llm.Response{textResp("whole message")}}
+	e := engine.New(engine.EngineConfig{Client: fc, Stream: false})
+
+	var events []engine.Event
+	final, err := e.RunTurn(context.Background(), "hi", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if final != "whole message" {
+		t.Errorf("final = %q, want %q", final, "whole message")
+	}
+	if len(events) != 1 || events[0].Kind != engine.EventAssistantText || events[0].Text != "whole message" {
+		t.Errorf("events = %+v, want one whole-message assistant text event", events)
+	}
+}
+
+func TestRunTurnStreamOnDeltaErrorAborts(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("stop streaming")
+	fc := &streamingClient{responses: []llm.Response{textResp("never shown")}}
+	e := engine.New(engine.EngineConfig{Client: fc, Stream: true})
+
+	_, err := e.RunTurn(context.Background(), "hi", func(ev engine.Event) error {
+		if ev.Kind == engine.EventAssistantTextDelta {
+			return boom
+		}
+		return nil
+	})
+	if !errors.Is(err, boom) {
+		t.Errorf("error = %v, want the onDelta error", err)
+	}
+}
+
+func hasEvent(events []engine.Event, kind engine.EventKind) bool {
+	for _, ev := range events {
+		if ev.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunTurnTooManyTurns(t *testing.T) {
