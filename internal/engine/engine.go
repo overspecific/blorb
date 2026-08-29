@@ -117,6 +117,13 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 		}
 
 		if len(resp.Message.ToolCalls) == 0 {
+			// A length-truncated response is an incomplete answer, not a
+			// final one; surface it as a failed turn so the user knows the
+			// text was cut off, after emitting what did arrive.
+			if resp.FinishReason == llm.FinishLength {
+				e.history = append(e.history, resp.Message)
+				return "", fmt.Errorf("response was truncated by the provider (finish_reason %s)", llm.FinishLength)
+			}
 			e.history = append(e.history, resp.Message)
 			return resp.Message.Content, nil
 		}

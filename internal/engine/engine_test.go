@@ -420,6 +420,61 @@ func TestRunTurnOnEventErrorAborts(t *testing.T) {
 	}
 }
 
+func TestRunTurnLengthTruncatedResponseFails(t *testing.T) {
+	t.Parallel()
+
+	truncated := llm.Response{
+		ID: "resp",
+		Message: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: "this answer was cut o",
+		},
+		FinishReason: llm.FinishLength,
+	}
+	fc := &fakeClient{responses: []llm.Response{truncated}}
+	e := engine.New(engine.EngineConfig{Client: fc})
+
+	var events []engine.Event
+	_, err := e.RunTurn(context.Background(), "explain", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("RunTurn succeeded, want a truncation error")
+	}
+	if !strings.Contains(err.Error(), "truncated") || !strings.Contains(err.Error(), "length") {
+		t.Errorf("error = %q, want a truncation mention with finish_reason", err)
+	}
+
+	// The partial text must still have been emitted before failing.
+	var texts []string
+	for _, ev := range events {
+		if ev.Kind == engine.EventAssistantText {
+			texts = append(texts, ev.Text)
+		}
+	}
+	if len(texts) != 1 || texts[0] != "this answer was cut o" {
+		t.Errorf("text events = %v, want the partial text", texts)
+	}
+
+	// A failed turn rolls back history, so no truncated assistant message
+	// lingers; the turn can be retried cleanly.
+	h := e.History()
+	if len(h) != 0 {
+		t.Errorf("history after failed turn = %+v, want empty", h)
+	}
+
+	// The next turn must succeed normally.
+	fc.responses = []llm.Response{textResp("full answer")}
+	final, err := e.RunTurn(context.Background(), "continue", func(engine.Event) error { return nil })
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if final != "full answer" {
+		t.Errorf("final = %q, want %q", final, "full answer")
+	}
+}
+
 func TestRunTurnContextCancellation(t *testing.T) {
 	t.Parallel()
 
