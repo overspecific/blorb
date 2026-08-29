@@ -6,13 +6,8 @@ if [ -d "$HOME/.local/share/mise/shims" ]; then
 fi
 
 fmt() {
-	echo "==> gofmt -l ."
-	out=$(gofmt -l .)
-	if [ -n "$out" ]; then
-		echo "error: unformatted files:"
-		echo "$out"
-		exit 1
-	fi
+	echo "==> gofmt -w ."
+	gofmt -w .
 }
 
 vet() {
