@@ -60,7 +60,7 @@ func New(cfg Config) (*Client, error) {
 func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
 	body := wireRequest{
 		Model:    firstNonEmpty(req.Model, c.cfg.Model),
-		Messages: req.Messages,
+		Messages: wireMessages(req.Messages),
 		Tools:    wireTools(req.Tools),
 	}
 
@@ -113,12 +113,9 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 	choice := envelope.Choices[0]
 	resp := &llm.Response{
 		ID:           envelope.ID,
-		Message:      choice.Message,
+		Message:      neutralMessage(choice.Message),
 		FinishReason: choice.FinishReason,
 		Usage:        envelope.Usage,
-	}
-	for i := range resp.Message.ToolCalls {
-		resp.Message.ToolCalls[i].Type = llm.ToolCallType
 	}
 	if resp.Message.Role == "" {
 		resp.Message.Role = llm.RoleAssistant
@@ -126,15 +123,71 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 	if hasToolCallWithoutID(resp.Message.ToolCalls) {
 		return nil, fmt.Errorf("decode response: tool call missing id (body: %s)", truncate(respBody, maxErrorBodyLen))
 	}
+	if hasToolCallWithoutName(resp.Message.ToolCalls) {
+		return nil, fmt.Errorf("decode response: tool call missing name (body: %s)", truncate(respBody, maxErrorBodyLen))
+	}
 	return resp, nil
 }
 
-// wireRequest is the OpenAI-compatible request envelope. Messages reuse the
-// neutral llm types, whose JSON shape matches the wire format.
+// wireRequest is the OpenAI-compatible request envelope.
 type wireRequest struct {
 	Model    string        `json:"model"`
-	Messages []llm.Message `json:"messages"`
+	Messages []wireMessage `json:"messages"`
 	Tools    []wireTool    `json:"tools,omitempty"`
+}
+
+// wireMessage is the OpenAI-compatible message shape. Messages carrying tool
+// calls or tool results use the nested forms here; the neutral llm.Message is
+// converted to and from this shape by wireMessages and neutralMessage.
+type wireMessage struct {
+	Role       string         `json:"role"`
+	Content    string         `json:"content,omitempty"`
+	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+// wireToolCall is the OpenAI-compatible tool call shape: id and type at the
+// top level, function name and arguments in a nested "function" object.
+type wireToolCall struct {
+	ID       string         `json:"id"`
+	Type     string         `json:"type"`
+	Function wireToolCallFn `json:"function"`
+}
+
+type wireToolCallFn struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// wireMessages converts neutral messages to the wire shape.
+func wireMessages(msgs []llm.Message) []wireMessage {
+	out := make([]wireMessage, 0, len(msgs))
+	for _, m := range msgs {
+		wm := wireMessage{Role: string(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			wm.ToolCalls = append(wm.ToolCalls, wireToolCall{
+				ID:       tc.ID,
+				Type:     llm.ToolCallType,
+				Function: wireToolCallFn{Name: tc.FunctionName, Arguments: tc.FunctionArgs},
+			})
+		}
+		out = append(out, wm)
+	}
+	return out
+}
+
+// neutralMessage converts a wire message back to the neutral shape.
+func neutralMessage(wm wireMessage) llm.Message {
+	m := llm.Message{Role: llm.Role(wm.Role), Content: wm.Content, ToolCallID: wm.ToolCallID}
+	for _, wtc := range wm.ToolCalls {
+		m.ToolCalls = append(m.ToolCalls, llm.ToolCall{
+			ID:           wtc.ID,
+			Type:         llm.ToolCallType,
+			FunctionName: wtc.Function.Name,
+			FunctionArgs: wtc.Function.Arguments,
+		})
+	}
+	return m
 }
 
 // wireTool is the OpenAI-compatible tool definition shape, which wraps the
@@ -173,7 +226,7 @@ func wireTools(tools []llm.Tool) []wireTool {
 type wireResponse struct {
 	ID      string `json:"id"`
 	Choices []struct {
-		Message      llm.Message `json:"message"`
+		Message      wireMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage llm.Usage `json:"usage"`
@@ -193,9 +246,23 @@ func validateBaseURL(baseURL string) error {
 	return nil
 }
 
+// hasToolCallWithoutID reports whether any tool call is missing its id.
 func hasToolCallWithoutID(calls []llm.ToolCall) bool {
 	for _, tc := range calls {
 		if tc.ID == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasToolCallWithoutName reports whether any tool call is missing its
+// function name. Degenerate tool calls like these occasionally come from
+// smaller models; using them would poison the conversation history (the
+// follow-up request with the empty-name call in it is rejected by servers).
+func hasToolCallWithoutName(calls []llm.ToolCall) bool {
+	for _, tc := range calls {
+		if tc.FunctionName == "" {
 			return true
 		}
 	}

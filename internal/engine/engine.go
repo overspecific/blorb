@@ -75,9 +75,18 @@ func New(cfg EngineConfig) *Engine {
 // RunTurn appends the user message and loops API calls and tool executions
 // until the model produces a final text. Events are emitted via onEvent as
 // the turn progresses; an onEvent error aborts the turn with that error.
-func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(Event) error) (string, error) {
+func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(Event) error) (final string, err error) {
 	e.currentCalls = 0
 	e.history = append(e.history, llm.NewTextMessage(llm.RoleUser, userMessage))
+
+	// An aborted turn can leave assistant tool calls without matching tool
+	// results (e.g. interruption mid-run). Repair history so the next
+	// request stays protocol-valid.
+	defer func() {
+		if err != nil {
+			e.repairUnansweredToolCalls()
+		}
+	}()
 
 	if onEvent == nil {
 		onEvent = func(Event) error { return nil }
@@ -147,7 +156,16 @@ func (e *Engine) runToolCalls(ctx context.Context, calls []llm.ToolCall, onEvent
 	for _, tc := range calls {
 		args, err := tc.DecodedArgs()
 		if err != nil {
-			return err
+			// Malformed arguments are a model failure, not an
+			// infrastructure one: feed the error back as a failed tool
+			// result so the model can recover, and keep history
+			// protocol-valid.
+			e.history = append(e.history,
+				llm.NewToolResultMessage(tc.ID, err.Error(), true))
+			if err := onEvent(Event{Kind: EventToolResult, Name: tc.FunctionName, Output: err.Error(), Failed: true}); err != nil {
+				return err
+			}
+			continue
 		}
 
 		if err := onEvent(Event{Kind: EventToolCall, Name: tc.FunctionName, Args: tc.FunctionArgs}); err != nil {
@@ -180,6 +198,31 @@ func (e *Engine) runToolCalls(ctx context.Context, calls []llm.ToolCall, onEvent
 		}
 	}
 	return nil
+}
+
+// repairUnansweredToolCalls appends synthetic error tool results for any
+// tool call that has no matching tool-result message in history, i.e. one
+// orphaned by a turn abort (interruption, API failure mid-tool-loop).
+func (e *Engine) repairUnansweredToolCalls() {
+	answered := make(map[string]bool)
+	for _, m := range e.history {
+		if m.Role == llm.RoleTool {
+			answered[m.ToolCallID] = true
+		}
+	}
+	for i := len(e.history) - 1; i >= 0; i-- {
+		m := e.history[i]
+		if m.Role != llm.RoleAssistant {
+			continue
+		}
+		for j := len(m.ToolCalls) - 1; j >= 0; j-- {
+			tc := m.ToolCalls[j]
+			if tc.ID != "" && !answered[tc.ID] {
+				e.history = append(e.history,
+					llm.NewToolResultMessage(tc.ID, "tool call was interrupted before it ran", true))
+			}
+		}
+	}
 }
 
 func (e *Engine) lastAssistantMessage() *llm.Message {

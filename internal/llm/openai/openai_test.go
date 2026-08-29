@@ -123,7 +123,7 @@ func TestChatToolResultMessagesOnWire(t *testing.T) {
 	t.Parallel()
 
 	var gotReq struct {
-		Messages []llm.Message `json:"messages"`
+		Messages []wireMessageForTest `json:"messages"`
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -156,12 +156,27 @@ func TestChatToolResultMessagesOnWire(t *testing.T) {
 	if len(gotReq.Messages) != 2 {
 		t.Fatalf("wire messages = %+v, want 2", gotReq.Messages)
 	}
-	if got := gotReq.Messages[0].ToolCalls[0].FunctionArgs; got != `{"path":"."}` {
+	if got := gotReq.Messages[0].ToolCalls[0].Function.Arguments; got != `{"path":"."}` {
 		t.Errorf("wire tool call arguments = %q, want %q", got, `{"path":"."}`)
 	}
 	if gotReq.Messages[1].ToolCallID != "call_9" {
 		t.Errorf("wire tool_call_id = %q, want %q", gotReq.Messages[1].ToolCallID, "call_9")
 	}
+}
+
+// wireMessageForTest mirrors the wire message shape for asserting on exact
+// wire JSON, without importing the unexported openai wire types.
+type wireMessageForTest struct {
+	Role      string `json:"role"`
+	ToolCalls []struct {
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	} `json:"tool_calls"`
+	ToolCallID string `json:"tool_call_id"`
 }
 
 func TestChatBaseURLTrailingSlash(t *testing.T) {
@@ -321,7 +336,7 @@ func TestChatToolCallMissingID(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"","type":"function","name":"ls","arguments":"{}"}]},"finish_reason":"tool_calls"}]}`))
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"","type":"function","function":{"name":"ls","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
 	}))
 	defer srv.Close()
 
@@ -331,6 +346,75 @@ func TestChatToolCallMissingID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "missing id") {
 		t.Errorf("error = %q, want a missing-id error", err)
+	}
+}
+
+func TestChatToolCallMissingName(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"","arguments":""}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{Model: "m"})
+	if err == nil {
+		t.Fatal("Chat succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "missing name") {
+		t.Errorf("error = %q, want a missing-name error", err)
+	}
+}
+
+func TestChatToolCallsRoundTripNestedShape(t *testing.T) {
+	t.Parallel()
+
+	var gotReq struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotReq); err != nil {
+			t.Errorf("unmarshal request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"current_time","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer srv.Close()
+
+	req := llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			{
+				Role: llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_0", Type: "function", FunctionName: "echo", FunctionArgs: `{"msg":"hi"}`},
+				},
+			},
+			llm.NewToolResultMessage("call_0", "echo: hi", false),
+		},
+	}
+	resp, err := newTestClient(t, srv.URL).Chat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+
+	// Outgoing history uses the nested wire shape.
+	if len(gotReq.Messages) != 2 {
+		t.Fatalf("wire messages = %d, want 2", len(gotReq.Messages))
+	}
+	historyCall := `{"role":"assistant","tool_calls":[{"id":"call_0","type":"function","function":{"name":"echo","arguments":"{\"msg\":\"hi\"}"}}]}`
+	if string(gotReq.Messages[0]) != historyCall {
+		t.Errorf("wire assistant message = %s, want %s", gotReq.Messages[0], historyCall)
+	}
+
+	// Incoming tool calls decode from the nested wire shape.
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("decoded tool calls = %d, want 1", len(resp.Message.ToolCalls))
+	}
+	tc := resp.Message.ToolCalls[0]
+	if tc.ID != "call_1" || tc.FunctionName != "current_time" || tc.FunctionArgs != "{}" || tc.Type != "function" {
+		t.Errorf("decoded tool call = %+v, want call_1/current_time/{}", tc)
 	}
 }
 

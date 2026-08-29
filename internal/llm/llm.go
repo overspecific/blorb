@@ -23,7 +23,10 @@ const (
 // ToolCallType is the only tool call type in common use.
 const ToolCallType = "function"
 
-// Message is one entry in a conversation history.
+// Message is one entry in a conversation history. Its JSON tags exist for
+// internal and test serialization only; they are deliberately NOT the
+// OpenAI wire shape. Wire conversion lives in the provider packages (see
+// internal/llm/openai).
 type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content"`
@@ -33,11 +36,14 @@ type Message struct {
 
 // ToolCall is a request from the model to invoke a tool.
 type ToolCall struct {
-	ID           string `json:"id"`
-	Type         string `json:"type"`
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	// FunctionName is the model-chosen tool name. The JSON tags on this
+	// struct are the neutral/test shape, not the OpenAI wire shape, which
+	// nests these fields under "function" (see internal/llm/openai).
 	FunctionName string `json:"name"`
-	// FunctionArgs is the JSON-encoded arguments string, as it appears on the
-	// wire. Use DecodedArgs instead of manipulating it directly.
+	// FunctionArgs is the JSON-encoded arguments string. Use DecodedArgs
+	// instead of manipulating it directly.
 	FunctionArgs string `json:"arguments"`
 }
 
@@ -99,7 +105,8 @@ const (
 //
 // Contract: implementations send the full message history on every call,
 // honour context cancellation, and return an error when a response is
-// malformed (including assistant messages with tool calls missing ids).
+// malformed (including assistant messages with tool calls missing ids or
+// function names).
 type Client interface {
 	Chat(ctx context.Context, req Request) (*Response, error)
 }

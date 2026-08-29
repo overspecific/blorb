@@ -22,15 +22,15 @@ type fakeClient struct {
 
 func (f *fakeClient) Chat(_ context.Context, req llm.Request) (*llm.Response, error) {
 	f.requests = append(f.requests, req)
+	if len(f.responses) > 0 {
+		resp := f.responses[0]
+		f.responses = f.responses[1:]
+		return &resp, nil
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
-	if len(f.responses) == 0 {
-		return nil, errors.New("fakeClient: no more canned responses")
-	}
-	resp := f.responses[0]
-	f.responses = f.responses[1:]
-	return &resp, nil
+	return nil, errors.New("fakeClient: no more canned responses")
 }
 
 func toolRegistry(t *testing.T) (*tools.Registry, *[]string) {
@@ -243,6 +243,49 @@ func TestRunTurnToolInfraErrorContinues(t *testing.T) {
 	}
 }
 
+func TestRunTurnMalformedToolCallArgsRecover(t *testing.T) {
+	t.Parallel()
+
+	// A degenerate tool call with invalid JSON args must not abort the
+	// turn: the engine feeds the decode error back as a failed tool result
+	// so the model gets another chance.
+	fc := &fakeClient{responses: []llm.Response{
+		toolCallResp(call("call_bad", "echo", `not json`)),
+		textResp("recovered"),
+	}}
+	e := engine.New(engine.EngineConfig{Client: fc})
+
+	var events []engine.Event
+	final, err := e.RunTurn(context.Background(), "go", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if final != "recovered" {
+		t.Errorf("final = %q, want %q", final, "recovered")
+	}
+
+	if len(fc.requests) != 2 {
+		t.Fatalf("API calls = %d, want 2", len(fc.requests))
+	}
+	toolMsg := fc.requests[1].Messages[2]
+	if toolMsg.Role != llm.RoleTool || toolMsg.ToolCallID != "call_bad" {
+		t.Errorf("tool result message = %+v, want role tool with tool_call_id call_bad", toolMsg)
+	}
+
+	var failed []engine.Event
+	for _, ev := range events {
+		if ev.Kind == engine.EventToolResult && ev.Failed {
+			failed = append(failed, ev)
+		}
+	}
+	if len(failed) != 1 || failed[0].Name != "echo" {
+		t.Errorf("failed tool result events = %+v, want one for echo", failed)
+	}
+}
+
 func TestRunTurnTooManyTurns(t *testing.T) {
 	t.Parallel()
 
@@ -381,6 +424,47 @@ func TestHistoryDefensiveCopy(t *testing.T) {
 	}
 	if again[0].Content == "tampered" {
 		t.Error("History() returns a reference to internal state, want a copy")
+	}
+}
+
+func TestRunTurnAbortedTurnRepairsHistory(t *testing.T) {
+	t.Parallel()
+
+	requireShell(t)
+
+	r, _ := toolRegistry(t)
+	// First response makes two tool calls, then the fake client errors as
+	// if the turn was cancelled mid-tool-loop.
+	fc := &fakeClient{
+		responses: []llm.Response{
+			toolCallResp(
+				call("call_a", "echo", `{"n":1}`),
+				call("call_b", "echo", `{"n":2}`),
+			),
+		},
+		err: context.Canceled,
+	}
+	e := engine.New(engine.EngineConfig{Client: fc, Tools: r})
+
+	if _, err := e.RunTurn(context.Background(), "go", func(engine.Event) error { return nil }); err == nil {
+		t.Fatal("RunTurn succeeded, want the injected error")
+	}
+
+	// The second call failed, so only one tool result was recorded. The
+	// repair pass must have backfilled the missing one so the next
+	// request's message sequence is protocol-valid.
+	h := e.History()
+	var toolResults []llm.Message
+	for _, m := range h {
+		if m.Role == llm.RoleTool {
+			toolResults = append(toolResults, m)
+		}
+	}
+	if len(toolResults) != 2 {
+		t.Fatalf("tool result messages after repair = %d, want 2", len(toolResults))
+	}
+	if toolResults[0].ToolCallID != "call_a" || toolResults[1].ToolCallID != "call_b" {
+		t.Errorf("tool result ids = [%s %s], want [call_a call_b]", toolResults[0].ToolCallID, toolResults[1].ToolCallID)
 	}
 }
 

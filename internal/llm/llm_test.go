@@ -30,6 +30,10 @@ func TestMessageMarshalJSON(t *testing.T) {
 			msg:  llm.NewTextMessage(llm.RoleAssistant, "hi there"),
 			want: `{"role":"assistant","content":"hi there"}`,
 		},
+		// The neutral shape is deliberately NOT the OpenAI wire shape:
+		// tool call fields are flat rather than nested under "function".
+		// Wire conversion is the openai package's responsibility and is
+		// tested there against literal wire JSON.
 		{
 			name: "assistant with tool calls",
 			msg: llm.Message{
