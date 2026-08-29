@@ -8,6 +8,10 @@ Adds streaming of LLM responses over Server-Sent Events (SSE), from the OpenAI-c
 - [x] Commit 2: OpenAI streaming client
 - [x] Commit 3: Engine streaming
 - [x] Commit 4: Chat UI and CLI
+- [ ] Commit 5: Cap reasoning and tool-call argument accumulation
+- [ ] Commit 6: Carry tool-call index through delta events
+- [ ] Commit 7: Harden ChatStream non-2xx and empty-stream handling
+- [ ] Commit 8: Fix stale docs and update README
 
 ---
 
@@ -58,5 +62,45 @@ Adds streaming of LLM responses over Server-Sent Events (SSE), from the OpenAI-c
 > - In `main.go`, add a `--no-stream` bool flag to `chatCommand` (usage: "Disable streaming of assistant responses") and pass `Stream: !cmd.Bool("no-stream")` to `chat.Options`, so streaming is on by default and disabled by the flag.
 >
 > Tests: in `internal/chat/chat_test.go`, drive `Run` with a streaming fake client and assert the assistant text appears on stdout (heading once, deltas concatenated, trailing newline flushed); assert reasoning deltas appear under a `>>> Assistant (thinking):` heading; assert tool-call deltas appear on stderr under a `>>> Tool:` heading; assert that with `Stream: false` the whole-message path is used; assert tool results still land on stderr after a streamed turn. In `main_test.go`, assert `chatCommand` has a `no-stream` bool flag defaulting to false.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 5: Cap reasoning and tool-call argument accumulation
+
+> In `internal/llm/openai/openai.go`, the stream accumulator caps accumulated `content` at `maxContentLen` but leaves `reasoning` and tool-call `arguments` unbounded, so a runaway or buggy server streaming endless `reasoning_content` or argument fragments can exhaust memory. Apply the same cap to both:
+>
+> - In `streamAccumulator.addDelta`, before appending a `reasoning` fragment, check `a.reasoning.Len()+len(delta.Reasoning) > maxContentLen` and return the same "exceeds %d byte limit" error used for content.
+> - When appending a tool-call `arguments` fragment (both the first-fragment construction and the `tc.Function.Arguments += wtd.Function.Arguments` merge), check the accumulated length against `maxContentLen` and return the same error. Track the running length per tool call (e.g. a `map[int]int` of accumulated argument bytes, or check `len(tc.Function.Arguments)` before appending).
+>
+> Tests in `internal/llm/openai/openai_test.go`: a server streaming reasoning fragments that exceed the cap returns a limit error; a server streaming tool-call argument fragments that exceed the cap returns a limit error. No other packages change.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 6: Carry tool-call index through delta events
+
+> The engine's `streamCall` maps `llm.ToolCallDelta` to `Event{Name, Args}` and drops `Index`, so the chat UI keys its "already printed" map by tool name and collapses a second call to the same tool in one round (the whole-message path prints both). Carry the index through so each tool call renders its own heading:
+>
+> - In `internal/engine/engine.go`, add an `Index int` field to `Event` (documented: set for `EventToolCallDelta`, the 0-based tool-call index from `llm.ToolCallDelta.Index`). In `streamCall`, set `Index: d.ToolCall.Index` on the `EventToolCallDelta` event.
+> - In `internal/chat/chat.go`, key the `toolHeadings` map by index instead of name: `toolHeadings[ev.Index]` (or a `map[int]bool`), so two calls to the same tool in one round each print a `>>> Tool: <name>` heading. Keep the heading text as `>>> Tool: <name>`.
+>
+> Tests: in `internal/engine/engine_test.go`, assert `EventToolCallDelta` events carry the correct `Index` for a multi-tool-call response. In `internal/chat/chat_test.go`, add a case where the model calls the same tool twice in one round and assert both `>>> Tool:` headings appear. No other packages change.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 7: Harden ChatStream non-2xx and empty-stream handling
+
+> In `internal/llm/openai/openai.go`, make `ChatStream`'s error and edge-case handling consistent with `Chat`:
+>
+> - In the non-2xx branch, after `io.ReadAll(io.LimitReader(...))`, flag the `len == maxBodyLen` overflow the way `Chat` does (return "response exceeds %d byte limit") instead of silently truncating.
+> - In `readStream`, after the scan loop, if no `data:` chunk was ever parsed (i.e. the accumulator saw zero deltas and no `[DONE]`), return a descriptive error (e.g. "decode response: no data in stream") rather than returning an empty `Response` that the engine would treat as a silent empty final answer. Track a `sawData bool` set on the first parsed chunk.
+>
+> Tests in `internal/llm/openai/openai_test.go`: a 200 response with an empty body (or only comments/blank lines) returns a "no data" error; a non-2xx response whose body exceeds the cap returns a limit error. No other packages change.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 8: Fix stale docs and update README
+
+> - In `internal/engine/engine.go`, update the `Event` doc comment (currently "Text is set for EventAssistantText and EventAssistantThinking; Name and Args for EventToolCall; Name, Output and Failed for EventToolResult") to also cover the three delta kinds: `EventAssistantTextDelta`/`EventAssistantThinkingDelta` carry `Text`, and `EventToolCallDelta` carries `Name`, `Args`, and `Index`.
+> - In `README.md`, document streaming: add a bullet to the Features list (streamed assistant responses over SSE, with `--no-stream` to disable), and update the Chat flags line to include `--no-stream`. Update the layout section's `internal/llm/openai` description to mention SSE streaming if appropriate.
 >
 > Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
