@@ -2,7 +2,7 @@ We're building Blorb, a single-binary tool for making AI agents. It lets a user 
 
 We use mise to setup and manage the development environment.
 
-It is built in Go, with as few dependencies as possible. Everything has unit tests, and we aim for comprehensive test coverage. We are currently using Go 1.2.7 and we use the latest features where we can; we like generics. Errors are always checked and handled - the only exception being best-effort logging where it wouldn't make sense to stop operation due to an IO failure.
+It is built in Go, with as few dependencies as possible. Everything has unit tests, and we aim for comprehensive test coverage. We are currently using Go 1.27.0 and we use the latest features where we can; we like generics. Errors are always checked and handled - the only exception being best-effort logging where it wouldn't make sense to stop operation due to an IO failure.
 
 We work in git, and we only commit or push when the user explicitly asks.
 
