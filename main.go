@@ -68,7 +68,6 @@ func chatCommand() *cli.Command {
 				Version: cmd.Root().Version,
 				Stdin:   os.Stdin,
 				Stdout:  os.Stdout,
-				Stderr:  os.Stderr,
 				Stream:  !cmd.Bool("no-stream"),
 			})
 			if err != nil {

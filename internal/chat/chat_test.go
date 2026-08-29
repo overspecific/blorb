@@ -32,34 +32,32 @@ func (f *fakeClient) Chat(_ context.Context, req llm.Request) (*llm.Response, er
 	return &resp, nil
 }
 
-func newTestOptions(cfg config.Config, input string, responses ...llm.Response) (chat.Options, *syncBuffer, *syncBuffer) {
-	var stdout, stderr syncBuffer
+func newTestOptions(cfg config.Config, input string, responses ...llm.Response) (chat.Options, *syncBuffer) {
+	var stdout syncBuffer
 	o := chat.Options{
 		Config:  cfg,
 		Version: "test",
 		Stdin:   strings.NewReader(input),
 		Stdout:  &stdout,
-		Stderr:  &stderr,
 		NewClient: func(config.Config) (llm.Client, error) {
 			return &fakeClient{responses: responses}, nil
 		},
 	}
-	return o, &stdout, &stderr
+	return o, &stdout
 }
 
-func newStreamingTestOptions(cfg config.Config, input string, responses ...llm.Response) (chat.Options, *syncBuffer, *syncBuffer) {
-	var stdout, stderr syncBuffer
+func newStreamingTestOptions(cfg config.Config, input string, responses ...llm.Response) (chat.Options, *syncBuffer) {
+	var stdout syncBuffer
 	o := chat.Options{
 		Config:  cfg,
 		Version: "test",
 		Stdin:   strings.NewReader(input),
 		Stdout:  &stdout,
-		Stderr:  &stderr,
 		NewClient: func(config.Config) (llm.Client, error) {
 			return &streamingFakeClient{responses: responses}, nil
 		},
 	}
-	return o, &stdout, &stderr
+	return o, &stdout
 }
 
 // streamingFakeClient breaks each canned response into a single delta per
@@ -116,7 +114,7 @@ func TestRunPlainReplySession(t *testing.T) {
 	t.Parallel()
 
 	cfg := minimalConfig()
-	o, stdout, stderr := newTestOptions(cfg, "hello there\nexit\n",
+	o, stdout := newTestOptions(cfg, "hello there\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 	)
 
@@ -129,16 +127,12 @@ func TestRunPlainReplySession(t *testing.T) {
 	if !strings.Contains(out, ">>> Assistant:\nhi!") {
 		t.Errorf("stdout = %q, want the reply under a >>> Assistant heading", out)
 	}
-	errOut := stderr.String()
-	if !strings.Contains(errOut, "tester") || !strings.Contains(errOut, "gpt-test") {
-		t.Errorf("stderr = %q, want a banner naming agent and model", errOut)
+	if !strings.Contains(out, "tester") || !strings.Contains(out, "gpt-test") {
+		t.Errorf("stdout = %q, want a banner naming agent and model", out)
 	}
 	// Heading prints before reading: initially, and again after the turn.
-	if strings.Count(errOut, ">>> User:\n") != 2 {
-		t.Errorf("stderr = %q, want a >>> User heading before each read (2 total)", errOut)
-	}
-	if strings.Contains(out, "blorb") {
-		t.Errorf("stdout = %q, want no banner on stdout", out)
+	if strings.Count(out, ">>> User:\n") != 2 {
+		t.Errorf("stdout = %q, want a >>> User heading before each read (2 total)", out)
 	}
 }
 
@@ -153,7 +147,7 @@ func TestRunThinkingDisplayedOnStdout(t *testing.T) {
 		},
 		FinishReason: llm.FinishStop,
 	}
-	o, stdout, _ := newTestOptions(minimalConfig(), "why?\nexit\n", thinkingResp)
+	o, stdout := newTestOptions(minimalConfig(), "why?\nexit\n", thinkingResp)
 
 	if err := chat.Run(context.Background(), o); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
@@ -171,7 +165,7 @@ func TestRunThinkingDisplayedOnStdout(t *testing.T) {
 func TestRunStreamedAssistantTextOnStdout(t *testing.T) {
 	t.Parallel()
 
-	o, stdout, _ := newStreamingTestOptions(minimalConfig(), "hello\nexit\n",
+	o, stdout := newStreamingTestOptions(minimalConfig(), "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "streamed!"), FinishReason: llm.FinishStop},
 	)
 	o.Stream = true
@@ -202,7 +196,7 @@ func TestRunStreamedThinkingOnStdout(t *testing.T) {
 		},
 		FinishReason: llm.FinishStop,
 	}
-	o, stdout, _ := newStreamingTestOptions(minimalConfig(), "why?\nexit\n", thinkingResp)
+	o, stdout := newStreamingTestOptions(minimalConfig(), "why?\nexit\n", thinkingResp)
 	o.Stream = true
 
 	if err := chat.Run(context.Background(), o); err != nil {
@@ -221,7 +215,7 @@ func TestRunStreamedThinkingOnStdout(t *testing.T) {
 	}
 }
 
-func TestRunStreamedToolCallDeltasOnStderr(t *testing.T) {
+func TestRunStreamedToolCallDeltas(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -243,7 +237,7 @@ func TestRunStreamedToolCallDeltasOnStderr(t *testing.T) {
 		},
 		FinishReason: llm.FinishToolCalls,
 	}
-	o, stdout, stderr := newStreamingTestOptions(cfg, "run it\nexit\n",
+	o, stdout := newStreamingTestOptions(cfg, "run it\nexit\n",
 		toolCallResp,
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "done"), FinishReason: llm.FinishStop},
 	)
@@ -253,28 +247,28 @@ func TestRunStreamedToolCallDeltasOnStderr(t *testing.T) {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 
-	errOut := stderr.String()
-	if !strings.Contains(errOut, ">>> Tool: touch") {
-		t.Errorf("stderr = %q, want a tool heading for touch", errOut)
+	out := stdout.String()
+	if !strings.Contains(out, ">>> Tool: touch") {
+		t.Errorf("stdout = %q, want a tool heading for touch", out)
 	}
-	if strings.Count(errOut, ">>> Tool: touch") != 1 {
-		t.Errorf("stderr = %q, want the streamed fragments to render the tool heading exactly once", errOut)
+	if strings.Count(out, ">>> Tool: touch") != 1 {
+		t.Errorf("stdout = %q, want the streamed fragments to render the tool heading exactly once", out)
 	}
-	if !strings.Contains(errOut, "{}") {
-		t.Errorf("stderr = %q, want the arguments fragment", errOut)
+	if !strings.Contains(out, "{}") {
+		t.Errorf("stdout = %q, want the arguments fragment", out)
 	}
-	// The streamed arguments leave stderr mid-line; the following tool
+	// The streamed arguments leave the stream mid-line; the following tool
 	// result block must terminate the partial line first so its heading
 	// starts on a fresh line, keeping the blank-line separators consistent.
-	if strings.Count(errOut, "\n\n>>> Result: Tool: touch") != 1 {
-		t.Errorf("stderr = %q, want a blank line between the arguments and the result heading", errOut)
+	if strings.Count(out, "\n\n>>> Result: Tool: touch") != 1 {
+		t.Errorf("stdout = %q, want a blank line between the arguments and the result heading", out)
 	}
-	// Tool results still land on stderr after the streamed turn.
-	if strings.Contains(stdout.String(), ">>> Tool:") {
-		t.Errorf("stdout = %q, want no tool activity on stdout", stdout.String())
+	// Tool results are rendered after the streamed turn.
+	if !strings.Contains(out, ">>> Result: Tool: touch") {
+		t.Errorf("stdout = %q, want the tool result heading", out)
 	}
-	if !strings.Contains(stdout.String(), ">>> Assistant:\ndone\n") {
-		t.Errorf("stdout = %q, want the final streamed text", stdout.String())
+	if !strings.Contains(out, ">>> Assistant:\ndone\n") {
+		t.Errorf("stdout = %q, want the final streamed text", out)
 	}
 }
 
@@ -314,7 +308,7 @@ func TestRunStreamedToolRoundsRenderPerRoundHeadings(t *testing.T) {
 		},
 		FinishReason: llm.FinishStop,
 	}
-	o, stdout, _ := newStreamingTestOptions(cfg, "run it\nexit\n", toolCallResp, finalResp)
+	o, stdout := newStreamingTestOptions(cfg, "run it\nexit\n", toolCallResp, finalResp)
 	o.Stream = true
 
 	if err := chat.Run(context.Background(), o); err != nil {
@@ -335,16 +329,16 @@ func TestRunStreamedToolRoundsRenderPerRoundHeadings(t *testing.T) {
 	if !strings.Contains(out, ">>> Assistant:\nfinal answer\n") {
 		t.Errorf("stdout = %q, want the final round streamed under a heading", out)
 	}
-	// Tool result activity stays on stderr.
-	if strings.Contains(out, ">>> Result:") {
-		t.Errorf("stdout = %q, want tool results on stderr", out)
+	// The tool result block renders between the two rounds on stdout.
+	if strings.Count(out, ">>> Result: Tool: touch") != 1 {
+		t.Errorf("stdout = %q, want the tool result block on stdout", out)
 	}
 }
 
 func TestRunStreamOffUsesWholeMessagePath(t *testing.T) {
 	t.Parallel()
 
-	o, stdout, _ := newStreamingTestOptions(minimalConfig(), "hello\nexit\n",
+	o, stdout := newStreamingTestOptions(minimalConfig(), "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "whole"), FinishReason: llm.FinishStop},
 	)
 	o.Stream = false
@@ -362,17 +356,17 @@ func TestRunStreamedTurnErrorStillFlushes(t *testing.T) {
 	t.Parallel()
 
 	// A turn that fails after streaming some text must still flush the
-	// trailing newline, and the error lands on stderr.
-	o, stdout, stderr := newStreamingTestOptions(minimalConfig(), "hello\nexit\n")
+	// trailing newline, and the error lands on stdout.
+	o, stdout := newStreamingTestOptions(minimalConfig(), "hello\nexit\n")
 	o.Stream = true
 
 	if err := chat.Run(context.Background(), o); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
-	if !strings.Contains(stderr.String(), "error:") {
-		t.Errorf("stderr = %q, want a turn error", stderr.String())
-	}
 	out := stdout.String()
+	if !strings.Contains(out, "error:") {
+		t.Errorf("stdout = %q, want a turn error", out)
+	}
 	if strings.Contains(out, ">>> Assistant:") {
 		// Heading printed, then the stream failed: a trailing newline must
 		// still have been flushed by the callback's flush function.
@@ -385,7 +379,7 @@ func TestRunStreamedTurnErrorStillFlushes(t *testing.T) {
 func TestRunExitCommand(t *testing.T) {
 	t.Parallel()
 
-	o, stdout, _ := newTestOptions(minimalConfig(), "hi\nquit\n",
+	o, stdout := newTestOptions(minimalConfig(), "hi\nquit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "reply"), FinishReason: llm.FinishStop},
 	)
 
@@ -400,7 +394,7 @@ func TestRunExitCommand(t *testing.T) {
 func TestRunEOF(t *testing.T) {
 	t.Parallel()
 
-	o, _, _ := newTestOptions(minimalConfig(), "")
+	o, _ := newTestOptions(minimalConfig(), "")
 
 	if err := chat.Run(context.Background(), o); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
@@ -412,14 +406,14 @@ func TestRunEmptyLinesIgnored(t *testing.T) {
 
 	// Whitespace lines produce no API calls; the fake has no responses, so
 	// any turn would fail the run.
-	o, _, _ := newTestOptions(minimalConfig(), "   \n\t\nexit\n")
+	o, _ := newTestOptions(minimalConfig(), "   \n\t\nexit\n")
 
 	if err := chat.Run(context.Background(), o); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 }
 
-func TestRunToolEventsOnStderr(t *testing.T) {
+func TestRunToolEventsOnStdout(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -445,7 +439,7 @@ func TestRunToolEventsOnStderr(t *testing.T) {
 		FinishReason: llm.FinishToolCalls,
 	}
 
-	o, stdout, stderr := newTestOptions(cfg, "make the marker\nexit\n",
+	o, stdout := newTestOptions(cfg, "make the marker\nexit\n",
 		toolCallResp,
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "made it"), FinishReason: llm.FinishStop},
 	)
@@ -454,18 +448,15 @@ func TestRunToolEventsOnStderr(t *testing.T) {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 
-	errOut := stderr.String()
-	if !strings.Contains(errOut, ">>> Tool: write_marker") {
-		t.Errorf("stderr = %q, want a tool call heading", errOut)
+	out := stdout.String()
+	if !strings.Contains(out, ">>> Tool: write_marker") {
+		t.Errorf("stdout = %q, want a tool call heading", out)
 	}
-	if !strings.Contains(errOut, ">>> Result: Tool: write_marker") {
-		t.Errorf("stderr = %q, want a tool result heading", errOut)
+	if !strings.Contains(out, ">>> Result: Tool: write_marker") {
+		t.Errorf("stdout = %q, want a tool result heading", out)
 	}
-	if strings.Contains(stdout.String(), "write_marker") {
-		t.Errorf("stdout = %q, want tool activity only on stderr", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), ">>> Assistant:\nmade it") {
-		t.Errorf("stdout = %q, want the final text under a >>> Assistant heading", stdout.String())
+	if !strings.Contains(out, ">>> Assistant:\nmade it") {
+		t.Errorf("stdout = %q, want the final text under a >>> Assistant heading", out)
 	}
 }
 
@@ -475,7 +466,7 @@ func TestRunStartupErrors(t *testing.T) {
 	t.Run("client construction failure", func(t *testing.T) {
 		t.Parallel()
 
-		o, _, _ := newTestOptions(minimalConfig(), "hello\n")
+		o, _ := newTestOptions(minimalConfig(), "hello\n")
 		o.NewClient = func(config.Config) (llm.Client, error) {
 			return nil, errors.New("no provider available")
 		}
@@ -494,7 +485,7 @@ func TestRunStartupErrors(t *testing.T) {
 			Name: "bad", Description: "Bad tool.", Command: []string{},
 		}}
 
-		o, _, _ := newTestOptions(cfg, "hello\n")
+		o, _ := newTestOptions(cfg, "hello\n")
 
 		err := chat.Run(context.Background(), o)
 		if err == nil || !strings.Contains(err.Error(), "build tools") {
@@ -507,18 +498,18 @@ func TestRunTurnErrorKeepsSessionAlive(t *testing.T) {
 	t.Parallel()
 
 	// The fake has no responses: the first turn fails, the next exits.
-	o, _, stderr := newTestOptions(minimalConfig(), "hello\nexit\n")
+	o, stdout := newTestOptions(minimalConfig(), "hello\nexit\n")
 
 	err := chat.Run(context.Background(), o)
 	if err != nil {
 		t.Fatalf("Run error = %v, want nil (turn errors must not end the session)", err)
 	}
-	errOut := stderr.String()
-	if !strings.Contains(errOut, "error:") || !strings.Contains(errOut, "no more canned responses") {
-		t.Errorf("stderr = %q, want the turn error printed", errOut)
+	out := stdout.String()
+	if !strings.Contains(out, "error:") || !strings.Contains(out, "no more canned responses") {
+		t.Errorf("stdout = %q, want the turn error printed", out)
 	}
-	if strings.Contains(errOut, "(interrupted)") {
-		t.Errorf("stderr = %q, want no (interrupted) marker for a plain failure", errOut)
+	if strings.Contains(out, "(interrupted)") {
+		t.Errorf("stdout = %q, want no (interrupted) marker for a plain failure", out)
 	}
 }
 
@@ -531,13 +522,12 @@ func TestRunSigintDuringTurnInterruptsTurnOnly(t *testing.T) {
 	// A client that blocks until its context is cancelled, i.e. an
 	// in-flight request cut short by the interrupt.
 	client := &blockingClient{started: make(chan struct{})}
-	var stdout, stderr strings.Builder
+	var stdout strings.Builder
 	o := chat.Options{
 		Config:  cfg,
 		Version: "test",
 		Stdin:   strings.NewReader("start a long turn\nexit\n"),
 		Stdout:  &stdout,
-		Stderr:  &stderr,
 		NewClient: func(config.Config) (llm.Client, error) {
 			return client, nil
 		},
@@ -559,8 +549,8 @@ func TestRunSigintDuringTurnInterruptsTurnOnly(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after interrupt")
 	}
-	if !strings.Contains(stderr.String(), "(interrupted)") {
-		t.Errorf("stderr = %q, want the interrupted marker", stderr.String())
+	if !strings.Contains(stdout.String(), "(interrupted)") {
+		t.Errorf("stdout = %q, want the interrupted marker", stdout.String())
 	}
 	if client.cancelledWith() == context.Background() || client.cancelledWith() == nil {
 		t.Error("turn context was not cancelled by the interrupt")
@@ -571,7 +561,7 @@ func TestRunSigintWhileIdleExits(t *testing.T) {
 	t.Parallel()
 
 	sigs := make(chan os.Signal, 1)
-	o, _, stderr := newTestOptions(minimalConfig(), "")
+	o, stdout := newTestOptions(minimalConfig(), "")
 	o.SigintChan = sigs
 
 	runErr := make(chan error, 1)
@@ -579,7 +569,7 @@ func TestRunSigintWhileIdleExits(t *testing.T) {
 
 	// Wait for the banner, which Run prints right before entering the read
 	// loop, instead of sleeping a fixed interval.
-	awaitBanner(t, stderr)
+	awaitBanner(t, stdout)
 	sigs <- syscall.SIGINT
 
 	select {
@@ -592,17 +582,17 @@ func TestRunSigintWhileIdleExits(t *testing.T) {
 	}
 }
 
-// awaitBanner waits until the stderr builder contains the banner text.
-func awaitBanner(t *testing.T, stderr *syncBuffer) {
+// awaitBanner waits until the stdout buffer contains the banner text.
+func awaitBanner(t *testing.T, stdout *syncBuffer) {
 	t.Helper()
 	deadline := time.After(2 * time.Second)
 	for {
-		if strings.Contains(stderr.String(), "blorb") {
+		if strings.Contains(stdout.String(), "blorb") {
 			return
 		}
 		select {
 		case <-deadline:
-			t.Fatal("banner never appeared on stderr")
+			t.Fatal("banner never appeared on stdout")
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
@@ -637,13 +627,12 @@ func TestRunInterruptedTurnThenSuccessKeepsSession(t *testing.T) {
 
 	// First turn blocks until interrupted; second turn succeeds.
 	client := &blockingClient{started: make(chan struct{})}
-	var stdout, stderr strings.Builder
+	var stdout strings.Builder
 	o := chat.Options{
 		Config:  cfg,
 		Version: "test",
 		Stdin:   strings.NewReader("start a long turn\ntry again\nexit\n"),
 		Stdout:  &stdout,
-		Stderr:  &stderr,
 		NewClient: func(config.Config) (llm.Client, error) {
 			return &sequencedClient{first: client, rest: &fakeClient{
 				responses: []llm.Response{
@@ -671,8 +660,8 @@ func TestRunInterruptedTurnThenSuccessKeepsSession(t *testing.T) {
 		t.Fatal("Run did not return; session likely exited after the interrupted turn")
 	}
 
-	if !strings.Contains(stderr.String(), "(interrupted)") {
-		t.Errorf("stderr = %q, want the interrupted marker", stderr.String())
+	if !strings.Contains(stdout.String(), "(interrupted)") {
+		t.Errorf("stdout = %q, want the interrupted marker", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "second try worked") {
 		t.Errorf("stdout = %q, want the follow-up turn to run and reply", stdout.String())
@@ -788,7 +777,6 @@ func TestRunUsesInjectedGetenv(t *testing.T) {
 		Version: "test",
 		Stdin:   strings.NewReader("hi\n"),
 		Stdout:  &strings.Builder{},
-		Stderr:  &strings.Builder{},
 		Getenv:  func(string) string { return "" },
 	}
 
@@ -809,13 +797,12 @@ func TestRunInjectedGetenvResolvesKey(t *testing.T) {
 	cfg := minimalConfig()
 	cfg.Provider.APIKeyEnv = ptr("INJECTED_ENV_VAR")
 
-	var stderr strings.Builder
+	var stdout strings.Builder
 	o := chat.Options{
 		Config:  cfg,
 		Version: "test",
 		Stdin:   strings.NewReader("hi\nexit\n"),
-		Stdout:  &strings.Builder{},
-		Stderr:  &stderr,
+		Stdout:  &stdout,
 		Getenv: func(key string) string {
 			if key == "INJECTED_ENV_VAR" {
 				return "injected-key"
@@ -828,12 +815,12 @@ func TestRunInjectedGetenvResolvesKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run error = %v, want nil (turn errors keep the session alive)", err)
 	}
-	errOut := stderr.String()
-	if strings.Contains(errOut, "api_key_env") {
-		t.Errorf("stderr = %q, want no env resolution failure (key was injected)", errOut)
+	out := stdout.String()
+	if strings.Contains(out, "api_key_env") {
+		t.Errorf("stdout = %q, want no env resolution failure (key was injected)", out)
 	}
-	if !strings.Contains(errOut, "connection refused") {
-		t.Errorf("stderr = %q, want a connect error proving the turn ran past env resolution", errOut)
+	if !strings.Contains(out, "connection refused") {
+		t.Errorf("stdout = %q, want a connect error proving the turn ran past env resolution", out)
 	}
 }
 
@@ -848,13 +835,12 @@ func TestRunLongLineDeliveredAsOneTurn(t *testing.T) {
 	fc := &fakeClient{responses: []llm.Response{
 		{Message: llm.NewTextMessage(llm.RoleAssistant, "ok"), FinishReason: llm.FinishStop},
 	}}
-	var stdout, stderr strings.Builder
+	var stdout strings.Builder
 	o := chat.Options{
 		Config:  cfg,
 		Version: "test",
 		Stdin:   strings.NewReader(long + "\nexit\n"),
 		Stdout:  &stdout,
-		Stderr:  &stderr,
 		NewClient: func(config.Config) (llm.Client, error) {
 			return fc, nil
 		},

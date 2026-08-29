@@ -25,7 +25,6 @@ type Options struct {
 	Version    string
 	Stdin      io.Reader
 	Stdout     io.Writer
-	Stderr     io.Writer
 	NewClient  func(cfg config.Config) (llm.Client, error)
 	SigintChan <-chan os.Signal
 	// Getenv overrides the environment lookup used to resolve
@@ -39,7 +38,7 @@ type Options struct {
 
 // Run drives one interactive chat session. It returns nil on graceful exit
 // (exit/quit, EOF, or SIGINT when no turn is in flight) and an error on
-// startup failures. Turn failures are printed to stderr and keep the
+// startup failures. Turn failures are printed to stdout and keep the
 // session alive. SIGINT during a turn cancels just that turn.
 func Run(ctx context.Context, opts Options) error {
 	client, err := opts.newClient()
@@ -138,7 +137,7 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
-	fmt.Fprintf(opts.Stderr, "blorb %s (%s, %s)\n", opts.Version, opts.Config.Name, opts.Config.Provider.Model)
+	fmt.Fprintf(opts.Stdout, "blorb %s (%s, %s)\n", opts.Version, opts.Config.Name, opts.Config.Provider.Model)
 
 	input := make(chan inputResult, 1)
 	go readLines(opts.Stdin, input, done)
@@ -146,7 +145,7 @@ func Run(ctx context.Context, opts Options) error {
 	needHeading := true
 	for {
 		if needHeading {
-			fmt.Fprint(opts.Stderr, "\n>>> User:\n")
+			fmt.Fprint(opts.Stdout, "\n>>> User:\n")
 			needHeading = false
 		}
 		select {
@@ -176,7 +175,7 @@ func Run(ctx context.Context, opts Options) error {
 			turnCtx, cancel := context.WithCancel(ctx)
 			setTurn(cancel)
 
-			onEvent, flush := chatEvents(opts.Stdout, opts.Stderr)
+			onEvent, flush := chatEvents(opts.Stdout)
 			_, runErr := eng.RunTurn(turnCtx, r.line, onEvent)
 			flush()
 
@@ -193,10 +192,10 @@ func Run(ctx context.Context, opts Options) error {
 				continue
 			}
 			if interrupted && turnCtx.Err() != nil {
-				fmt.Fprintln(opts.Stderr, "(interrupted)")
+				fmt.Fprintln(opts.Stdout, "(interrupted)")
 				continue
 			}
-			fmt.Fprintf(opts.Stderr, "error: %v\n", runErr)
+			fmt.Fprintf(opts.Stdout, "error: %v\n", runErr)
 		}
 	}
 }
@@ -238,46 +237,41 @@ func readLines(r io.Reader, out chan<- inputResult, done <-chan struct{}) {
 	close(out)
 }
 
-// chatEvents returns the event callback plus a flush function. The callback
-// renders assistant text under a ">>> Assistant:" heading and tool activity
-// as heading blocks on stderr; the flush function writes the trailing
-// newline after streamed delta output. Delta events (streaming) write
-// fragments without trailing newlines; the whole-message events write
-// complete blocks.
-func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
+// chatEvents returns the event callback plus a flush function. All output
+// goes to stdout: assistant text under a ">>> Assistant:" heading, tool
+// activity as heading blocks, and streamed fragments written inline. The
+// flush function terminates any partial streamed line after the turn.
+// Streamed fragments are written without a trailing newline; whole-message
+// events write complete blocks.
+func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
 	var (
 		printedHeading   bool
 		printedThinking  bool
 		streamedToolCall bool
 		toolHeadings     = map[string]bool{}
-		// partialStdout/partialStderr track whether streamed fragments
-		// left the respective stream mid-line, so the next block can
-		// terminate the line first and keep blank-line separators
-		// consistent.
-		partialStdout bool
-		partialStderr bool
+		// partialLine tracks whether a streamed fragment left the output
+		// mid-line, so the next block can terminate the line first and
+		// keep blank-line separators consistent.
+		partialLine bool
 	)
 
-	endStdoutLine := func() {
-		if partialStdout {
-			fmt.Fprint(stdout, "\n")
-			partialStdout = false
-		}
-	}
-
-	// endStderrLine terminates a partial stderr line (streamed tool
-	// arguments) so a following block heading starts on a fresh line; the
-	// heading's own leading newline then provides the blank separator.
-	endStderrLine := func() {
-		if partialStderr {
-			fmt.Fprint(stderr, "\n")
-			partialStderr = false
+	endLine := func() {
+		if partialLine {
+			fmt.Fprint(out, "\n")
+			partialLine = false
 		}
 	}
 
 	writeDelta := func(fragment string) {
-		fmt.Fprint(stdout, fragment)
-		partialStdout = !strings.HasSuffix(fragment, "\n")
+		fmt.Fprint(out, fragment)
+		partialLine = !strings.HasSuffix(fragment, "\n")
+	}
+
+	// heading writes a block heading, terminating any partial line first
+	// and prefixing a blank line so blocks are consistently separated.
+	heading := func(text string) {
+		endLine()
+		fmt.Fprintf(out, "\n%s\n", text)
 	}
 
 	// startRound resets per-round heading state: streamed fragments print
@@ -293,24 +287,20 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 	onEvent := func(ev engine.Event) error {
 		switch ev.Kind {
 		case engine.EventAssistantThinking:
-			fmt.Fprintf(stdout, "\n>>> Assistant (thinking):\n%s\n", ev.Text)
+			heading(">>> Assistant (thinking):")
+			fmt.Fprintln(out, ev.Text)
 		case engine.EventAssistantText:
-			if !printedHeading {
-				fmt.Fprintln(stdout, "\n>>> Assistant:")
-				printedHeading = true
-			}
-			fmt.Fprintln(stdout, ev.Text)
+			heading(">>> Assistant:")
+			fmt.Fprintln(out, ev.Text)
 		case engine.EventAssistantThinkingDelta:
 			if !printedThinking {
-				endStdoutLine()
-				fmt.Fprint(stdout, "\n>>> Assistant (thinking):\n")
+				heading(">>> Assistant (thinking):")
 				printedThinking = true
 			}
 			writeDelta(ev.Text)
 		case engine.EventAssistantTextDelta:
 			if !printedHeading {
-				endStdoutLine()
-				fmt.Fprintln(stdout, "\n>>> Assistant:")
+				heading(">>> Assistant:")
 				printedHeading = true
 			}
 			writeDelta(ev.Text)
@@ -318,37 +308,32 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 			if ev.Name != "" && !toolHeadings[ev.Name] {
 				toolHeadings[ev.Name] = true
 				streamedToolCall = true
-				endStdoutLine()
-				fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
+				heading(">>> Tool: " + ev.Name)
 			}
-			fmt.Fprint(stderr, ev.Args)
-			partialStderr = !strings.HasSuffix(ev.Args, "\n")
+			fmt.Fprint(out, ev.Args)
+			partialLine = !strings.HasSuffix(ev.Args, "\n")
 		case engine.EventToolCall:
 			// In streaming mode the fragments already rendered this call;
 			// skip the whole-message block to avoid printing it twice.
 			if !streamedToolCall {
-				fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
-				fmt.Fprintln(stderr, ev.Args)
+				heading(">>> Tool: " + ev.Name)
+				fmt.Fprintln(out, ev.Args)
 			}
 		case engine.EventToolResult:
-			// Terminate any partial line on either stream before writing
-			// the result block.
-			endStdoutLine()
-			endStderrLine()
 			marker := "Result:"
 			if ev.Failed {
 				marker = "Error:"
 			}
-			fmt.Fprintf(stderr, "\n>>> %s Tool: %s\n%s\n", marker, ev.Name, ev.Output)
+			heading(">>> " + marker + " Tool: " + ev.Name)
+			fmt.Fprintln(out, ev.Output)
+			// A tool result marks the end of an assistant round: the next
+			// response starts a fresh set of heading blocks.
 			startRound()
 		}
 		return nil
 	}
 
-	flush := func() {
-		endStdoutLine()
-		endStderrLine()
-	}
+	flush := endLine
 
 	return onEvent, flush
 }
