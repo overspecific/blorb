@@ -70,7 +70,7 @@ Commands:
 ./blorb chat --config examples/simple/blorb.json
 ```
 
-Flags: `-c | --config <path>`, `-h | --help`, `-V | --version`.
+Flags: `-c | --config <path>`, `-h | --help`. Version: `blorb --version` or `blorb version`.
 
 Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C while idle exits the session.
 

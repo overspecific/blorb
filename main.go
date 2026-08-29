@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/urfave/cli/v3"
+
 	"github.com/overspecific/blorb/internal/chat"
-	"github.com/overspecific/blorb/internal/cli"
 	"github.com/overspecific/blorb/internal/config"
 )
 
@@ -14,92 +15,66 @@ import (
 var version = "dev"
 
 func main() {
-	os.Exit(run(os.Args[1:]))
-}
-
-func run(args []string) int {
-	if len(args) < 1 {
-		usage()
-		return 2
-	}
-
-	switch args[0] {
-	case "version":
-		fmt.Println(version)
-		return 0
-	case "help", "-h", "--help":
-		usage()
-		return 0
-	case "-V", "--version":
-		fmt.Println(version)
-		return 0
-	case "chat":
-		return cmdChat(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "blorb: unknown command %q\n\n", args[0])
-		usage()
-		return 2
+	cmd := rootCommand()
+	cmd.Version = version
+	if err := cmd.Run(context.Background(), os.Args); err != nil {
+		// Usage errors and cli.ExitCoder errors have already been reported
+		// by cli itself; anything reaching here is silent, so just exit.
+		os.Exit(1)
 	}
 }
 
-func cmdChat(args []string) int {
-	flags, err := cli.ParseChatFlags(args)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "blorb chat: %v\n\n", err)
-		fmt.Fprintf(os.Stderr, "Usage: blorb chat [-c | --config <path>] [-h | --help] [-V | --version]\n")
-		return 2
+// rootCommand builds the top-level blorb command. It is exposed for tests.
+func rootCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "blorb",
+		Usage: "a single-binary tool for making AI agents",
+		Commands: []*cli.Command{
+			chatCommand(),
+			{
+				Name:   "version",
+				Usage:  "Print the version",
+				Action: func(ctx context.Context, cmd *cli.Command) error { return printlnVersion(cmd.Root()) },
+			},
+		},
 	}
-	if flags.ShowHelp {
-		chatUsage()
-		return 0
-	}
-	if flags.ShowVersion {
-		fmt.Println(version)
-		return 0
-	}
-
-	cfg, err := config.Load(flags.ConfigPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "blorb chat: %v\n", err)
-		return 1
-	}
-
-	err = chat.Run(context.Background(), chat.Options{
-		Config:  cfg,
-		Version: version,
-		Stdin:   os.Stdin,
-		Stdout:  os.Stdout,
-		Stderr:  os.Stderr,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "blorb chat: %v\n", err)
-		return 1
-	}
-	return 0
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `blorb - a single-binary tool for making AI agents
+// chatCommand builds the chat subcommand.
+func chatCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "chat",
+		Usage: "Chat with an agent defined in blorb.json",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Value:   config.DefaultPath,
+				Usage:   "Path to blorb.json",
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			cfg, err := config.Load(cmd.String("config"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
+			}
 
-Usage:
-
-  blorb <command> [flags]
-
-Commands:
-
-  chat      Chat with an agent defined in blorb.json
-  version   Print the version
-  help      Print this help
-`)
+			err = chat.Run(ctx, chat.Options{
+				Config:  cfg,
+				Version: cmd.Root().Version,
+				Stdin:   os.Stdin,
+				Stdout:  os.Stdout,
+				Stderr:  os.Stderr,
+			})
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
+			}
+			return nil
+		},
+	}
 }
 
-func chatUsage() {
-	fmt.Fprint(os.Stderr, `Usage: blorb chat [flags]
-
-Flags:
-
-  -c, --config <path>   Path to blorb.json (default ./blorb.json)
-  -h, --help            Print this help
-  -V, --version         Print the version
-`)
+func printlnVersion(cmd *cli.Command) error {
+	fmt.Fprintln(cmd.Root().Writer, cmd.Root().Version)
+	return nil
 }

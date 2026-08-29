@@ -17,6 +17,9 @@ import (
 var ToolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 const (
+	// DefaultPath is used when no config path flag is given.
+	DefaultPath = "./blorb.json"
+
 	// DefaultMaxTurns is used when max_turns is unset.
 	DefaultMaxTurns = 10
 

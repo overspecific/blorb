@@ -1,62 +1,122 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/urfave/cli/v3"
+
+	"github.com/overspecific/blorb/internal/config"
 )
 
-func TestRunNoArgs(t *testing.T) {
-	if code := run(nil); code != 2 {
-		t.Errorf("run(nil) = %d, want 2", code)
+func TestRunVersionCommand(t *testing.T) {
+	cmd := rootCommand()
+	cmd.Version = "1.2.3"
+	out := &bytes.Buffer{}
+	cmd.Writer = out
+
+	if err := cmd.Run(context.Background(), []string{"blorb", "version"}); err != nil {
+		t.Fatalf("run version: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "1.2.3" {
+		t.Errorf("version output = %q, want %q", got, "1.2.3")
 	}
 }
 
-func TestRunVersionFlags(t *testing.T) {
-	for _, arg := range []string{"version", "-V", "--version"} {
-		t.Run(arg, func(t *testing.T) {
-			if code := run([]string{arg}); code != 0 {
-				t.Errorf("run(%q) = %d, want 0", arg, code)
-			}
-		})
+func TestRunVersionFlag(t *testing.T) {
+	cmd := rootCommand()
+	cmd.Version = "1.2.3"
+	out := &bytes.Buffer{}
+	cmd.Writer = out
+
+	if err := cmd.Run(context.Background(), []string{"blorb", "--version"}); err != nil {
+		t.Fatalf("run --version: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "1.2.3") {
+		t.Errorf("version output %q missing %q", got, "1.2.3")
 	}
 }
 
-func TestRunHelpFlags(t *testing.T) {
-	for _, arg := range []string{"help", "-h", "--help"} {
-		t.Run(arg, func(t *testing.T) {
-			if code := run([]string{arg}); code != 0 {
-				t.Errorf("run(%q) = %d, want 0", arg, code)
-			}
-		})
+func TestRunHelpCommand(t *testing.T) {
+	cmd := rootCommand()
+	out := &bytes.Buffer{}
+	cmd.Writer = out
+
+	if err := cmd.Run(context.Background(), []string{"blorb", "help"}); err != nil {
+		t.Fatalf("run help: %v", err)
+	}
+	for _, want := range []string{"chat", "version"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("help output missing %q; got:\n%s", want, out.String())
+		}
+	}
+}
+
+// capturingExitHandler returns an ExitErrHandler that prints errors to w
+// like cli's default handler but does not exit the process.
+func capturingExitHandler(w io.Writer) cli.ExitErrHandlerFunc {
+	return func(ctx context.Context, cmd *cli.Command, err error) {
+		if err != nil {
+			fmt.Fprintln(w, err)
+		}
 	}
 }
 
 func TestRunUnknownCommand(t *testing.T) {
-	if code := run([]string{"teleport"}); code != 2 {
-		t.Errorf("run(teleport) = %d, want 2", code)
+	cmd := rootCommand()
+	errOut := &bytes.Buffer{}
+	cmd.ErrWriter = errOut
+	cmd.ExitErrHandler = capturingExitHandler(errOut)
+
+	if err := cmd.Run(context.Background(), []string{"blorb", "teleport"}); err == nil {
+		t.Error("run(teleport) succeeded, want an error")
+	}
+	if got := errOut.String(); !strings.Contains(got, "teleport") {
+		t.Errorf("error output %q missing %q", got, "teleport")
 	}
 }
 
-func TestCmdChatBadFlags(t *testing.T) {
-	if code := cmdChat([]string{"--nope"}); code != 2 {
-		t.Errorf("cmdChat(--nope) = %d, want 2", code)
+func TestChatBadFlag(t *testing.T) {
+	cmd := rootCommand()
+	cmd.ErrWriter = &bytes.Buffer{}
+
+	if err := cmd.Run(context.Background(), []string{"blorb", "chat", "--nope"}); err == nil {
+		t.Error("chat --nope succeeded, want an error")
 	}
 }
 
-func TestCmdChatHelpAndVersion(t *testing.T) {
-	if code := cmdChat([]string{"--help"}); code != 0 {
-		t.Errorf("cmdChat(--help) = %d, want 0", code)
-	}
-	if code := cmdChat([]string{"--version"}); code != 0 {
-		t.Errorf("cmdChat(--version) = %d, want 0", code)
-	}
-}
-
-func TestCmdChatMissingConfig(t *testing.T) {
+func TestChatMissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "blorb.json")
 
-	if code := cmdChat([]string{"-c", missing}); code != 1 {
-		t.Errorf("cmdChat(-c %s) = %d, want 1", missing, code)
+	errOut := &bytes.Buffer{}
+	cmd := rootCommand()
+	cmd.ErrWriter = errOut
+	cmd.ExitErrHandler = capturingExitHandler(errOut)
+
+	if err := cmd.Run(context.Background(), []string{"blorb", "chat", "-c", missing}); err == nil {
+		t.Errorf("chat -c %s succeeded, want an error", missing)
+	}
+	if got := errOut.String(); !strings.Contains(got, missing) {
+		t.Errorf("error output %q missing path %q", got, missing)
+	}
+}
+
+func TestChatDefaultConfigPathFlag(t *testing.T) {
+	cmd := chatCommand()
+	flag, ok := cmd.Flags[0].(*cli.StringFlag)
+	if !ok {
+		t.Fatalf("first flag is %T, want *cli.StringFlag", cmd.Flags[0])
+	}
+	if flag.Value != config.DefaultPath {
+		t.Errorf("config default = %q, want %q", flag.Value, config.DefaultPath)
+	}
+	if flag.Name != "config" || len(flag.Aliases) != 1 || flag.Aliases[0] != "c" {
+		t.Errorf("unexpected flag name/aliases: %q %v", flag.Name, flag.Aliases)
 	}
 }
