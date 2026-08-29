@@ -263,10 +263,13 @@ func TestRunStreamedToolCallDeltasOnStderr(t *testing.T) {
 	if !strings.Contains(errOut, "{}") {
 		t.Errorf("stderr = %q, want the arguments fragment", errOut)
 	}
-	// Tool results still land on stderr after the streamed turn.
-	if !strings.Contains(errOut, ">>> Result: Tool: touch") {
-		t.Errorf("stderr = %q, want the tool result heading", errOut)
+	// The streamed arguments leave stderr mid-line; the following tool
+	// result block must terminate the partial line first so its heading
+	// starts on a fresh line, keeping the blank-line separators consistent.
+	if strings.Count(errOut, "\n\n>>> Result: Tool: touch") != 1 {
+		t.Errorf("stderr = %q, want a blank line between the arguments and the result heading", errOut)
 	}
+	// Tool results still land on stderr after the streamed turn.
 	if strings.Contains(stdout.String(), ">>> Tool:") {
 		t.Errorf("stdout = %q, want no tool activity on stdout", stdout.String())
 	}

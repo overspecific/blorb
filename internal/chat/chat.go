@@ -250,15 +250,28 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 		printedThinking  bool
 		streamedToolCall bool
 		toolHeadings     = map[string]bool{}
-		// partialStdout tracks whether a streamed fragment left stdout
-		// mid-line, so the next block can terminate it first.
+		// partialStdout/partialStderr track whether streamed fragments
+		// left the respective stream mid-line, so the next block can
+		// terminate the line first and keep blank-line separators
+		// consistent.
 		partialStdout bool
+		partialStderr bool
 	)
 
 	endStdoutLine := func() {
 		if partialStdout {
 			fmt.Fprint(stdout, "\n")
 			partialStdout = false
+		}
+	}
+
+	// endStderrLine terminates a partial stderr line (streamed tool
+	// arguments) so a following block heading starts on a fresh line; the
+	// heading's own leading newline then provides the blank separator.
+	endStderrLine := func() {
+		if partialStderr {
+			fmt.Fprint(stderr, "\n")
+			partialStderr = false
 		}
 	}
 
@@ -309,6 +322,7 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 				fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
 			}
 			fmt.Fprint(stderr, ev.Args)
+			partialStderr = !strings.HasSuffix(ev.Args, "\n")
 		case engine.EventToolCall:
 			// In streaming mode the fragments already rendered this call;
 			// skip the whole-message block to avoid printing it twice.
@@ -317,9 +331,10 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 				fmt.Fprintln(stderr, ev.Args)
 			}
 		case engine.EventToolResult:
-			// A partial streamed line on stdout must be terminated before
-			// writing to stderr.
+			// Terminate any partial line on either stream before writing
+			// the result block.
 			endStdoutLine()
+			endStderrLine()
 			marker := "Result:"
 			if ev.Failed {
 				marker = "Error:"
@@ -330,7 +345,10 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 		return nil
 	}
 
-	flush := endStdoutLine
+	flush := func() {
+		endStdoutLine()
+		endStderrLine()
+	}
 
 	return onEvent, flush
 }
