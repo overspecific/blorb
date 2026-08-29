@@ -4,7 +4,6 @@ package chat
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,8 +31,9 @@ type Options struct {
 }
 
 // Run drives one interactive chat session. It returns nil on graceful exit
-// (quit/exit, EOF, or a single SIGINT), and an error on startup or turn
-// failures.
+// (exit/quit, EOF, or SIGINT when no turn is in flight) and an error on
+// startup failures. Turn failures are printed to stderr and keep the
+// session alive. SIGINT during a turn cancels just that turn.
 func Run(ctx context.Context, opts Options) error {
 	client, err := opts.newClient()
 	if err != nil {
@@ -52,81 +52,127 @@ func Run(ctx context.Context, opts Options) error {
 		MaxTurns:     opts.Config.MaxTurnsOrDefault(),
 	})
 
-	// interruptMu guards currentTurn, which holds the context cancel func
-	// for the in-flight (or next) turn. A signal cancels it; a second signal
-	// while nothing is running exits immediately.
-	var interruptMu sync.Mutex
-	currentTurn := context.CancelFunc(func() {})
+	var (
+		mu          sync.Mutex
+		cancelTurn  context.CancelFunc
+		interrupted bool
+	)
+	setTurn := func(cancel context.CancelFunc) {
+		mu.Lock()
+		defer mu.Unlock()
+		cancelTurn = cancel
+	}
+	wasInterrupted := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return interrupted
+	}
 
-	handleSignal := make(chan os.Signal, 1)
+	exit := make(chan struct{})
+	var once sync.Once
+	requestExit := func() { once.Do(func() { close(exit) }) }
+
+	sigint := make(chan os.Signal, 1)
 	if opts.SigintChan != nil {
-		// Tests inject a signal channel; receive-only clients still work.
-		sigIn := opts.SigintChan
-		fwd := make(chan os.Signal, 1)
+		// Forward from the injected test channel.
 		go func() {
-			for sig := range sigIn {
-				fwd <- sig
+			for sig := range opts.SigintChan {
+				sigint <- sig
 			}
 		}()
-		handleSignal = fwd
 	} else {
-		sigint := make(chan os.Signal, 1)
 		signal.Notify(sigint, syscall.SIGINT)
 		defer signal.Stop(sigint)
-		handleSignal = sigint
 	}
+
 	go func() {
-		for range handleSignal {
-			interruptMu.Lock()
-			cancel := currentTurn
-			interruptMu.Unlock()
+		for range sigint {
+			mu.Lock()
+			cancel := cancelTurn
 			if cancel != nil {
+				interrupted = true
+			}
+			cancelTurn = nil
+			mu.Unlock()
+			if cancel != nil {
+				// A turn is in flight: cancel just that turn.
 				cancel()
+			} else {
+				// Nothing in flight: exit the session.
+				requestExit()
 			}
 		}
 	}()
 
 	fmt.Fprintf(opts.Stderr, "blorb %s (%s, %s)\n", opts.Version, opts.Config.Name, opts.Config.Provider.Model)
 
-	scanner := bufio.NewScanner(opts.Stdin)
+	input := make(chan inputResult, 1)
+	go readLines(opts.Stdin, input)
+
 	for {
-		line, err := readLine(scanner)
-		if errors.Is(err, io.EOF) {
+		select {
+		case <-ctx.Done():
 			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("read input: %w", err)
-		}
-		if line == "" {
-			continue
-		}
-		// A second SIGINT while nothing is in flight exits immediately.
-		if ctx.Err() != nil {
+		case <-exit:
 			return nil
+		case r, ok := <-input:
+			if !ok {
+				return nil
+			}
+			if r.err != nil {
+				return fmt.Errorf("read input: %w", r.err)
+			}
+			if r.line == "" {
+				continue
+			}
+			switch strings.ToLower(r.line) {
+			case "exit", "quit":
+				return nil
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
+
+			turnCtx, cancel := context.WithCancel(ctx)
+			setTurn(cancel)
+
+			_, runErr := eng.RunTurn(turnCtx, r.line, chatEvents(opts.Stdout, opts.Stderr))
+
+			setTurn(nil)
+			cancel()
+			interrupted := wasInterrupted()
+
+			if runErr == nil {
+				// A signal landed just as the turn finished: exit cleanly.
+				if interrupted {
+					return nil
+				}
+				continue
+			}
+			if interrupted && turnCtx.Err() != nil {
+				fmt.Fprintln(opts.Stderr, "(interrupted)")
+				continue
+			}
+			fmt.Fprintf(opts.Stderr, "error: %v\n", runErr)
 		}
-
-		turnCtx, cancelTurn := context.WithCancel(ctx)
-		interruptMu.Lock()
-		currentTurn = cancelTurn
-		interruptMu.Unlock()
-
-		_, runErr := eng.RunTurn(turnCtx, line, chatEvents(opts.Stdout, opts.Stderr))
-
-		interruptMu.Lock()
-		currentTurn = nil
-		interruptMu.Unlock()
-		cancelTurn()
-
-		if runErr == nil {
-			continue
-		}
-		if turnCtx.Err() != nil && ctx.Err() == nil && !errors.Is(runErr, engine.ErrTooManyTurns) {
-			// Interrupted by signal; fall through to a fresh prompt.
-			fmt.Fprintln(opts.Stderr, "(interrupted)")
-			continue
-		}
-		return runErr
 	}
+}
+
+type inputResult struct {
+	line string
+	err  error
+}
+
+// readLines pumps trimmed lines of input until EOF or error.
+func readLines(r io.Reader, out chan<- inputResult) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		out <- inputResult{line: strings.TrimSpace(scanner.Text())}
+	}
+	if err := scanner.Err(); err != nil {
+		out <- inputResult{err: err}
+	}
+	close(out)
 }
 
 // chatEvents returns the event callback: assistant text to stdout, tool
@@ -147,17 +193,6 @@ func chatEvents(stdout, stderr io.Writer) func(engine.Event) error {
 		}
 		return nil
 	}
-}
-
-// readLine reads one trimmed line of input.
-func readLine(scanner *bufio.Scanner) (string, error) {
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return "", err
-		}
-		return "", io.EOF
-	}
-	return strings.TrimSpace(scanner.Text()), nil
 }
 
 // NewClient builds the LLM client described by a config, switching on

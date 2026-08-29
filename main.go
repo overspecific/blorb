@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/overspecific/goblorb/internal/chat"
 	"github.com/overspecific/goblorb/internal/cli"
@@ -66,10 +64,7 @@ func cmdChat(args []string) int {
 		return 1
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT)
-	defer stop()
-
-	err = chat.Run(ctx, chat.Options{
+	err = chat.Run(context.Background(), chat.Options{
 		Config:  cfg,
 		Version: version,
 		Stdin:   os.Stdin,
