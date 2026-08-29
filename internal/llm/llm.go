@@ -116,6 +116,49 @@ type Client interface {
 	Chat(ctx context.Context, req Request) (*Response, error)
 }
 
+// Delta is one incremental piece of a streaming response. Content is a
+// fragment of assistant text; Reasoning is a fragment of extracted
+// chain-of-thought; ToolCall is non-nil when the delta carries a fragment of
+// a tool call. A single Delta may carry one or more of these at once.
+//
+// Deltas arrive in order. The concatenation of all Content fragments equals
+// the final message's content, and the concatenation of all Reasoning
+// fragments equals the final message's reasoning; the tool-call fragments
+// (keyed by ToolCallDelta.Index) assemble into the final message's tool
+// calls.
+type Delta struct {
+	Content   string
+	Reasoning string
+	ToolCall  *ToolCallDelta
+}
+
+// ToolCallDelta is a fragment of a tool call within a streaming response.
+// Index identifies which tool call in the message the fragment belongs to
+// (0-based, matching the OpenAI tool_calls[].index). ID, Type, and Name are
+// typically complete in the first fragment for a given index, while
+// Arguments arrives as one or more fragments to be concatenated in order.
+type ToolCallDelta struct {
+	Index     int
+	ID        string
+	Type      string
+	Name      string
+	Arguments string
+}
+
+// StreamingClient is the seam for clients that can stream responses
+// incrementally in addition to the whole-message Chat path.
+//
+// Contract: ChatStream sends the full message history, honours context
+// cancellation, and calls onDelta for each incremental piece of content,
+// reasoning, or tool call as it arrives (in order; see Delta). It returns
+// the complete Response, including any tool calls, once the stream finishes.
+// An onDelta error aborts the stream and is returned. Clients that do not
+// implement this interface are used via Client.Chat instead.
+type StreamingClient interface {
+	Client
+	ChatStream(ctx context.Context, req Request, onDelta func(Delta) error) (*Response, error)
+}
+
 // NewTextMessage builds a message with a string content body.
 func NewTextMessage(role Role, content string) Message {
 	return Message{Role: role, Content: content}

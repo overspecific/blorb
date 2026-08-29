@@ -1,11 +1,71 @@
 package llm_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/overspecific/blorb/internal/llm"
 )
+
+type mockStreamingClient struct{}
+
+var _ llm.StreamingClient = (*mockStreamingClient)(nil)
+
+func (c *mockStreamingClient) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	return &llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "mock")}, nil
+}
+
+func (c *mockStreamingClient) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	deltas := []llm.Delta{
+		{Content: "hel"},
+		{Content: "lo"},
+	}
+	for _, d := range deltas {
+		if err := onDelta(d); err != nil {
+			return nil, err
+		}
+	}
+	return &llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hello")}, nil
+}
+
+func TestStreamingClientInterface(t *testing.T) {
+	t.Parallel()
+
+	var c llm.Client = &mockStreamingClient{}
+	var sc llm.StreamingClient = &mockStreamingClient{}
+	_ = sc
+
+	resp, err := c.Chat(context.Background(), llm.Request{})
+	if err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+	if resp.Message.Content != "mock" {
+		t.Errorf("Chat content = %q, want %q", resp.Message.Content, "mock")
+	}
+
+	var deltas []llm.Delta
+	resp, err = sc.ChatStream(context.Background(), llm.Request{}, func(d llm.Delta) error {
+		deltas = append(deltas, d)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want nil", err)
+	}
+	if len(deltas) != 2 || deltas[0].Content != "hel" || deltas[1].Content != "lo" {
+		t.Errorf("deltas = %v, want [hel lo]", deltas)
+	}
+	if resp.Message.Content != "hello" {
+		t.Errorf("ChatStream content = %q, want %q", resp.Message.Content, "hello")
+	}
+
+	streamErr := context.Canceled
+	if _, err := sc.ChatStream(context.Background(), llm.Request{}, func(d llm.Delta) error {
+		return streamErr
+	}); err == nil || err != streamErr {
+		t.Errorf("onDelta error = %v, want %v (returned as-is)", err, streamErr)
+	}
+}
 
 func TestMessageMarshalJSON(t *testing.T) {
 	t.Parallel()
