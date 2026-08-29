@@ -47,6 +47,59 @@ func newTestOptions(cfg config.Config, input string, responses ...llm.Response) 
 	return o, &stdout, &stderr
 }
 
+func newStreamingTestOptions(cfg config.Config, input string, responses ...llm.Response) (chat.Options, *syncBuffer, *syncBuffer) {
+	var stdout, stderr syncBuffer
+	o := chat.Options{
+		Config:  cfg,
+		Version: "test",
+		Stdin:   strings.NewReader(input),
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+		NewClient: func(config.Config) (llm.Client, error) {
+			return &streamingFakeClient{responses: responses}, nil
+		},
+	}
+	return o, &stdout, &stderr
+}
+
+// streamingFakeClient breaks each canned response into a single delta per
+// field before returning the complete response, like a streaming provider.
+type streamingFakeClient struct {
+	responses []llm.Response
+}
+
+func (f *streamingFakeClient) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	return (&fakeClient{responses: f.responses}).Chat(ctx, req)
+}
+
+func (f *streamingFakeClient) ChatStream(_ context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	req.Messages = append(req.Messages, llm.NewTextMessage(llm.RoleUser, "stream"))
+	if len(f.responses) == 0 {
+		return nil, errors.New("streamingFakeClient: no more canned responses")
+	}
+	resp := f.responses[0]
+	f.responses = f.responses[1:]
+	msg := resp.Message
+	if msg.Reasoning != "" {
+		if err := onDelta(llm.Delta{Reasoning: msg.Reasoning}); err != nil {
+			return nil, err
+		}
+	}
+	if msg.Content != "" {
+		if err := onDelta(llm.Delta{Content: msg.Content}); err != nil {
+			return nil, err
+		}
+	}
+	for i, tc := range msg.ToolCalls {
+		if err := onDelta(llm.Delta{ToolCall: &llm.ToolCallDelta{
+			Index: i, ID: tc.ID, Type: tc.Type, Name: tc.FunctionName, Arguments: tc.FunctionArgs,
+		}}); err != nil {
+			return nil, err
+		}
+	}
+	return &resp, nil
+}
+
 func minimalConfig() config.Config {
 	return config.Config{
 		Name:         "tester",
@@ -112,6 +165,154 @@ func TestRunThinkingDisplayedOnStdout(t *testing.T) {
 	}
 	if !strings.Contains(out, ">>> Assistant:\nthe answer") {
 		t.Errorf("stdout = %q, want the text under a >>> Assistant heading", out)
+	}
+}
+
+func TestRunStreamedAssistantTextOnStdout(t *testing.T) {
+	t.Parallel()
+
+	o, stdout, _ := newStreamingTestOptions(minimalConfig(), "hello\nexit\n",
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "streamed!"), FinishReason: llm.FinishStop},
+	)
+	o.Stream = true
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	// Heading printed exactly once, deltas concatenated, trailing newline
+	// flushed.
+	if !strings.Contains(out, ">>> Assistant:\nstreamed!\n") {
+		t.Errorf("stdout = %q, want the streamed reply under one heading with a trailing newline", out)
+	}
+	if strings.Count(out, ">>> Assistant:") != 1 {
+		t.Errorf("stdout = %q, want exactly one >>> Assistant heading", out)
+	}
+}
+
+func TestRunStreamedThinkingOnStdout(t *testing.T) {
+	t.Parallel()
+
+	thinkingResp := llm.Response{
+		Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			Content:   "the answer",
+			Reasoning: "pondering...",
+		},
+		FinishReason: llm.FinishStop,
+	}
+	o, stdout, _ := newStreamingTestOptions(minimalConfig(), "why?\nexit\n", thinkingResp)
+	o.Stream = true
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, ">>> Assistant (thinking):\npondering...") {
+		t.Errorf("stdout = %q, want the reasoning deltas under a >>> Assistant (thinking) heading", out)
+	}
+	if strings.Count(out, ">>> Assistant (thinking):") != 1 {
+		t.Errorf("stdout = %q, want exactly one thinking heading", out)
+	}
+	if !strings.Contains(out, ">>> Assistant:\nthe answer\n") {
+		t.Errorf("stdout = %q, want the text deltas under a >>> Assistant heading", out)
+	}
+}
+
+func TestRunStreamedToolCallDeltasOnStderr(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker.txt")
+
+	cfg := minimalConfig()
+	cfg.Tools = []config.ToolEntry{{
+		Name:        "touch",
+		Description: "Creates a marker file.",
+		Command:     []string{"touch", marker},
+	}}
+
+	toolCallResp := llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID: "call_1", Type: "function", FunctionName: "touch", FunctionArgs: "{}",
+			}},
+		},
+		FinishReason: llm.FinishToolCalls,
+	}
+	o, stdout, stderr := newStreamingTestOptions(cfg, "run it\nexit\n",
+		toolCallResp,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "done"), FinishReason: llm.FinishStop},
+	)
+	o.Stream = true
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	errOut := stderr.String()
+	if !strings.Contains(errOut, ">>> Tool: touch") {
+		t.Errorf("stderr = %q, want a tool heading for touch", errOut)
+	}
+	if strings.Count(errOut, ">>> Tool: touch") != 1 {
+		t.Errorf("stderr = %q, want the streamed fragments to render the tool heading exactly once", errOut)
+	}
+	if !strings.Contains(errOut, "{}") {
+		t.Errorf("stderr = %q, want the arguments fragment", errOut)
+	}
+	// Tool results still land on stderr after the streamed turn.
+	if !strings.Contains(errOut, ">>> Result: Tool: touch") {
+		t.Errorf("stderr = %q, want the tool result heading", errOut)
+	}
+	if strings.Contains(stdout.String(), ">>> Tool:") {
+		t.Errorf("stdout = %q, want no tool activity on stdout", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), ">>> Assistant:\ndone\n") {
+		t.Errorf("stdout = %q, want the final streamed text", stdout.String())
+	}
+}
+
+func TestRunStreamOffUsesWholeMessagePath(t *testing.T) {
+	t.Parallel()
+
+	o, stdout, _ := newStreamingTestOptions(minimalConfig(), "hello\nexit\n",
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "whole"), FinishReason: llm.FinishStop},
+	)
+	o.Stream = false
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	if !strings.Contains(stdout.String(), ">>> Assistant:\nwhole\n") {
+		t.Errorf("stdout = %q, want the whole-message reply path used", stdout.String())
+	}
+}
+
+func TestRunStreamedTurnErrorStillFlushes(t *testing.T) {
+	t.Parallel()
+
+	// A turn that fails after streaming some text must still flush the
+	// trailing newline, and the error lands on stderr.
+	o, stdout, stderr := newStreamingTestOptions(minimalConfig(), "hello\nexit\n")
+	o.Stream = true
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if !strings.Contains(stderr.String(), "error:") {
+		t.Errorf("stderr = %q, want a turn error", stderr.String())
+	}
+	out := stdout.String()
+	if strings.Contains(out, ">>> Assistant:") {
+		// Heading printed, then the stream failed: a trailing newline must
+		// still have been flushed by the callback's flush function.
+		if !strings.HasSuffix(out, "\n") {
+			t.Errorf("stdout = %q, want a trailing flush newline", out)
+		}
 	}
 }
 

@@ -31,6 +31,10 @@ type Options struct {
 	// Getenv overrides the environment lookup used to resolve
 	// provider.api_key_env; os.Getenv when nil. Tests only.
 	Getenv func(string) string
+	// Stream enables incremental rendering of assistant responses: when
+	// true and the client supports it, text, reasoning, and tool call
+	// fragments are printed as they arrive. Disabled by --no-stream.
+	Stream bool
 }
 
 // Run drives one interactive chat session. It returns nil on graceful exit
@@ -53,6 +57,7 @@ func Run(ctx context.Context, opts Options) error {
 		Tools:        registry,
 		SystemPrompt: opts.Config.SystemPrompt,
 		MaxTurns:     opts.Config.MaxTurnsOrDefault(),
+		Stream:       opts.Stream,
 	})
 
 	var (
@@ -171,7 +176,9 @@ func Run(ctx context.Context, opts Options) error {
 			turnCtx, cancel := context.WithCancel(ctx)
 			setTurn(cancel)
 
-			_, runErr := eng.RunTurn(turnCtx, r.line, chatEvents(opts.Stdout, opts.Stderr))
+			onEvent, flush := chatEvents(opts.Stdout, opts.Stderr)
+			_, runErr := eng.RunTurn(turnCtx, r.line, onEvent)
+			flush()
 
 			setTurn(nil)
 			cancel()
@@ -231,11 +238,22 @@ func readLines(r io.Reader, out chan<- inputResult, done <-chan struct{}) {
 	close(out)
 }
 
-// chatEvents returns the event callback: assistant text to stdout under a
-// ">>> Assistant:" heading, tool activity as heading blocks on stderr.
-func chatEvents(stdout, stderr io.Writer) func(engine.Event) error {
-	printedHeading := false
-	return func(ev engine.Event) error {
+// chatEvents returns the event callback plus a flush function. The callback
+// renders assistant text under a ">>> Assistant:" heading and tool activity
+// as heading blocks on stderr; the flush function writes the trailing
+// newline after streamed delta output. Delta events (streaming) write
+// fragments without trailing newlines; the whole-message events write
+// complete blocks.
+func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
+	var (
+		printedHeading   bool
+		printedThinking  bool
+		streamedToolCall bool
+		toolHeadings     = map[string]bool{}
+		wroteToStdout    bool
+	)
+
+	onEvent := func(ev engine.Event) error {
 		switch ev.Kind {
 		case engine.EventAssistantThinking:
 			fmt.Fprintf(stdout, "\n>>> Assistant (thinking):\n%s\n", ev.Text)
@@ -245,9 +263,34 @@ func chatEvents(stdout, stderr io.Writer) func(engine.Event) error {
 				printedHeading = true
 			}
 			fmt.Fprintln(stdout, ev.Text)
+		case engine.EventAssistantThinkingDelta:
+			if !printedThinking {
+				fmt.Fprint(stdout, "\n>>> Assistant (thinking):\n")
+				printedThinking = true
+			}
+			fmt.Fprint(stdout, ev.Text)
+			wroteToStdout = true
+		case engine.EventAssistantTextDelta:
+			if !printedHeading {
+				fmt.Fprintln(stdout, "\n>>> Assistant:")
+				printedHeading = true
+			}
+			fmt.Fprint(stdout, ev.Text)
+			wroteToStdout = true
+		case engine.EventToolCallDelta:
+			if !toolHeadings[ev.Name] {
+				toolHeadings[ev.Name] = true
+				fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
+			}
+			fmt.Fprint(stderr, ev.Args)
+			streamedToolCall = true
 		case engine.EventToolCall:
-			fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
-			fmt.Fprintln(stderr, ev.Args)
+			// The streamed fragments already rendered this call; skip the
+			// whole-message block to avoid printing it twice.
+			if !streamedToolCall {
+				fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
+				fmt.Fprintln(stderr, ev.Args)
+			}
 		case engine.EventToolResult:
 			marker := "Result:"
 			if ev.Failed {
@@ -257,6 +300,15 @@ func chatEvents(stdout, stderr io.Writer) func(engine.Event) error {
 		}
 		return nil
 	}
+
+	flush := func() {
+		if wroteToStdout {
+			fmt.Fprint(stdout, "\n")
+			wroteToStdout = false
+		}
+	}
+
+	return onEvent, flush
 }
 
 // NewClient builds the LLM client described by a config, switching on

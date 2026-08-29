@@ -52,6 +52,10 @@ func chatCommand() *cli.Command {
 				Value:   config.DefaultPath,
 				Usage:   "Path to blorb.json",
 			},
+			&cli.BoolFlag{
+				Name:  "no-stream",
+				Usage: "Disable streaming of assistant responses",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			cfg, err := config.Load(cmd.String("config"))
@@ -65,6 +69,7 @@ func chatCommand() *cli.Command {
 				Stdin:   os.Stdin,
 				Stdout:  os.Stdout,
 				Stderr:  os.Stderr,
+				Stream:  !cmd.Bool("no-stream"),
 			})
 			if err != nil {
 				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)

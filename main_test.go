@@ -120,3 +120,21 @@ func TestChatDefaultConfigPathFlag(t *testing.T) {
 		t.Errorf("unexpected flag name/aliases: %q %v", flag.Name, flag.Aliases)
 	}
 }
+
+func TestChatNoStreamFlag(t *testing.T) {
+	cmd := chatCommand()
+
+	var noStream *cli.BoolFlag
+	for _, f := range cmd.Flags {
+		if bf, ok := f.(*cli.BoolFlag); ok && f.Names()[0] == "no-stream" {
+			noStream = bf
+			break
+		}
+	}
+	if noStream == nil {
+		t.Fatalf("chat has no no-stream flag; flags = %+v", cmd.Flags)
+	}
+	if noStream.Value {
+		t.Errorf("no-stream default = true, want false (streaming on by default)")
+	}
+}
