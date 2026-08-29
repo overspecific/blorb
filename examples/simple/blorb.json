@@ -3,8 +3,8 @@
   "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short. You love using your echo tool.",
   "provider": {
     "type": "openai",
-    "model": "gpt-4o-mini",
-    "base_url": "http://localhost:11434/v1"
+    "model": "Gemma-4-E4B-it-GGUF",
+    "base_url": "http://localhost:13305/v1"
   },
   "max_turns": 10,
   "tools": [
