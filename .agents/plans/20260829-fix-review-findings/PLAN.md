@@ -4,18 +4,18 @@ Fix the correctness and quality issues found in the code review (REVIEW.md, alon
 
 ## Todo
 
-- [ ] Commit 1: Fix max_turns validation and default handling
-- [ ] Commit 2: Fix cli flag parsing edge cases
-- [ ] Commit 3: Fix engine history repair and turn bookkeeping
-- [ ] Commit 4: Fix tools output cap, cancellation error, and sorting
-- [ ] Commit 5: Fix chat interrupted-flag bug and goroutine leaks
-- [ ] Commit 6: Harden openai client (body read, timeout, tool call type)
-- [ ] Commit 7: Clean up test scaffolding and misplaced tests
-- [ ] Commit 8: Surface truncated (finish_reason length) responses
-- [ ] Commit 9: Add main.go tests
-- [ ] Commit 10: Harden config loading (trailing garbage, api_key_env, args_schema)
-- [ ] Commit 11: Harden chat input (scanner limit, injectable env lookup)
-- [ ] Commit 12: Return accumulated assistant text from RunTurn
+- [x] Commit 1: Fix max_turns validation and default handling
+- [x] Commit 2: Fix cli flag parsing edge cases
+- [x] Commit 3: Fix engine history repair and turn bookkeeping
+- [x] Commit 4: Fix tools output cap, cancellation error, and sorting
+- [x] Commit 5: Fix chat interrupted-flag bug and goroutine leaks
+- [x] Commit 6: Harden openai client (body read, timeout, tool call type)
+- [x] Commit 7: Clean up test scaffolding and misplaced tests
+- [x] Commit 8: Surface truncated (finish_reason length) responses
+- [x] Commit 9: Add main.go tests
+- [x] Commit 10: Harden config loading (trailing garbage, api_key_env, args_schema)
+- [x] Commit 11: Harden chat input (scanner limit, injectable env lookup)
+- [x] Commit 12: Return accumulated assistant text from RunTurn
 
 ---
 
