@@ -502,7 +502,6 @@ func TestHistoryDefensiveCopy(t *testing.T) {
 		t.Fatalf("history length = %d, want 2", len(h))
 	}
 	h[0].Content = "tampered"
-	h = append(h[:0], llm.Message{})
 
 	again := e.History()
 	if len(again) != 2 {

@@ -32,8 +32,6 @@ func (f *fakeClient) Chat(_ context.Context, req llm.Request) (*llm.Response, er
 	return &resp, nil
 }
 
-type optsFunc func(*chat.Options)
-
 func newTestOptions(cfg config.Config, input string, responses ...llm.Response) (chat.Options, *strings.Builder, *strings.Builder) {
 	var stdout, stderr strings.Builder
 	o := chat.Options{

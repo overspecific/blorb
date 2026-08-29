@@ -10,6 +10,11 @@ fmt() {
 	gofmt -w .
 }
 
+lint() {
+	echo "==> staticcheck ./..."
+	staticcheck ./...
+}
+
 vet() {
 	echo "==> go vet ./..."
 	go vet ./...
@@ -26,6 +31,7 @@ test() {
 }
 
 fmt
+lint
 vet
 build
 test

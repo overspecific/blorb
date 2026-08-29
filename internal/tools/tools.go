@@ -174,7 +174,7 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 	case runErr = <-errCh:
 	case <-runCtx.Done():
 		killProcessGroup(cmd.Process)
-		runErr = <-errCh
+		<-errCh // reap the child; the outcome no longer matters
 		if ctx.Err() != nil {
 			return ToolResult{}, fmt.Errorf("tool %q: %w", name, ctx.Err())
 		}
