@@ -5,3 +5,6 @@ It is built in Go, with as few dependencies as possible. Everything has unit tes
 We work in git, and we only commit or push when the user explicitly asks.
 
 We check our work using `bin/qc` - this formats, checks style and runs tests. We make sure this is passing before continuing to the next step.
+
+## Markdown files
+When writing Markdown, we do not manually wrap.
