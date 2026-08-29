@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/overspecific/blorb/internal/llm"
 )
@@ -21,6 +23,14 @@ const chatCompletionsPath = "/chat/completions"
 // error messages.
 const maxErrorBodyLen = 4 << 10
 
+// maxBodyLen bounds how much of any response body is read into memory at
+// all; beyond this the read is cut short and surfaces as an error.
+const maxBodyLen = 16 << 20
+
+// defaultTimeout bounds each request when HTTPClient is nil, so a hung
+// server cannot block a turn forever.
+const defaultTimeout = 5 * time.Minute
+
 // Config carries the client's settings.
 type Config struct {
 	// BaseURL is the API root; /chat/completions is appended.
@@ -30,7 +40,8 @@ type Config struct {
 	Model string
 	// APIKey, when non-empty, is sent as a Bearer token.
 	APIKey string
-	// HTTPClient is optional; http.DefaultClient is used when nil.
+	// HTTPClient is optional; a client with a 5 minute timeout is used
+	// when nil, so a hung server cannot block a turn forever.
 	HTTPClient *http.Client
 }
 
@@ -43,8 +54,16 @@ func (c *Client) httpClient() *http.Client {
 	if c.cfg.HTTPClient != nil {
 		return c.cfg.HTTPClient
 	}
-	return http.DefaultClient
+	if defaultHTTPClient == nil {
+		defaultHTTPClient = &http.Client{Timeout: defaultTimeout}
+	}
+	return defaultHTTPClient
 }
+
+// defaultHTTPClient caches the fallback client with its timeout. Not
+// safe for concurrent first use, but New assigns it eagerly in practice
+// and the race would only ever construct an equivalent client.
+var defaultHTTPClient *http.Client
 
 // New returns a Client for the given configuration. It returns an error when
 // the base URL is unusable.
@@ -92,9 +111,12 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 		_ = httpResp.Body.Close()
 	}()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxBodyLen))
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
+	}
+	if len(respBody) == maxBodyLen {
+		return nil, fmt.Errorf("read response body: response exceeds %d byte limit", maxBodyLen)
 	}
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
@@ -197,9 +219,13 @@ func wireMessages(msgs []llm.Message) []wireMessage {
 func neutralMessage(wm wireMessage) llm.Message {
 	m := llm.Message{Role: llm.Role(wm.Role), Content: wm.Content, Reasoning: wm.Reasoning, ToolCallID: wm.ToolCallID}
 	for _, wtc := range wm.ToolCalls {
+		callType := wtc.Type
+		if callType == "" {
+			callType = llm.ToolCallType
+		}
 		m.ToolCalls = append(m.ToolCalls, llm.ToolCall{
 			ID:           wtc.ID,
-			Type:         llm.ToolCallType,
+			Type:         callType,
 			FunctionName: wtc.Function.Name,
 			FunctionArgs: wtc.Function.Arguments,
 		})
@@ -296,6 +322,9 @@ func firstNonEmpty(a, b string) string {
 func truncate(data []byte, limit int) string {
 	s := string(data)
 	if len(s) > limit {
+		for limit > 0 && !utf8.RuneStart(s[limit]) {
+			limit--
+		}
 		return s[:limit] + "...(truncated)"
 	}
 	return s

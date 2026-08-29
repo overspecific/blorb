@@ -514,3 +514,74 @@ func TestNewRejectsBadBaseURL(t *testing.T) {
 		})
 	}
 }
+
+func TestChatBodyOverLimitErrors(t *testing.T) {
+	t.Parallel()
+
+	// 17 MiB response, exceeding the 16 MiB read cap.
+	big := strings.Repeat("x", 17<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"`))
+		_, _ = w.Write([]byte(big))
+		_, _ = w.Write([]byte(`"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{Model: "m"})
+	if err == nil {
+		t.Fatal("Chat succeeded, want a limit error")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Errorf("error = %q, want a limit mention", err)
+	}
+}
+
+func TestChatHungServerTimesOut(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	// Custom HTTPClient with a short timeout instead of waiting the default
+	// 5 minutes.
+	httpClient := &http.Client{Timeout: 200 * time.Millisecond}
+	c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.HTTPClient = httpClient })
+
+	start := time.Now()
+	_, err := c.Chat(context.Background(), llm.Request{Model: "m"})
+	if err == nil {
+		t.Fatal("Chat succeeded, want a timeout error")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Chat took %s, want a prompt timeout", elapsed)
+	}
+	if !strings.Contains(err.Error(), "Timeout") && !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "deadline") {
+		t.Errorf("error = %q, want a timeout/deadline mention", err)
+	}
+}
+
+func TestChatNonFunctionToolCallTypePreserved(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"custom_tool","function":{"name":"ls","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.Message.ToolCalls))
+	}
+	if got := resp.Message.ToolCalls[0].Type; got != "custom_tool" {
+		t.Errorf("tool call type = %q, want the server-sent custom_tool", got)
+	}
+}
