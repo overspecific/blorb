@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -229,10 +229,11 @@ func TestRunTimeoutKillsChild(t *testing.T) {
 	requireExecTools(t)
 	t.Parallel()
 
+	pidFile := filepath.Join(t.TempDir(), "blorb_test_child.pid")
 	r, err := tools.NewRegistry([]config.ToolEntry{
 		// The tool spawns a child that outlives it unless the whole group
 		// is killed.
-		entry("spawner", "Spawns a child sleeper.", "sh", "-c", `sleep 30 & echo "$!" > /tmp/blorb_test_child.pid; wait`),
+		entry("spawner", "Spawns a child sleeper.", "sh", "-c", `sleep 30 & echo "$!" > "$1"; wait`, "--", pidFile),
 	}, tools.WithTimeout(300*time.Millisecond))
 	if err != nil {
 		t.Fatalf("NewRegistry error = %v, want nil", err)
@@ -243,12 +244,11 @@ func TestRunTimeoutKillsChild(t *testing.T) {
 	}
 
 	// The spawned child must be gone (killed alongside the tool process).
-	check := exec.Command("sh", "-c", `while kill -0 "$(cat /tmp/blorb_test_child.pid 2>/dev/null)" 2>/dev/null; do sleep 0.05; done; echo gone`)
+	check := exec.Command("sh", "-c", `while kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; do sleep 0.05; done; echo gone`, "sh", pidFile)
 	out, err := check.CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != "gone" {
 		t.Errorf("child process still alive after timeout: out=%q err=%v", out, err)
 	}
-	_ = os.Remove("/tmp/blorb_test_child.pid")
 }
 
 func TestRunUnknownTool(t *testing.T) {

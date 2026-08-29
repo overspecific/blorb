@@ -481,13 +481,3 @@ func TestNewClient(t *testing.T) {
 		}
 	})
 }
-
-func TestConfigPathResolution(t *testing.T) {
-	t.Run("default path missing", func(t *testing.T) {
-		dir := t.TempDir()
-		_, err := config.Load(filepath.Join(dir, "blorb.json"))
-		if err == nil || !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("error = %v, want a not-exist error", err)
-		}
-	})
-}

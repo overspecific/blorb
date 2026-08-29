@@ -33,10 +33,9 @@ func (f *fakeClient) Chat(_ context.Context, req llm.Request) (*llm.Response, er
 	return nil, errors.New("fakeClient: no more canned responses")
 }
 
-func toolRegistry(t *testing.T) (*tools.Registry, *[]string) {
+func toolRegistry(t *testing.T) *tools.Registry {
 	t.Helper()
 
-	var calls []string
 	r, err := tools.NewRegistry([]config.ToolEntry{
 		{Name: "echo", Description: "Echo stdin.", Command: []string{"sh", "-c", `printf '%s' "$(cat)"`}},
 		{Name: "recorder", Description: "Records invocations.", Command: []string{"true"}},
@@ -44,7 +43,7 @@ func toolRegistry(t *testing.T) (*tools.Registry, *[]string) {
 	if err != nil {
 		t.Fatalf("NewRegistry error = %v, want nil", err)
 	}
-	return r, &calls
+	return r
 }
 
 func textResp(content string) llm.Response {
@@ -110,9 +109,7 @@ func TestRunTurnPlainReply(t *testing.T) {
 func TestRunTurnSingleToolCall(t *testing.T) {
 	t.Parallel()
 
-	requireShell(t)
-
-	r, ran := toolRegistry(t)
+	r := toolRegistry(t)
 	fc := &fakeClient{responses: []llm.Response{
 		toolCallResp(call("call_1", "echo", `{"msg":"hello"}`)),
 		textResp("done"),
@@ -129,9 +126,6 @@ func TestRunTurnSingleToolCall(t *testing.T) {
 	}
 	if final != "done" {
 		t.Errorf("final = %q, want %q", final, "done")
-	}
-	if len(*ran) != 0 {
-		t.Errorf("unexpected recorder calls: %v", *ran)
 	}
 
 	// History: user, assistant-with-tool-call, tool-result. No system prompt
@@ -178,9 +172,7 @@ func TestRunTurnSingleToolCall(t *testing.T) {
 func TestRunTurnTwoToolsInOneReply(t *testing.T) {
 	t.Parallel()
 
-	requireShell(t)
-
-	r, _ := toolRegistry(t)
+	r := toolRegistry(t)
 	fc := &fakeClient{responses: []llm.Response{
 		toolCallResp(
 			call("call_a", "echo", `{"n":1}`),
@@ -204,12 +196,6 @@ func TestRunTurnTwoToolsInOneReply(t *testing.T) {
 	if toolMsgs[0].ToolCallID != "call_a" || toolMsgs[1].ToolCallID != "call_b" {
 		t.Errorf("tool call ids = [%s %s], want [call_a call_b]", toolMsgs[0].ToolCallID, toolMsgs[1].ToolCallID)
 	}
-}
-
-func maybeTwoCalls(t *testing.T) *tools.Registry {
-	t.Helper()
-	r, _ := toolRegistry(t)
-	return r
 }
 
 func TestRunTurnToolInfraErrorContinues(t *testing.T) {
@@ -359,9 +345,7 @@ func TestRunTurnTooManyTurns(t *testing.T) {
 func TestRunTurnTooManyTurnsWithPartialText(t *testing.T) {
 	t.Parallel()
 
-	requireShell(t)
-
-	r := maybeTwoCalls(t)
+	r := toolRegistry(t)
 	// First call returns content plus a tool call; the content is emitted as
 	// partial text before execution continues.
 	respWithBoth := llm.Response{
@@ -390,9 +374,7 @@ func TestRunTurnTooManyTurnsWithPartialText(t *testing.T) {
 func TestRunTurnContentThenToolCalls(t *testing.T) {
 	t.Parallel()
 
-	requireShell(t)
-
-	r := maybeTwoCalls(t)
+	r := toolRegistry(t)
 	respWithBoth := llm.Response{
 		ID: "resp",
 		Message: llm.Message{
@@ -479,9 +461,7 @@ func TestHistoryDefensiveCopy(t *testing.T) {
 func TestRunTurnAbortedTurnRepairsHistory(t *testing.T) {
 	t.Parallel()
 
-	requireShell(t)
-
-	r, _ := toolRegistry(t)
+	r := toolRegistry(t)
 	// First response makes two tool calls, then the fake client errors as
 	// if the turn was cancelled mid-tool-loop.
 	fc := &fakeClient{
@@ -579,8 +559,4 @@ func TestRepairUnansweredToolCallsPreservesCallOrder(t *testing.T) {
 	if toolResults[0].ToolCallID != "call_b" || toolResults[1].ToolCallID != "call_a" {
 		t.Errorf("tool result ids = [%s %s], want [call_b call_a] (call order)", toolResults[0].ToolCallID, toolResults[1].ToolCallID)
 	}
-}
-
-func requireShell(t *testing.T) {
-	t.Helper()
 }
