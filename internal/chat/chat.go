@@ -62,22 +62,43 @@ func Run(ctx context.Context, opts Options) error {
 		defer mu.Unlock()
 		cancelTurn = cancel
 	}
-	wasInterrupted := func() bool {
+	// takeInterrupted returns and clears the interrupted flag so one
+	// interruption only affects the turn it landed on.
+	takeInterrupted := func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return interrupted
+		was := interrupted
+		interrupted = false
+		return was
 	}
 
 	exit := make(chan struct{})
 	var once sync.Once
 	requestExit := func() { once.Do(func() { close(exit) }) }
 
+	// done is closed when Run returns, so the forwarding and reader
+	// goroutines below stop instead of leaking.
+	done := make(chan struct{})
+	defer close(done)
+
 	sigint := make(chan os.Signal, 1)
 	if opts.SigintChan != nil {
 		// Forward from the injected test channel.
 		go func() {
-			for sig := range opts.SigintChan {
-				sigint <- sig
+			for {
+				select {
+				case sig, ok := <-opts.SigintChan:
+					if !ok {
+						return
+					}
+					select {
+					case sigint <- sig:
+					case <-done:
+						return
+					}
+				case <-done:
+					return
+				}
 			}
 		}()
 	} else {
@@ -86,20 +107,25 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	go func() {
-		for range sigint {
-			mu.Lock()
-			cancel := cancelTurn
-			if cancel != nil {
-				interrupted = true
-			}
-			cancelTurn = nil
-			mu.Unlock()
-			if cancel != nil {
-				// A turn is in flight: cancel just that turn.
-				cancel()
-			} else {
-				// Nothing in flight: exit the session.
-				requestExit()
+		for {
+			select {
+			case <-done:
+				return
+			case <-sigint:
+				mu.Lock()
+				cancel := cancelTurn
+				if cancel != nil {
+					interrupted = true
+				}
+				cancelTurn = nil
+				mu.Unlock()
+				if cancel != nil {
+					// A turn is in flight: cancel just that turn.
+					cancel()
+				} else {
+					// Nothing in flight: exit the session.
+					requestExit()
+				}
 			}
 		}
 	}()
@@ -107,7 +133,7 @@ func Run(ctx context.Context, opts Options) error {
 	fmt.Fprintf(opts.Stderr, "blorb %s (%s, %s)\n", opts.Version, opts.Config.Name, opts.Config.Provider.Model)
 
 	input := make(chan inputResult, 1)
-	go readLines(opts.Stdin, input)
+	go readLines(opts.Stdin, input, done)
 
 	needHeading := true
 	for {
@@ -147,7 +173,7 @@ func Run(ctx context.Context, opts Options) error {
 			setTurn(nil)
 			cancel()
 			needHeading = true
-			interrupted := wasInterrupted()
+			interrupted := takeInterrupted()
 
 			if runErr == nil {
 				// A signal landed just as the turn finished: exit cleanly.
@@ -170,14 +196,34 @@ type inputResult struct {
 	err  error
 }
 
-// readLines pumps trimmed lines of input until EOF or error.
-func readLines(r io.Reader, out chan<- inputResult) {
+// readLines pumps trimmed lines of input until EOF, error, or done is
+// closed (the session ending with stdin still open). The scanner accepts
+// lines up to 1 MiB so long pasted input arrives as one turn.
+func readLines(r io.Reader, out chan<- inputResult, done <-chan struct{}) {
 	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		out <- inputResult{line: strings.TrimSpace(scanner.Text())}
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		if !scanner.Scan() {
+			break
+		}
+		// Non-blocking send: if Run has exited, drop the line instead of
+		// blocking forever.
+		select {
+		case out <- inputResult{line: strings.TrimSpace(scanner.Text())}:
+		case <-done:
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		out <- inputResult{err: err}
+		select {
+		case out <- inputResult{err: err}:
+		case <-done:
+		}
 	}
 	close(out)
 }

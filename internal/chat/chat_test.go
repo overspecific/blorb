@@ -304,14 +304,15 @@ func TestRunSigintWhileIdleExits(t *testing.T) {
 	t.Parallel()
 
 	sigs := make(chan os.Signal, 1)
-	o, _, _ := newTestOptions(minimalConfig(), "")
+	o, _, stderr := newTestOptions(minimalConfig(), "")
 	o.SigintChan = sigs
 
 	runErr := make(chan error, 1)
 	go func() { runErr <- chat.Run(context.Background(), o) }()
 
-	// Give Run a moment to reach the read loop, then signal.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the banner, which Run prints right before entering the read
+	// loop, instead of sleeping a fixed interval.
+	awaitBanner(t, stderr)
 	sigs <- syscall.SIGINT
 
 	select {
@@ -322,6 +323,91 @@ func TestRunSigintWhileIdleExits(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after idle interrupt")
 	}
+}
+
+// awaitBanner waits until the stderr builder contains the banner text.
+func awaitBanner(t *testing.T, stderr *strings.Builder) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if strings.Contains(stderr.String(), "blorb") {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("banner never appeared on stderr")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// TestRunInterruptedTurnThenSuccessKeepsSession is a regression test: the
+// interrupted flag used to stick, so the next successful turn also exited.
+func TestRunInterruptedTurnThenSuccessKeepsSession(t *testing.T) {
+	t.Parallel()
+
+	sigs := make(chan os.Signal, 1)
+	cfg := minimalConfig()
+
+	// First turn blocks until interrupted; second turn succeeds.
+	client := &blockingClient{started: make(chan struct{})}
+	var stdout, stderr strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Version: "test",
+		Stdin:   strings.NewReader("start a long turn\ntry again\nexit\n"),
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+		NewClient: func(config.Config) (llm.Client, error) {
+			return &sequencedClient{first: client, rest: &fakeClient{
+				responses: []llm.Response{
+					{Message: llm.NewTextMessage(llm.RoleAssistant, "second try worked"), FinishReason: llm.FinishStop},
+				},
+			}}, nil
+		},
+		SigintChan: sigs,
+	}
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- chat.Run(context.Background(), o) }()
+
+	awaitTurnStarted(t, client)
+	sigs <- syscall.SIGINT
+
+	// The first turn ends interrupted; the session must stay alive and run
+	// the second turn successfully before "exit" ends it.
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return; session likely exited after the interrupted turn")
+	}
+
+	if !strings.Contains(stderr.String(), "(interrupted)") {
+		t.Errorf("stderr = %q, want the interrupted marker", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "second try worked") {
+		t.Errorf("stdout = %q, want the follow-up turn to run and reply", stdout.String())
+	}
+}
+
+// sequencedClient routes the first Chat call to first and all later calls
+// to rest.
+type sequencedClient struct {
+	first llm.Client
+	rest  llm.Client
+	once  sync.Once
+}
+
+func (s *sequencedClient) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	var c llm.Client
+	s.once.Do(func() { c = s.first })
+	if c == nil {
+		c = s.rest
+	}
+	return c.Chat(ctx, req)
 }
 
 // blockingClient blocks in Chat until its context is cancelled.
