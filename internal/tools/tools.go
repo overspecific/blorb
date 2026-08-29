@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/llm"
@@ -20,6 +22,10 @@ import (
 
 // DefaultTimeout bounds each tool execution.
 const DefaultTimeout = 30 * time.Second
+
+// maxOutputLen bounds captured stdout and stderr so a runaway tool cannot
+// exhaust memory. Truncated output is marked as such.
+const maxOutputLen = 1 << 20
 
 // maxStderrLen bounds captured stderr included in failure output.
 const maxStderrLen = 4 << 10
@@ -73,8 +79,16 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 		if !config.ToolNamePattern.MatchString(e.Name) {
 			return nil, fmt.Errorf("tool name %q must match %s", e.Name, config.ToolNamePattern)
 		}
+		if e.Description == "" {
+			return nil, fmt.Errorf("tool %q: description is required", e.Name)
+		}
 		if len(e.Command) == 0 {
 			return nil, fmt.Errorf("tool %q: command is required", e.Name)
+		}
+		for _, cmd := range e.Command {
+			if cmd == "" {
+				return nil, fmt.Errorf("tool %q: command must not contain empty strings", e.Name)
+			}
 		}
 		if _, dup := r.tools[e.Name]; dup {
 			return nil, fmt.Errorf("duplicate tool name %q", e.Name)
@@ -95,13 +109,7 @@ func (r *Registry) Names() []string {
 	for name := range r.tools {
 		names = append(names, name)
 	}
-	for i := range names {
-		for j := i + 1; j < len(names); j++ {
-			if names[j] < names[i] {
-				names[i], names[j] = names[j], names[i]
-			}
-		}
-	}
+	sort.Strings(names)
 	return names
 }
 
@@ -148,7 +156,7 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	cmd.Stdin = bytes.NewReader(args)
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr limitedBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -168,7 +176,7 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 		killProcessGroup(cmd.Process)
 		runErr = <-errCh
 		if ctx.Err() != nil {
-			return ToolResult{}, ctx.Err()
+			return ToolResult{}, fmt.Errorf("tool %q: %w", name, ctx.Err())
 		}
 		return ToolResult{}, fmt.Errorf("tool %q: timed out after %s", name, r.timeout)
 	}
@@ -210,7 +218,44 @@ func trimSingleTrailingNewline(s string) string {
 
 func truncateStderr(s string) string {
 	if len(s) > maxStderrLen {
-		return s[:maxStderrLen] + "...(truncated)"
+		return truncateRunes(s, maxStderrLen) + "...(truncated)"
 	}
 	return s
+}
+
+// limitedBuffer is an io.Writer that retains at most maxOutputLen bytes and
+// reports whether it dropped anything beyond that.
+type limitedBuffer struct {
+	buf     bytes.Buffer
+	dropped bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if room := maxOutputLen - b.buf.Len(); room > 0 {
+		if len(p) > room {
+			b.buf.Write(p[:room])
+			b.dropped = true
+		} else {
+			b.buf.Write(p)
+		}
+	} else {
+		b.dropped = true
+	}
+	return len(p), nil // always claim success so the child never sees an error
+}
+
+func (b *limitedBuffer) String() string {
+	s := b.buf.String()
+	if b.dropped {
+		s += "\n...(output truncated at 1 MiB)"
+	}
+	return s
+}
+
+// truncateRunes cuts s to at most max bytes without splitting a UTF-8 rune.
+func truncateRunes(s string, max int) string {
+	for max < len(s) && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }

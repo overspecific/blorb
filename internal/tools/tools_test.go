@@ -76,6 +76,21 @@ func TestNewRegistry(t *testing.T) {
 			t.Error("NewRegistry succeeded, want error")
 		}
 	})
+
+	t.Run("rejects empty command element", func(t *testing.T) {
+		t.Parallel()
+		_, err := tools.NewRegistry([]config.ToolEntry{entry("t", "Empty element.", "echo", "")})
+		if err == nil || !strings.Contains(err.Error(), "empty strings") {
+			t.Errorf("error = %v, want empty command element error", err)
+		}
+	})
+
+	t.Run("rejects empty description", func(t *testing.T) {
+		t.Parallel()
+		if _, err := tools.NewRegistry([]config.ToolEntry{entry("t", "", "echo")}); err == nil {
+			t.Error("NewRegistry succeeded, want error")
+		}
+	})
 }
 
 func TestDefinitions(t *testing.T) {
@@ -293,5 +308,35 @@ func TestRunWithContextCancellation(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error = %v, want context.Canceled", err)
+	}
+	if !strings.Contains(err.Error(), "sleeper") {
+		t.Errorf("error = %q, want it to name the tool", err)
+	}
+}
+
+func TestRunOutputCapTruncates(t *testing.T) {
+	requireExecTools(t)
+	t.Parallel()
+
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		// Write well beyond the 1 MiB output cap.
+		entry("spewer", "Writes lots of output.", "sh", "-c", `head -c $((2 * 1024 * 1024)) /dev/zero | tr '\0' 'x'`),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	res, err := r.Run(context.Background(), "spewer", nil)
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if res.Err {
+		t.Error("res.Err = true, want false")
+	}
+	if !strings.Contains(res.Output, "output truncated") {
+		t.Errorf("res.Output marker missing truncation notice (len=%d)", len(res.Output))
+	}
+	if len(res.Output) > (1<<20)+64 {
+		t.Errorf("res.Output length = %d, want at most ~1 MiB plus notice", len(res.Output))
 	}
 }
