@@ -399,8 +399,8 @@ func TestRunTurnContentThenToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTurn error = %v, want nil", err)
 	}
-	if final != "final" {
-		t.Errorf("final = %q, want %q", final, "final")
+	if final != "let me check\nfinal" {
+		t.Errorf("final = %q, want accumulated text %q", final, "let me check\nfinal")
 	}
 	if len(texts) != 2 || texts[0] != "let me check" || texts[1] != "final" {
 		t.Errorf("text events = %v, want [let me check final]", texts)

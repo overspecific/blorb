@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/llm"
@@ -79,6 +80,8 @@ func New(cfg EngineConfig) *Engine {
 // RunTurn appends the user message and loops API calls and tool executions
 // until the model produces a final text. Events are emitted via onEvent as
 // the turn progresses; an onEvent error aborts the turn with that error.
+// The returned text is all assistant text produced during the turn:
+// content emitted alongside tool calls plus the final message, in order.
 func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(Event) error) (final string, err error) {
 	e.currentCalls = 0
 	historyLen := len(e.history)
@@ -98,6 +101,7 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 		onEvent = func(Event) error { return nil }
 	}
 
+	var text strings.Builder
 	for {
 		resp, err := e.call(ctx)
 		if err != nil {
@@ -125,7 +129,12 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 				return "", fmt.Errorf("response was truncated by the provider (finish_reason %s)", llm.FinishLength)
 			}
 			e.history = append(e.history, resp.Message)
-			return resp.Message.Content, nil
+			return text.String() + resp.Message.Content, nil
+		}
+
+		text.WriteString(resp.Message.Content)
+		if text.Len() > 0 && resp.Message.Content != "" {
+			text.WriteString("\n")
 		}
 
 		e.history = append(e.history, resp.Message)
