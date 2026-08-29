@@ -11,7 +11,7 @@
     {
       "name": "echo",
       "description": "Echoes back whatever text you pass in, prefixed with 'echo: '. Use it whenever the user asks you to repeat something.",
-      "command": ["echo"],
+      "command": ["jq", "-r", "\"echo: \" + .message"],
       "args_schema": {
         "type": "object",
         "properties": {
