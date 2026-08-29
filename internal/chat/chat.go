@@ -253,6 +253,15 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 		wroteToStdout    bool
 	)
 
+	// flushStdout terminates any streamed partial line on stdout before
+	// stderr activity begins, so the two streams stay readable.
+	flushStdout := func() {
+		if wroteToStdout {
+			fmt.Fprint(stdout, "\n")
+			wroteToStdout = false
+		}
+	}
+
 	onEvent := func(ev engine.Event) error {
 		switch ev.Kind {
 		case engine.EventAssistantThinking:
@@ -280,6 +289,7 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 		case engine.EventToolCallDelta:
 			if !toolHeadings[ev.Name] {
 				toolHeadings[ev.Name] = true
+				flushStdout()
 				fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
 			}
 			fmt.Fprint(stderr, ev.Args)
@@ -292,6 +302,9 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 				fmt.Fprintln(stderr, ev.Args)
 			}
 		case engine.EventToolResult:
+			// A partial streamed line on stdout must be terminated before
+			// writing to stderr.
+			flushStdout()
 			marker := "Result:"
 			if ev.Failed {
 				marker = "Error:"
@@ -302,10 +315,7 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 	}
 
 	flush := func() {
-		if wroteToStdout {
-			fmt.Fprint(stdout, "\n")
-			wroteToStdout = false
-		}
+		flushStdout()
 	}
 
 	return onEvent, flush
