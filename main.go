@@ -2,20 +2,18 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/overspecific/goblorb/internal/chat"
+	"github.com/overspecific/goblorb/internal/cli"
 	"github.com/overspecific/goblorb/internal/config"
 )
 
 // version is set at build time via -ldflags "-X main.version=..." (see bin/build).
 var version = "dev"
-
-const defaultConfigPath = "./blorb.json"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -34,6 +32,9 @@ func run(args []string) int {
 	case "help", "-h", "--help":
 		usage()
 		return 0
+	case "-V", "--version":
+		fmt.Println(version)
+		return 0
 	case "chat":
 		return cmdChat(args[1:])
 	default:
@@ -44,22 +45,22 @@ func run(args []string) int {
 }
 
 func cmdChat(args []string) int {
-	fs := flag.NewFlagSet("chat", flag.ContinueOnError)
-	configPath := fs.String("config", defaultConfigPath, "path to blorb.json")
-	showVersion := fs.Bool("version", false, "print the version and exit")
-	if err := fs.Parse(args); err != nil {
+	flags, err := cli.ParseChatFlags(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "blorb chat: %v\n\n", err)
+		fmt.Fprintf(os.Stderr, "Usage: blorb chat [-c | --config <path>] [-h | --help] [-V | --version]\n")
 		return 2
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "blorb chat: unexpected argument %q\n", fs.Arg(0))
-		return 2
+	if flags.ShowHelp {
+		chatUsage()
+		return 0
 	}
-	if *showVersion {
+	if flags.ShowVersion {
 		fmt.Println(version)
 		return 0
 	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(flags.ConfigPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "blorb chat: %v\n", err)
 		return 1
@@ -94,5 +95,16 @@ Commands:
   chat      Chat with an agent defined in blorb.json
   version   Print the version
   help      Print this help
+`)
+}
+
+func chatUsage() {
+	fmt.Fprint(os.Stderr, `Usage: blorb chat [flags]
+
+Flags:
+
+  -c, --config <path>   Path to blorb.json (default ./blorb.json)
+  -h, --help            Print this help
+  -V, --version         Print the version
 `)
 }
