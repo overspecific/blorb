@@ -7,12 +7,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/tools"
 )
-
-// DefaultMaxTurns bounds API calls per turn when MaxTurns is unset.
-const DefaultMaxTurns = 10
 
 // ErrTooManyTurns is returned when MaxTurns is exhausted without a final
 // assistant text. The wrapped message, when present, is the last assistant
@@ -56,7 +54,8 @@ type EngineConfig struct {
 	Tools  *tools.Registry
 	// SystemPrompt seeds the conversation as the first message.
 	SystemPrompt string
-	// MaxTurns bounds API calls per RunTurn; zero means DefaultMaxTurns.
+	// MaxTurns bounds API calls per RunTurn; zero means
+	// config.DefaultMaxTurns.
 	MaxTurns int
 }
 
@@ -72,7 +71,7 @@ type Engine struct {
 func New(cfg EngineConfig) *Engine {
 	maxTurns := cfg.MaxTurns
 	if maxTurns == 0 {
-		maxTurns = DefaultMaxTurns
+		maxTurns = config.DefaultMaxTurns
 	}
 	return &Engine{cfg: cfg, maxTurns: maxTurns}
 }
@@ -82,13 +81,15 @@ func New(cfg EngineConfig) *Engine {
 // the turn progresses; an onEvent error aborts the turn with that error.
 func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(Event) error) (final string, err error) {
 	e.currentCalls = 0
+	historyLen := len(e.history)
 	e.history = append(e.history, llm.NewTextMessage(llm.RoleUser, userMessage))
 
-	// An aborted turn can leave assistant tool calls without matching tool
-	// results (e.g. interruption mid-run). Repair history so the next
-	// request stays protocol-valid.
+	// An aborted turn can leave the user message unanswered, or assistant
+	// tool calls without matching tool results (e.g. interruption mid-run).
+	// Repair history so the next request stays protocol-valid.
 	defer func() {
 		if err != nil {
+			e.history = e.history[:historyLen]
 			e.repairUnansweredToolCalls()
 		}
 	}()
@@ -132,6 +133,16 @@ func (e *Engine) History() []llm.Message {
 	out := make([]llm.Message, len(e.history))
 	copy(out, e.history)
 	return out
+}
+
+// SeedHistoryForTest replaces the conversation history. Tests only.
+func (e *Engine) SeedHistoryForTest(msgs []llm.Message) {
+	e.history = append([]llm.Message(nil), msgs...)
+}
+
+// RepairUnansweredToolCallsForTest exposes the history repair pass. Tests only.
+func (e *Engine) RepairUnansweredToolCallsForTest() {
+	e.repairUnansweredToolCalls()
 }
 
 // call performs one API call, seeding the system prompt and enforcing
@@ -226,8 +237,7 @@ func (e *Engine) repairUnansweredToolCalls() {
 		if m.Role != llm.RoleAssistant {
 			continue
 		}
-		for j := len(m.ToolCalls) - 1; j >= 0; j-- {
-			tc := m.ToolCalls[j]
+		for _, tc := range m.ToolCalls {
 			if tc.ID != "" && !answered[tc.ID] {
 				e.history = append(e.history,
 					llm.NewToolResultMessage(tc.ID, "tool call was interrupted before it ran", true))
@@ -239,7 +249,8 @@ func (e *Engine) repairUnansweredToolCalls() {
 func (e *Engine) lastAssistantMessage() *llm.Message {
 	for i := len(e.history) - 1; i >= 0; i-- {
 		if e.history[i].Role == llm.RoleAssistant {
-			return &e.history[i]
+			msg := e.history[i]
+			return &msg
 		}
 	}
 	return nil

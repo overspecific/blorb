@@ -499,9 +499,73 @@ func TestRunTurnAbortedTurnRepairsHistory(t *testing.T) {
 		t.Fatal("RunTurn succeeded, want the injected error")
 	}
 
-	// The second call failed, so only one tool result was recorded. The
-	// repair pass must have backfilled the missing one so the next
-	// request's message sequence is protocol-valid.
+	// The second call failed, so the whole turn is rolled back: no user
+	// message, assistant message, or tool results remain in history.
+	h := e.History()
+	if len(h) != 0 {
+		t.Fatalf("history after failed turn = %+v, want empty (turn rolled back)", h)
+	}
+}
+
+func TestRunTurnFailedTurnDoesNotLeaveOrphanedUserMessage(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeClient{err: errors.New("api down")}
+	e := engine.New(engine.EngineConfig{Client: fc})
+
+	if _, err := e.RunTurn(context.Background(), "first turn", func(engine.Event) error { return nil }); err == nil {
+		t.Fatal("RunTurn succeeded, want the injected error")
+	}
+
+	// The turn failed before any response, so history must be as it was
+	// before the turn: no orphaned user message.
+	h := e.History()
+	if len(h) != 0 {
+		t.Fatalf("history after failed turn = %+v, want empty", h)
+	}
+
+	// A subsequent turn must work and carry only its own user message.
+	fc.err = nil
+	fc.responses = []llm.Response{textResp("second answer")}
+	final, err := e.RunTurn(context.Background(), "second turn", func(engine.Event) error { return nil })
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if final != "second answer" {
+		t.Errorf("final = %q, want %q", final, "second answer")
+	}
+
+	if len(fc.requests) == 0 {
+		t.Fatal("no API calls recorded")
+	}
+	msgs := fc.requests[len(fc.requests)-1].Messages
+	if len(msgs) != 1 || msgs[0].Role != llm.RoleUser || msgs[0].Content != "second turn" {
+		t.Errorf("last request messages = %+v, want a single user message from the second turn", msgs)
+	}
+}
+
+func TestRepairUnansweredToolCallsPreservesCallOrder(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeClient{}
+	e := engine.New(engine.EngineConfig{Client: fc})
+
+	// Seed history directly: an assistant message with two unanswered tool
+	// calls in non-sorted order. The engine has no mutation API for this,
+	// so call the repair pass directly (white-box).
+	e.SeedHistoryForTest([]llm.Message{
+		llm.NewTextMessage(llm.RoleUser, "go"),
+		{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{
+				call("call_b", "echo", `{"n":1}`),
+				call("call_a", "echo", `{"n":2}`),
+			},
+		},
+	})
+
+	e.RepairUnansweredToolCallsForTest()
+
 	h := e.History()
 	var toolResults []llm.Message
 	for _, m := range h {
@@ -512,8 +576,8 @@ func TestRunTurnAbortedTurnRepairsHistory(t *testing.T) {
 	if len(toolResults) != 2 {
 		t.Fatalf("tool result messages after repair = %d, want 2", len(toolResults))
 	}
-	if toolResults[0].ToolCallID != "call_a" || toolResults[1].ToolCallID != "call_b" {
-		t.Errorf("tool result ids = [%s %s], want [call_a call_b]", toolResults[0].ToolCallID, toolResults[1].ToolCallID)
+	if toolResults[0].ToolCallID != "call_b" || toolResults[1].ToolCallID != "call_a" {
+		t.Errorf("tool result ids = [%s %s], want [call_b call_a] (call order)", toolResults[0].ToolCallID, toolResults[1].ToolCallID)
 	}
 }
 
