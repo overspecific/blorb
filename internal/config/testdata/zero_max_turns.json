@@ -6,11 +6,5 @@
     "model": "gpt-4o-mini",
     "base_url": "https://api.example.com/v1"
   },
-  "max_turns": 5,
-  "tools": [
-    {
-      "name": "t",
-      "command": ["echo"]
-    }
-  ]
+  "max_turns": 0
 }

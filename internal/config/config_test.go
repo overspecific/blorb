@@ -80,11 +80,23 @@ func TestLoadMaxTurnsDefault(t *testing.T) {
 	if cfg.Provider.APIKeyEnv != "MY_API_KEY" {
 		t.Errorf("APIKeyEnv = %q, want %q", cfg.Provider.APIKeyEnv, "MY_API_KEY")
 	}
-	if cfg.MaxTurns != 0 {
-		t.Errorf("MaxTurns = %d, want 0 (unset)", cfg.MaxTurns)
+	if cfg.MaxTurns != 5 {
+		t.Errorf("MaxTurns = %d, want 5", cfg.MaxTurns)
 	}
+	if got, want := cfg.MaxTurnsOrDefault(), 5; got != want {
+		t.Errorf("MaxTurnsOrDefault() = %d, want %d", got, want)
+	}
+}
+
+func TestMaxTurnsOrDefaultProgrammatic(t *testing.T) {
+	cfg := config.Config{}
 	if got := cfg.MaxTurnsOrDefault(); got != config.DefaultMaxTurns {
-		t.Errorf("MaxTurnsOrDefault() = %d, want %d", got, config.DefaultMaxTurns)
+		t.Errorf("MaxTurnsOrDefault() = %d, want %d for zero value", got, config.DefaultMaxTurns)
+	}
+
+	cfg.MaxTurns = 7
+	if got := cfg.MaxTurnsOrDefault(); got != 7 {
+		t.Errorf("MaxTurnsOrDefault() = %d, want 7", got)
 	}
 }
 
@@ -108,6 +120,7 @@ func TestLoadRejects(t *testing.T) {
 		{"duplicate_tool_names.json", []string{"duplicate tool name"}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
 		{"negative_max_turns.json", []string{"max_turns"}},
+		{"zero_max_turns.json", []string{"max_turns must be at least 1 (got 0)"}},
 	}
 
 	for _, tc := range cases {

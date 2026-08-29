@@ -98,7 +98,7 @@ func (c *Config) Validate() error {
 	if err := c.Provider.validate(); err != nil {
 		return fmt.Errorf("provider: %w", err)
 	}
-	if c.MaxTurns < 0 {
+	if c.MaxTurns < 1 {
 		return fmt.Errorf("max_turns must be at least 1 (got %d)", c.MaxTurns)
 	}
 	for _, t := range c.Tools {
@@ -156,12 +156,12 @@ func (t *ToolEntry) validate() error {
 }
 
 func validateUniqueToolNames(tools []ToolEntry) error {
-	seen := make(map[string]bool, len(tools))
+	seen := make(map[string]struct{}, len(tools))
 	for _, t := range tools {
-		if seen[t.Name] {
+		if _, ok := seen[t.Name]; ok {
 			return fmt.Errorf("duplicate tool name %q", t.Name)
 		}
-		seen[t.Name] = true
+		seen[t.Name] = struct{}{}
 	}
 	return nil
 }
