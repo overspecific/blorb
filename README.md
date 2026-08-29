@@ -1,5 +1,7 @@
-# Blorb
+> **A little human note:** this is very much in the early slop zone - definitely a work-in-progress and I haven't spent much time going over things; I'm kind of just sketching out the shape. Your mileage may very much vary, it might set things on fire etc etc. 
+> _-- Simon_
 
+# Blorb
 ![Blorb](assets/blorb.jpg)
 
 A single-binary tool for making AI agents.
