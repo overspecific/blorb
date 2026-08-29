@@ -4,10 +4,10 @@ Adds streaming of LLM responses over Server-Sent Events (SSE), from the OpenAI-c
 
 ## Todo
 
-- [ ] Commit 1: Streaming types and interface
-- [ ] Commit 2: OpenAI streaming client
-- [ ] Commit 3: Engine streaming
-- [ ] Commit 4: Chat UI and CLI
+- [x] Commit 1: Streaming types and interface
+- [x] Commit 2: OpenAI streaming client
+- [x] Commit 3: Engine streaming
+- [x] Commit 4: Chat UI and CLI
 
 ---
 
