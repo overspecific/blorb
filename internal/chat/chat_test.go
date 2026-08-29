@@ -453,7 +453,7 @@ func TestNewClient(t *testing.T) {
 		t.Setenv("BLORB_TEST_KEY", "key-value")
 
 		cfg := minimalConfig()
-		cfg.Provider.APIKeyEnv = "BLORB_TEST_KEY"
+		cfg.Provider.APIKeyEnv = ptr("BLORB_TEST_KEY")
 
 		client, err := chat.NewClient(cfg)
 		if err != nil || client == nil {
@@ -463,7 +463,7 @@ func TestNewClient(t *testing.T) {
 
 	t.Run("openai with missing key env", func(t *testing.T) {
 		cfg := minimalConfig()
-		cfg.Provider.APIKeyEnv = "BLORB_TEST_MISSING_KEY"
+		cfg.Provider.APIKeyEnv = ptr("BLORB_TEST_MISSING_KEY")
 
 		_, err := chat.NewClient(cfg)
 		if err == nil || !strings.Contains(err.Error(), "BLORB_TEST_MISSING_KEY") {
@@ -480,4 +480,8 @@ func TestNewClient(t *testing.T) {
 			t.Errorf("error = %v, want an unsupported-type error", err)
 		}
 	})
+}
+
+func ptr(s string) *string {
+	return &s
 }

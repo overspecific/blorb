@@ -263,10 +263,10 @@ func NewClient(cfg config.Config) (llm.Client, error) {
 	switch cfg.Provider.Type {
 	case config.ProviderTypeOpenAI:
 		apiKey := ""
-		if cfg.Provider.APIKeyEnv != "" {
-			apiKey = os.Getenv(cfg.Provider.APIKeyEnv)
+		if envName := cfg.Provider.APIKeyEnvOrDefault(); envName != "" {
+			apiKey = os.Getenv(envName)
 			if apiKey == "" {
-				return nil, fmt.Errorf("api_key_env %q is set but the environment variable is empty", cfg.Provider.APIKeyEnv)
+				return nil, fmt.Errorf("api_key_env %q is set but the environment variable is empty", envName)
 			}
 		}
 		return openai.New(openai.Config{

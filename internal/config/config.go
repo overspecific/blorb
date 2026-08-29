@@ -4,7 +4,9 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"regexp"
@@ -39,9 +41,20 @@ type Provider struct {
 	Type string `json:"type"`
 
 	// Fields for type "openai".
-	Model     string `json:"model,omitempty"`
-	BaseURL   string `json:"base_url,omitempty"`
-	APIKeyEnv string `json:"api_key_env,omitempty"`
+	Model   string `json:"model,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+	// APIKeyEnv names the environment variable holding the API key. It is
+	// a pointer so an explicit "api_key_env": "" is distinguishable from
+	// an absent field: empty is a config error, absent means no key.
+	APIKeyEnv *string `json:"api_key_env,omitempty"`
+}
+
+// APIKeyEnvOrDefault returns the configured api_key_env, or "" when unset.
+func (p *Provider) APIKeyEnvOrDefault() string {
+	if p.APIKeyEnv == nil {
+		return ""
+	}
+	return *p.APIKeyEnv
 }
 
 // ToolEntry is a tool declaration in blorb.json.
@@ -65,8 +78,8 @@ func Load(path string) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	if err := dec.Decode(&struct{}{}); err == nil {
-		return Config{}, fmt.Errorf("parse config %s: unexpected trailing JSON values", path)
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Config{}, fmt.Errorf("parse config %s: unexpected trailing data after JSON value", path)
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid config %s: %w", path, err)
@@ -128,6 +141,9 @@ func (p *Provider) validate() error {
 		if u.Host == "" {
 			return fmt.Errorf("base_url %q must include a host", p.BaseURL)
 		}
+		if p.APIKeyEnv != nil && *p.APIKeyEnv == "" {
+			return fmt.Errorf("api_key_env must not be empty when set")
+		}
 	default:
 		return fmt.Errorf("unknown type %q (supported: %v)", p.Type, SupportedProviderTypes())
 	}
@@ -151,6 +167,9 @@ func (t *ToolEntry) validate() error {
 		if cmd == "" {
 			return fmt.Errorf("command must not contain empty strings")
 		}
+	}
+	if len(t.ArgsSchema) > 0 && !json.Valid(t.ArgsSchema) {
+		return fmt.Errorf("args_schema must be valid JSON")
 	}
 	return nil
 }

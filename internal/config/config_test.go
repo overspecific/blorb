@@ -77,8 +77,8 @@ func TestLoadMaxTurnsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load error = %v, want nil", err)
 	}
-	if cfg.Provider.APIKeyEnv != "MY_API_KEY" {
-		t.Errorf("APIKeyEnv = %q, want %q", cfg.Provider.APIKeyEnv, "MY_API_KEY")
+	if cfg.Provider.APIKeyEnvOrDefault() != "MY_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", cfg.Provider.APIKeyEnvOrDefault(), "MY_API_KEY")
 	}
 	if cfg.MaxTurns != 5 {
 		t.Errorf("MaxTurns = %d, want 5", cfg.MaxTurns)
@@ -97,6 +97,49 @@ func TestMaxTurnsOrDefaultProgrammatic(t *testing.T) {
 	cfg.MaxTurns = 7
 	if got := cfg.MaxTurnsOrDefault(); got != 7 {
 		t.Errorf("MaxTurnsOrDefault() = %d, want 7", got)
+	}
+}
+
+// TestValidateRejectsBadArgsSchema covers args_schema validation. It cannot
+// be exercised through Load: json.RawMessage only captures values that are
+// already valid JSON, so invalid schema JSON fails the outer parse first.
+func TestValidateRejectsBadArgsSchema(t *testing.T) {
+	cfg := config.Config{
+		Name:         "helper",
+		SystemPrompt: "You are helpful.",
+		Provider: config.Provider{
+			Type:    config.ProviderTypeOpenAI,
+			Model:   "m",
+			BaseURL: "http://localhost:1",
+		},
+		MaxTurns: 5,
+		Tools: []config.ToolEntry{{
+			Name:        "t",
+			Description: "Broken schema.",
+			Command:     []string{"echo"},
+			ArgsSchema:  json.RawMessage(`{oops`),
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "args_schema must be valid JSON") {
+		t.Errorf("Validate error = %v, want an args_schema error", err)
+	}
+}
+
+func TestValidateAcceptsMissingAPIKeyEnv(t *testing.T) {
+	cfg := config.Config{
+		Name:         "helper",
+		SystemPrompt: "You are helpful.",
+		Provider: config.Provider{
+			Type:    config.ProviderTypeOpenAI,
+			Model:   "m",
+			BaseURL: "http://localhost:1",
+		},
+		MaxTurns: 5,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate error = %v, want nil when api_key_env is absent", err)
 	}
 }
 
@@ -121,6 +164,7 @@ func TestLoadRejects(t *testing.T) {
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
 		{"negative_max_turns.json", []string{"max_turns"}},
 		{"zero_max_turns.json", []string{"max_turns must be at least 1 (got 0)"}},
+		{"empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
 	}
 
 	for _, tc := range cases {
@@ -163,6 +207,21 @@ func TestLoadErrors(t *testing.T) {
 		_, err := config.Load(path)
 		if err == nil {
 			t.Fatal("Load succeeded, want error")
+		}
+	})
+
+	t.Run("trailing garbage", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "garbage.json")
+		if err := os.WriteFile(path, []byte(`{"provider":{"type":"openai","model":"m","base_url":"http://x"}} xyz`), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		_, err := config.Load(path)
+		if err == nil {
+			t.Fatal("Load succeeded, want error")
+		}
+		if !contains(err.Error(), "trailing") {
+			t.Errorf("error = %q, want a trailing-data mention", err)
 		}
 	})
 
