@@ -275,6 +275,69 @@ func TestRunStreamedToolCallDeltasOnStderr(t *testing.T) {
 	}
 }
 
+// TestRunStreamedToolRoundsRenderPerRound is a regression test for a
+// multi-round streamed turn: after a tool result, the next assistant round
+// must print fresh thinking/text headings rather than streaming raw, and
+// spacing between blocks must be consistent.
+func TestRunStreamedToolRoundsRenderPerRoundHeadings(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker.txt")
+
+	cfg := minimalConfig()
+	cfg.Tools = []config.ToolEntry{{
+		Name:        "touch",
+		Description: "Creates a marker file.",
+		Command:     []string{"touch", marker},
+	}}
+
+	toolCallResp := llm.Response{
+		Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			Reasoning: "round one thinking",
+			Content:   "calling the tool",
+			ToolCalls: []llm.ToolCall{{
+				ID: "call_1", Type: "function", FunctionName: "touch", FunctionArgs: "{}",
+			}},
+		},
+		FinishReason: llm.FinishToolCalls,
+	}
+	finalResp := llm.Response{
+		Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			Content:   "final answer",
+			Reasoning: "round two thinking",
+		},
+		FinishReason: llm.FinishStop,
+	}
+	o, stdout, _ := newStreamingTestOptions(cfg, "run it\nexit\n", toolCallResp, finalResp)
+	o.Stream = true
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	// Both rounds get their own heading pairs.
+	if strings.Count(out, ">>> Assistant (thinking):") != 2 {
+		t.Errorf("stdout = %q, want one thinking heading per streamed round (2 total)", out)
+	}
+	if strings.Count(out, ">>> Assistant:\n") != 2 {
+		t.Errorf("stdout = %q, want one Assistant heading per streamed round (2 total)", out)
+	}
+	if !strings.Contains(out, ">>> Assistant (thinking):\nround one thinking") {
+		t.Errorf("stdout = %q, want round one reasoning under a heading", out)
+	}
+	if !strings.Contains(out, ">>> Assistant:\nfinal answer\n") {
+		t.Errorf("stdout = %q, want the final round streamed under a heading", out)
+	}
+	// Tool result activity stays on stderr.
+	if strings.Contains(out, ">>> Result:") {
+		t.Errorf("stdout = %q, want tool results on stderr", out)
+	}
+}
+
 func TestRunStreamOffUsesWholeMessagePath(t *testing.T) {
 	t.Parallel()
 

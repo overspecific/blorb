@@ -250,16 +250,31 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 		printedThinking  bool
 		streamedToolCall bool
 		toolHeadings     = map[string]bool{}
-		wroteToStdout    bool
+		// partialStdout tracks whether a streamed fragment left stdout
+		// mid-line, so the next block can terminate it first.
+		partialStdout bool
 	)
 
-	// flushStdout terminates any streamed partial line on stdout before
-	// stderr activity begins, so the two streams stay readable.
-	flushStdout := func() {
-		if wroteToStdout {
+	endStdoutLine := func() {
+		if partialStdout {
 			fmt.Fprint(stdout, "\n")
-			wroteToStdout = false
+			partialStdout = false
 		}
+	}
+
+	writeDelta := func(fragment string) {
+		fmt.Fprint(stdout, fragment)
+		partialStdout = !strings.HasSuffix(fragment, "\n")
+	}
+
+	// startRound resets per-round heading state: streamed fragments print
+	// their heading once per assistant round, and a tool result ends the
+	// current round, so the next response's blocks start fresh.
+	startRound := func() {
+		printedHeading = false
+		printedThinking = false
+		streamedToolCall = false
+		toolHeadings = map[string]bool{}
 	}
 
 	onEvent := func(ev engine.Event) error {
@@ -274,29 +289,29 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 			fmt.Fprintln(stdout, ev.Text)
 		case engine.EventAssistantThinkingDelta:
 			if !printedThinking {
+				endStdoutLine()
 				fmt.Fprint(stdout, "\n>>> Assistant (thinking):\n")
 				printedThinking = true
 			}
-			fmt.Fprint(stdout, ev.Text)
-			wroteToStdout = true
+			writeDelta(ev.Text)
 		case engine.EventAssistantTextDelta:
 			if !printedHeading {
+				endStdoutLine()
 				fmt.Fprintln(stdout, "\n>>> Assistant:")
 				printedHeading = true
 			}
-			fmt.Fprint(stdout, ev.Text)
-			wroteToStdout = true
+			writeDelta(ev.Text)
 		case engine.EventToolCallDelta:
-			if !toolHeadings[ev.Name] {
+			if ev.Name != "" && !toolHeadings[ev.Name] {
 				toolHeadings[ev.Name] = true
-				flushStdout()
+				streamedToolCall = true
+				endStdoutLine()
 				fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
 			}
 			fmt.Fprint(stderr, ev.Args)
-			streamedToolCall = true
 		case engine.EventToolCall:
-			// The streamed fragments already rendered this call; skip the
-			// whole-message block to avoid printing it twice.
+			// In streaming mode the fragments already rendered this call;
+			// skip the whole-message block to avoid printing it twice.
 			if !streamedToolCall {
 				fmt.Fprintf(stderr, "\n>>> Tool: %s\n", ev.Name)
 				fmt.Fprintln(stderr, ev.Args)
@@ -304,19 +319,18 @@ func chatEvents(stdout, stderr io.Writer) (func(engine.Event) error, func()) {
 		case engine.EventToolResult:
 			// A partial streamed line on stdout must be terminated before
 			// writing to stderr.
-			flushStdout()
+			endStdoutLine()
 			marker := "Result:"
 			if ev.Failed {
 				marker = "Error:"
 			}
 			fmt.Fprintf(stderr, "\n>>> %s Tool: %s\n%s\n", marker, ev.Name, ev.Output)
+			startRound()
 		}
 		return nil
 	}
 
-	flush := func() {
-		flushStdout()
-	}
+	flush := endStdoutLine
 
 	return onEvent, flush
 }
