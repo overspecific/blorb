@@ -8,10 +8,10 @@ Adds streaming of LLM responses over Server-Sent Events (SSE), from the OpenAI-c
 - [x] Commit 2: OpenAI streaming client
 - [x] Commit 3: Engine streaming
 - [x] Commit 4: Chat UI and CLI
-- [ ] Commit 5: Cap reasoning and tool-call argument accumulation
-- [ ] Commit 6: Carry tool-call index through delta events
-- [ ] Commit 7: Harden ChatStream non-2xx and empty-stream handling
-- [ ] Commit 8: Fix stale docs and update README
+- [x] Commit 5: Cap reasoning and tool-call argument accumulation
+- [x] Commit 6: Carry tool-call index through delta events
+- [x] Commit 7: Harden ChatStream non-2xx and empty-stream handling
+- [x] Commit 8: Fix stale docs and update README
 
 ---
 
