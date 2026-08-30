@@ -121,6 +121,7 @@ Agents are defined in a `blorb.json` file:
 | `max_turns`     | no       | Max model turns per user message (default 10). |
 | `tools`         | no       | List of tool declarations (see below).         |
 | `logging`       | no       | Wire logging config (see below).               |
+| `prefactor`     | no       | Prefactor tracing config (see below).          |
 
 
 
@@ -173,6 +174,48 @@ Each chat session writes into its own subdirectory of the log dir, named `<times
 Files are named `<timestamp>-<kind>.txt`, e.g. `20260830T142533-123456789-llm-request.txt`. The kinds are `llm-request`, `llm-response`, `tool-request`, and `tool-result`. Because the timestamp comes first with nanosecond precision, sorting the filenames within a session's subdirectory replays the turn in order.
 
 Log files capture full request/response bodies and headers, including any API key sent to the provider, and the full content of tool calls and results. Keep them out of version control and treat them as sensitive. Log writes are best-effort: a logging failure never fails the agent run.
+
+### Prefactor tracing
+
+Blorb can trace every agent run to [Prefactor](https://prefactor.ai), an agent-activity auditing platform. Add a `prefactor` block to enable it; when present, chat sessions are recorded as Prefactor agent instances, and each user message, assistant message, LLM API call, and tool call becomes a span within the instance.
+
+```json
+{
+  "prefactor": {
+    "api_token_env": "PREFACTOR_API_TOKEN",
+    "api_url": "https://app.prefactorai.com/api/v1",
+    "agent_id": "...",
+    "environment_id": "..."
+  }
+}
+```
+
+| Field            | Default                             | Description                                                                                          |
+| ---------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `api_token_env`  | `PREFACTOR_API_TOKEN`               | Name of the environment variable containing the Prefactor API token. The variable must be set and non-empty. |
+| `api_url`        | `https://app.prefactorai.com/api/v1` | API base URL. Must be http or https with a host when set.                                            |
+| `agent_id`       | _(empty)_                           | Prefactor agent to register instances under. Optional; may be empty for deployment-scoped tokens.    |
+| `environment_id` | _(empty)_                           | Prefactor environment to register instances under. Optional.                                         |
+
+**What maps to what.** A chat session is one Prefactor agent instance: registered on startup, finished when the session ends (`complete` on graceful exit, `cancelled` on SIGINT exit, `failed` on any error exit). Within the session, each user message opens a `blorb:agent_turn` span that stays open while the agent works, with these child spans:
+
+- `blorb:user_message` — the user's input.
+- `blorb:llm` — one LLM API call, with the model, full message history, response content, reasoning, tool calls, and token usage.
+- `blorb:tool:<name>` — one tool execution, with the JSON arguments and the tool output (and whether it failed).
+- `blorb:assistant_message` — a completed assistant reply (whole-message mode only; streamed replies are covered by the `blorb:llm` span).
+
+The activity schema is derived from your config — including each tool's `args_schema` — and registered with Prefactor on startup, so spans are well-typed in the platform.
+
+**Hard dependency.** When tracing is configured, a Prefactor failure fails the run rather than continuing untraced: a startup failure refuses to start the session, and a failure mid-turn ends the session with the error reported.
+
+**Termination.** Stopping a run from the Prefactor web app sends a terminate signal, which blorb honours cooperatively: the in-flight turn fails, the session ends, and the termination reason is printed. The instance is not finished a second time locally — the platform marks terminated instances itself.
+
+`PREFACTOR_API_TOKEN` (or the configured `api_token_env`) must be exported before running:
+
+```
+export PREFACTOR_API_TOKEN="pf_..."
+blorb chat
+```
 
 ## Example
 

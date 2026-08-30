@@ -27,3 +27,23 @@ Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C
 ## Logs
 
 Running the example produces a `.logs` directory next to `blorb.json`. Each chat session gets its own `<timestamp>-<uuid>` subdirectory containing one file per LLM request/response and per tool call/result, so conversations never interleave. Each filename starts with a nanosecond timestamp, so sorting the filenames within a session replays the conversation in order. Logging can be disabled by adding `"logging": { "enabled": false }` to `blorb.json`.
+
+## Prefactor tracing (optional)
+
+To record runs to [Prefactor](https://prefactor.ai), add a `prefactor` block to `blorb.json`:
+
+```json
+"prefactor": {
+  "api_token_env": "PREFACTOR_API_TOKEN"
+}
+```
+
+(The JSON above is illustrative — JSON has no comments, so it is documented here rather than in `blorb.json`. Copy the block into the top level of `blorb.json`.)
+
+Export the token (or point `api_token_env` at whatever variable holds yours):
+
+```sh
+export PREFACTOR_API_TOKEN="pf_..."
+```
+
+With the block present, each chat session registers a Prefactor agent instance and records every user message, LLM call, and tool call as a span; see the [Prefactor tracing section](../../README.md#prefactor-tracing) in the main README for the full field reference. Omitting the block runs exactly as before — tracing is entirely opt-in at the config level, though a Prefactor failure with the block present fails the run rather than continuing untraced.

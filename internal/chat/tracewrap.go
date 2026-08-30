@@ -74,28 +74,29 @@ func (c *tracingClient) Chat(ctx context.Context, req llm.Request) (*llm.Respons
 // The span wraps the whole stream; the assembled response completes it and
 // deltas are passed through untraced.
 func (c *tracingClient) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
-	if sc, ok := c.inner.(llm.StreamingClient); !ok {
+	sc, ok := c.inner.(llm.StreamingClient)
+	if !ok {
 		return c.Chat(ctx, req)
-	} else {
-		span, err := c.turn.LLMCall(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		resp, streamErr := sc.ChatStream(ctx, req, onDelta)
-		if streamErr != nil {
-			if failErr := span.Fail(streamErr); failErr != nil {
-				if isTerminated(failErr) {
-					return nil, failErr
-				}
-				return nil, fmt.Errorf("%w (additionally, tracing failed: %v)", streamErr, failErr)
-			}
-			return nil, streamErr
-		}
-		if err := span.Complete(*resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
 	}
+
+	span, err := c.turn.LLMCall(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	resp, streamErr := sc.ChatStream(ctx, req, onDelta)
+	if streamErr != nil {
+		if failErr := span.Fail(streamErr); failErr != nil {
+			if isTerminated(failErr) {
+				return nil, failErr
+			}
+			return nil, fmt.Errorf("%w (additionally, tracing failed: %v)", streamErr, failErr)
+		}
+		return nil, streamErr
+	}
+	if err := span.Complete(*resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // isTerminated reports whether err is the tracer's termination sentinel.
