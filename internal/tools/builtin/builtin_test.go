@@ -443,6 +443,35 @@ func TestGrep(t *testing.T) {
 		}
 	})
 
+	t.Run("trailing-slash path forms all behave like the bare form", func(t *testing.T) {
+		t.Parallel()
+		res, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"needle","case_sensitive":true,"path":"nested"}`))
+		if err != nil || res.Err {
+			t.Fatalf("Run = %+v, %v; want clean result", res, err)
+		}
+		want := res.Output
+		if want == "" {
+			t.Fatal("baseline nested grep produced no output")
+		}
+		for _, form := range []string{"nested/", "./nested/", "nested//", "./nested/"} {
+			r, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"needle","case_sensitive":true,"path":`+quote(form)+`}`))
+			if err != nil || r.Err {
+				t.Fatalf("Run(path=%q) = %+v, %v; want clean result", form, r, err)
+			}
+			if r.Output != want {
+				t.Errorf("Run(path=%q).Output = %q, want identical output to path=%q", form, r.Output, want)
+			}
+		}
+		// The base itself with a trailing slash must stay addressable too.
+		r, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"needle","case_sensitive":true,"path":"./"}`))
+		if err != nil || r.Err {
+			t.Fatalf("Run(path=./) = %+v, %v; want clean result", r, err)
+		}
+		if !strings.Contains(r.Output, "nested/deep.txt:1:needle here") {
+			t.Errorf("Run(path=./).Output = %q, want the same matches as the default path", r.Output)
+		}
+	})
+
 	t.Run("output truncation ends with notice and stays success", func(t *testing.T) {
 		t.Parallel()
 		big := t.TempDir()
@@ -550,6 +579,17 @@ func TestSandbox(t *testing.T) {
 	}
 
 	var dotdotOutput string
+
+	t.Run("trailing slash on a file path is rejected", func(t *testing.T) {
+		t.Parallel()
+		// Root rejects "f.txt/" as a name; per the error-mapping policy
+		// that surfaces as the uniform sandbox error. Pinned so the
+		// behavior stays conscious.
+		got := sandboxErr(t, "inside.txt/")
+		if got != "error: path is outside the allowed directory" {
+			t.Errorf("res.Output = %q, want the uniform sandbox error", got)
+		}
+	})
 
 	t.Run("dotdot traversal", func(t *testing.T) {
 		t.Parallel()

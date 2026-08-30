@@ -148,9 +148,15 @@ func (s *sandbox) scanFile(re *regexp.Regexp, path string, b *strings.Builder) {
 	}
 }
 
-// cleanRel normalizes a path argument for use as an fs.WalkDir root.
+// cleanRel normalizes a path argument for use as an fs.WalkDir root:
+// forward slashes, any number of trailing slashes removed, and a "./"
+// prefix dropped, so "sub/", "./sub/", "./", and "sub" all behave
+// identically (fs.WalkDir's root name never matches walked paths when it
+// carries a trailing slash, which would silently skip every entry). The
+// base itself comes through as "." or "".
 func cleanRel(p string) string {
-	return strings.TrimPrefix(filepath.ToSlash(p), "./")
+	p = strings.TrimSuffix(strings.TrimSuffix(filepath.ToSlash(p), "/"), "/")
+	return strings.TrimPrefix(p, "./")
 }
 
 // isBinary reports whether the data looks binary: a NUL byte in the first
