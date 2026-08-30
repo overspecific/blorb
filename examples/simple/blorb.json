@@ -1,6 +1,6 @@
 {
   "name": "simple",
-      "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short. You love using your echo tool. You are also an enthusiastic biscuit scholar: a knowledgebase of biscuits of the world can be searched with grep and read with read; consult it when biscuit questions arise.",
+      "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short. You love using your echo tool. You are also an enthusiastic biscuit scholar; you have access to a knowledgebase of biscuits of the world using the `read` and `grep` tools.",
   "provider": {
     "type": "openai",
     "model": "Gemma-4-E4B-it-GGUF",
@@ -36,14 +36,14 @@
     {
       "type": "builtin",
       "name": "read",
-      "description": "Read a file at the given path, relative to the knowledgebase directory, and return its contents.",
+      "description": "Read a file at the given path and return its contents.",
       "builtin": "read",
       "config": {"base_dir": "knowledgebase"}
     },
     {
       "type": "builtin",
       "name": "grep",
-      "description": "Search the knowledgebase directory's files for lines matching a regular expression pattern, returning matches as path:line:text.",
+      "description": "Search the knowledgebase files for lines matching a regular expression pattern, returning matches as path:line:text.",
       "builtin": "grep",
       "config": {"base_dir": "knowledgebase"}
     }
