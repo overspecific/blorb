@@ -171,14 +171,14 @@ func TestParseConfigBaseDirMustBeDirectory(t *testing.T) {
 	})
 }
 
-// grebFixture builds a base directory containing:
+// grepFixture builds a base directory containing:
 //
 //	alpha.txt        two lines, one with "needle" and one with "Needle"
 //	nested/deep.txt  "needle here"
 //	nested/inside.md no match
 //	bin.dat          contains NUL bytes (grep skips)
 //	.git/config      "needle here" (grep skips)
-func grebFixture(t *testing.T) string {
+func grepFixture(t *testing.T) string {
 	t.Helper()
 	base := t.TempDir()
 	files := map[string]string{
@@ -313,8 +313,8 @@ func TestRead(t *testing.T) {
 		if !res.Err {
 			t.Error("res.Err = false, want true for an oversized file")
 		}
-		if !strings.Contains(res.Output, "exceeding") || !strings.Contains(res.Output, "1048576") {
-			t.Errorf("res.Output = %q, want cap and size mention", res.Output)
+		if !strings.Contains(res.Output, "exceeds the 1048576 byte read cap") {
+			t.Errorf("res.Output = %q, want the read-cap mention", res.Output)
 		}
 	})
 }
@@ -322,7 +322,7 @@ func TestRead(t *testing.T) {
 func TestGrep(t *testing.T) {
 	t.Parallel()
 
-	base := grebFixture(t)
+	base := grepFixture(t)
 	o := opts(t, "grep", `{"base_dir":"`+base+`"}`)
 	g, _ := builtin.Lookup("grep")
 
@@ -642,8 +642,6 @@ func TestSandbox(t *testing.T) {
 		return res.Output
 	}
 
-	var dotdotOutput string
-
 	t.Run("trailing slash on a file path is rejected", func(t *testing.T) {
 		t.Parallel()
 		// Root rejects "f.txt/" as a name; per the error-mapping policy
@@ -657,9 +655,9 @@ func TestSandbox(t *testing.T) {
 
 	t.Run("dotdot traversal", func(t *testing.T) {
 		t.Parallel()
-		dotdotOutput = sandboxErr(t, "../secret.txt")
-		if strings.Contains(dotdotOutput, "secret") {
-			t.Errorf("res.Output leaked content: %q", dotdotOutput)
+		got := sandboxErr(t, "../secret.txt")
+		if strings.Contains(got, "secret") {
+			t.Errorf("res.Output leaked content: %q", got)
 		}
 	})
 

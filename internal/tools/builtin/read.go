@@ -71,7 +71,7 @@ func runRead(ctx context.Context, opts Options, args json.RawMessage) (Result, e
 	}
 	if len(data) > maxReadLen {
 		return Result{
-			Output: fmt.Sprintf("error: file is at least %d bytes, exceeding the %d byte read cap", len(data), maxReadLen),
+			Output: fmt.Sprintf("error: file exceeds the %d byte read cap", maxReadLen),
 			Err:    true,
 		}, nil
 	}
