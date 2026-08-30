@@ -342,3 +342,72 @@ func TestBufferedSink(t *testing.T) {
 		}
 	})
 }
+
+func TestNewSession(t *testing.T) {
+	nameRe := regexp.MustCompile(`^\d{8}T\d{6}-\d{9}-[0-9a-f]{32}$`)
+
+	t.Run("creates subdirectory and usable sink", func(t *testing.T) {
+		dir := t.TempDir()
+		sink, name, err := logging.NewSession(dir)
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		if !nameRe.MatchString(name) {
+			t.Fatalf("session name %q does not match pattern", name)
+		}
+
+		// The subdirectory exists under dir.
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		if len(entries) != 1 || entries[0].Name() != name || !entries[0].IsDir() {
+			t.Fatalf("dir entries = %v, want exactly the session dir %q", entries, name)
+		}
+
+		// The returned sink writes into the subdirectory.
+		if err := sink.Write(sampleRecord()); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		files, err := os.ReadDir(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("ReadDir(session): %v", err)
+		}
+		if len(files) != 1 {
+			t.Fatalf("got %d files in session dir, want 1", len(files))
+		}
+		if !strings.HasSuffix(files[0].Name(), "-llm-request.txt") {
+			t.Fatalf("file %q is not an llm-request record", files[0].Name())
+		}
+	})
+
+	t.Run("two sessions get distinct names", func(t *testing.T) {
+		dir := t.TempDir()
+		_, name1, err := logging.NewSession(dir)
+		if err != nil {
+			t.Fatalf("NewSession 1: %v", err)
+		}
+		_, name2, err := logging.NewSession(dir)
+		if err != nil {
+			t.Fatalf("NewSession 2: %v", err)
+		}
+		if name1 == name2 {
+			t.Fatalf("two sessions produced the same name %q (UUID must differ)", name1)
+		}
+	})
+
+	t.Run("invalid dirs return errors", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing")
+		if _, _, err := logging.NewSession(missing); err == nil {
+			t.Error("NewSession on nonexistent dir succeeded, want error")
+		}
+
+		file := filepath.Join(t.TempDir(), "afile")
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if _, _, err := logging.NewSession(file); err == nil {
+			t.Error("NewSession on a regular file succeeded, want error")
+		}
+	})
+}

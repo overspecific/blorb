@@ -15,7 +15,7 @@ Tools are plain executables declared in the config. When the model calls a tool,
 - Agent definition via a single `blorb.json` file
 - Interactive chat REPL with multi-turn tool calling
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
-- Full conversation and tool logging: every LLM request/response and tool call/result is written to `.logs` next to `blorb.json`, one timestamped file per wire interaction, so sorting the filenames replays the turn in order
+- Full conversation and tool logging — every LLM request/response and tool call/result is written to a per-session subdirectory of `.logs` next to `blorb.json`, one timestamped file per wire interaction, so sorting the filenames replays the turn in order and sessions never interleave
 - Tools as local subprocesses with JSON-schema argument declarations
 - Any OpenAI-compatible chat completions endpoint as the LLM backend
 - Per-tool 30s timeout, process-group cleanup, and stderr capture
@@ -168,7 +168,9 @@ Blorb writes full conversation and tool logging by default. Every LLM request/re
 | `path`     | `.logs` | Log directory name, resolved relative to the config file. A single directory name — no separators. |
 | `enabled`  | `true`  | Set to `false` to turn logging off.                                                |
 
-Files are named `<timestamp>-<kind>.txt`, e.g. `20260830T142533-123456789-llm-request.txt`. The kinds are `llm-request`, `llm-response`, `tool-request`, and `tool-result`. Because the timestamp comes first with nanosecond precision, sorting the filenames replays the turn in order.
+Each chat session writes into its own subdirectory of the log dir, named `<timestamp>-<uuid>` (e.g. `20260830T142533-123456789-a1b2c3d4e5f6...`), so conversations never interleave and the session directories themselves sort chronologically.
+
+Files are named `<timestamp>-<kind>.txt`, e.g. `20260830T142533-123456789-llm-request.txt`. The kinds are `llm-request`, `llm-response`, `tool-request`, and `tool-result`. Because the timestamp comes first with nanosecond precision, sorting the filenames within a session's subdirectory replays the turn in order.
 
 Log files capture full request/response bodies and headers, including any API key sent to the provider, and the full content of tool calls and results. Keep them out of version control and treat them as sensitive. Log writes are best-effort: a logging failure never fails the agent run.
 

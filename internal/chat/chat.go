@@ -358,6 +358,8 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
 // resolveSink builds the wire-log sink for a session. File logging is on
 // only when ConfigPath is set and the config enables logging; otherwise a
 // no-op sink is returned so downstream code always has a non-nil sink.
+// When enabled, the session gets its own `<timestamp>-<uuid>` subdirectory
+// of the log dir, so conversations never interleave.
 func resolveSink(opts Options) (logging.Sink, error) {
 	if opts.ConfigPath == "" || !opts.Config.LoggingEnabled() {
 		return logging.NewNop(), nil
@@ -367,7 +369,7 @@ func resolveSink(opts Options) (logging.Sink, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log dir: %w", err)
 	}
-	sink, err := logging.New(dir)
+	sink, _, err := logging.NewSession(dir)
 	if err != nil {
 		return nil, fmt.Errorf("open log dir: %w", err)
 	}

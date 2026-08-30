@@ -10,7 +10,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 - [x] Commit 4: Thread the logger through config, chat, and CLI
 - [x] Commit 5: Documentation and gitignore
 - [x] Commit 6: Log the assembled response for streamed turns
-- [ ] Commit 7: Per-conversation log directories
+- [x] Commit 7: Per-conversation log directories
 
 ---
 

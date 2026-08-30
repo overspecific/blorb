@@ -9,6 +9,8 @@ package logging
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -137,14 +139,51 @@ type fileSink struct {
 // already exist (creating it is the caller's job). The returned error is
 // safe to treat as informational by producers.
 func New(dir string) (Sink, error) {
-	info, err := os.Stat(dir)
-	if err != nil {
-		return nil, fmt.Errorf("stat log dir %s: %w", dir, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("log dir %s is not a directory", dir)
+	if err := validateDir(dir); err != nil {
+		return nil, err
 	}
 	return &fileSink{dir: dir}, nil
+}
+
+// validateDir checks that dir exists and is a directory.
+func validateDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("stat log dir %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("log dir %s is not a directory", dir)
+	}
+	return nil
+}
+
+// NewSession creates a fresh per-conversation subdirectory under dir,
+// named <timestamp>-<uuid> (timestamp in the same form as log filenames,
+// so session directories sort chronologically; hex UUID from crypto/rand,
+// so sessions started in the same second never collide), and returns a
+// file sink for it alongside the name. Unlike Sink.Write, an error here is
+// startup-fatal for the caller: this runs before any turn, and a session
+// that cannot prepare its logs should not silently run unlogged.
+func NewSession(dir string) (Sink, string, error) {
+	if err := validateDir(dir); err != nil {
+		return nil, "", err
+	}
+
+	var uuid [16]byte
+	if _, err := rand.Read(uuid[:]); err != nil {
+		return nil, "", fmt.Errorf("generate session id: %w", err)
+	}
+	name := timeDirName(time.Now()) + "-" + hex.EncodeToString(uuid[:])
+
+	sub := filepath.Join(dir, name)
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		return nil, "", fmt.Errorf("create session dir %s: %w", sub, err)
+	}
+	sink, err := New(sub)
+	if err != nil {
+		return nil, "", err
+	}
+	return sink, name, nil
 }
 
 func (s *fileSink) Write(r Record) error {

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -942,14 +943,32 @@ func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
 }
 
 // runLoggedSession runs a real-client chat session against a canned server
-// and returns the .logs directory contents sorted lexically.
+// and returns the session subdirectory's .txt contents sorted lexically.
 func runLoggedSession(t *testing.T, cfgPath, stdin string) []string {
 	t.Helper()
 	return runLoggedSessionWithDir(t, cfgPath, filepath.Join(filepath.Dir(cfgPath), ".logs"), stdin)
 }
 
-// runLoggedSessionWithDir runs a real-client chat session and returns the
-// .txt files in logDir sorted lexically.
+// logSessionDirs lists the subdirectories of logDir sorted lexically.
+func logSessionDirs(t *testing.T, logDir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", logDir, err)
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, filepath.Join(logDir, e.Name()))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// runLoggedSessionWithDir runs a real-client chat session, verifies that
+// logDir contains exactly one session subdirectory, and returns the .txt
+// files inside that subdirectory sorted lexically.
 func runLoggedSessionWithDir(t *testing.T, cfgPath, logDir, stdin string) []string {
 	t.Helper()
 
@@ -962,7 +981,25 @@ func runLoggedSessionWithDir(t *testing.T, cfgPath, logDir, stdin string) []stri
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 
-	names, err := sortLogNames(logDir)
+	return sessionLogFiles(t, logDir)
+}
+
+// sessionLogFiles finds the single session subdirectory in logDir and
+// returns its .txt files sorted lexically. The session dir must match the
+// <timestamp>-<uuid> name.
+func sessionLogFiles(t *testing.T, logDir string) []string {
+	t.Helper()
+
+	sessions := logSessionDirs(t, logDir)
+	if len(sessions) != 1 {
+		t.Fatalf("got %d session dirs in %s, want exactly 1: %v", len(sessions), logDir, sessions)
+	}
+	sessionRe := regexp.MustCompile(`^\d{8}T\d{6}-\d{9}-[0-9a-f]{32}$`)
+	if !sessionRe.MatchString(filepath.Base(sessions[0])) {
+		t.Fatalf("session dir name %q does not match <timestamp>-<uuid>", filepath.Base(sessions[0]))
+	}
+
+	names, err := sortLogNames(sessions[0])
 	if err != nil {
 		t.Fatalf("list logs: %v", err)
 	}
@@ -1121,8 +1158,61 @@ func TestRunCustomLogPath(t *testing.T) {
 		t.Fatal("got 0 log files, want at least one request/response pair")
 	}
 	for _, name := range names {
-		if base := filepath.Base(filepath.Dir(name)); base != "mylogs" {
-			t.Errorf("log file %q outside mylogs/", name)
+		if base := filepath.Base(filepath.Dir(filepath.Dir(name))); base != "mylogs" {
+			t.Errorf("log file %q outside mylogs/<session>/", name)
+		}
+	}
+}
+
+// runSession runs a real-client chat session without asserting anything
+// about the log directory shape.
+func runSession(t *testing.T, cfgPath, stdin string) {
+	t.Helper()
+	var stdout strings.Builder
+	o, err := optionsFromConfigPath(t, cfgPath, stdin, &stdout)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+}
+
+// TestRunSequentialSessionsGetDistinctLogDirs is the per-conversation
+// isolation test: two chat sessions against the same config each get their
+// own session subdirectory, and each session's files land in its own.
+func TestRunSequentialSessionsGetDistinctLogDirs(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfgPath := writeBlorbConfig(t, dir, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai",
+			"model":    "gpt-test",
+			"base_url": srv.URL,
+		},
+	})
+
+	runSession(t, cfgPath, "first\nexit\n")
+	runSession(t, cfgPath, "second\nexit\n")
+
+	sessions := logSessionDirs(t, filepath.Join(dir, ".logs"))
+	if len(sessions) != 2 {
+		t.Fatalf("got %d session dirs, want 2: %v", len(sessions), sessions)
+	}
+	for _, s := range sessions {
+		names, err := sortLogNames(s)
+		if err != nil {
+			t.Fatalf("list logs in %s: %v", s, err)
+		}
+		if len(names) != 2 {
+			t.Errorf("session %s has %d files, want 2 (one request/response pair)", filepath.Base(s), len(names))
 		}
 	}
 }
