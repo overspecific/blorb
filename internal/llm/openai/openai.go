@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/logging"
 )
 
 const chatCompletionsPath = "/chat/completions"
@@ -45,6 +47,10 @@ type Config struct {
 	// HTTPClient is optional; a client with a 5 minute timeout is used
 	// when nil, so a hung server cannot block a turn forever.
 	HTTPClient *http.Client
+	// Sink, when non-nil, receives one KindLLMRequest record per call
+	// and one KindLLMResponse record per response (see logging.Sink).
+	// Sink write errors are ignored: logging is best-effort.
+	Sink logging.Sink
 }
 
 // Client implements llm.Client against an OpenAI-compatible server.
@@ -86,7 +92,7 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 		Tools:    wireTools(req.Tools),
 	}
 
-	httpResp, err := c.post(ctx, body)
+	httpResp, endpoint, err := c.post(ctx, body)
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +107,19 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 	}
 	if len(respBody) == maxBodyLen {
 		return nil, fmt.Errorf("read response body: response exceeds %d byte limit", maxBodyLen)
+	}
+
+	// Logged before the status check so non-2xx responses are logged
+	// with their body too. Write errors are ignored.
+	if c.cfg.Sink != nil {
+		c.cfg.Sink.Write(logging.Record{
+			Time:    time.Now(),
+			Kind:    logging.KindLLMResponse,
+			Method:  http.MethodPost,
+			URL:     endpoint,
+			Headers: responseHeaders(httpResp),
+			Body:    append([]byte(nil), respBody...),
+		})
 	}
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
@@ -276,6 +295,33 @@ func (a *streamAccumulator) response() *llm.Response {
 	return &llm.Response{ID: a.id, Message: msg, FinishReason: a.finishReason, Usage: a.usage}
 }
 
+// loggingBody is an io.ReadCloser that accumulates every successfully read
+// chunk into a buffer so the bytes received over a streamed response can be
+// logged once the stream path finishes, however it ends. Accumulation stops
+// (with a truncation marker) at maxBodyLen; reads continue unbounded.
+type loggingBody struct {
+	rc      io.ReadCloser
+	capture bytes.Buffer
+	full    bool
+}
+
+func (b *loggingBody) Read(p []byte) (int, error) {
+	n, err := b.rc.Read(p)
+	if n > 0 && !b.full {
+		room := maxBodyLen - b.capture.Len()
+		if room > 0 {
+			b.capture.Write(p[:min(n, room)])
+		}
+		if b.capture.Len() >= maxBodyLen {
+			b.full = true
+			b.capture.WriteString("...(truncated)")
+		}
+	}
+	return n, err
+}
+
+func (b *loggingBody) Close() error { return b.rc.Close() }
+
 // ChatStream sends a chat completion request with stream:true and reads the
 // response as a Server-Sent Events stream, calling onDelta for each
 // incremental piece of content, reasoning, or tool call as it arrives (in
@@ -291,7 +337,7 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
 
-	httpResp, err := c.post(ctx, body)
+	httpResp, endpoint, err := c.post(ctx, body)
 	if err != nil {
 		return nil, err
 	}
@@ -308,8 +354,40 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 		if len(respBody) == maxBodyLen {
 			return nil, fmt.Errorf("read response body: response exceeds %d byte limit", maxBodyLen)
 		}
+		// Logged here rather than via the stream capture: this body
+		// was already read whole. Write errors are ignored.
+		if c.cfg.Sink != nil {
+			c.cfg.Sink.Write(logging.Record{
+				Time:    time.Now(),
+				Kind:    logging.KindLLMResponse,
+				Method:  http.MethodPost,
+				URL:     endpoint,
+				Headers: responseHeaders(httpResp),
+				Body:    append([]byte(nil), respBody...),
+			})
+		}
 		return nil, fmt.Errorf("chat completions: unexpected status %d: %s",
 			httpResp.StatusCode, truncate(respBody, maxErrorBodyLen))
+	}
+
+	// Capture the stream bytes for the response log record. Registered
+	// as the last defer so it fires on every return path below this
+	// point — completion, scanner error, onDelta abort, cancellation —
+	// with whatever bytes arrived. Write errors are ignored.
+	var wireBody *loggingBody
+	if c.cfg.Sink != nil {
+		wireBody = &loggingBody{rc: httpResp.Body}
+		httpResp.Body = wireBody
+		defer func() {
+			c.cfg.Sink.Write(logging.Record{
+				Time:    time.Now(),
+				Kind:    logging.KindLLMResponse,
+				Method:  http.MethodPost,
+				URL:     endpoint,
+				Headers: responseHeaders(httpResp),
+				Body:    append([]byte(nil), wireBody.capture.Bytes()...),
+			})
+		}()
 	}
 
 	return c.readStream(httpResp.Body, onDelta)
@@ -382,32 +460,65 @@ type streamOptions struct {
 
 // post marshals the wire request and POSTs it to /chat/completions. The
 // caller owns the response body. Shared by the Chat and ChatStream paths so
-// their request building cannot drift.
-func (c *Client) post(ctx context.Context, body wireRequest) (*http.Response, error) {
+// their request building cannot drift. The final endpoint URL is returned
+// alongside the response so callers can use it in response log records.
+func (c *Client) post(ctx context.Context, body wireRequest) (*http.Response, string, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, "", fmt.Errorf("marshal request: %w", err)
 	}
 
 	endpoint, err := url.JoinPath(strings.TrimSuffix(c.cfg.BaseURL, "/"), chatCompletionsPath)
 	if err != nil {
-		return nil, fmt.Errorf("join base_url %q: %w", c.cfg.BaseURL, err)
+		return nil, "", fmt.Errorf("join base_url %q: %w", c.cfg.BaseURL, err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, "", fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
 
+	// The record owns its body and header copies: the transport may
+	// mutate both. Write errors are ignored — logging is best-effort.
+	if c.cfg.Sink != nil {
+		c.cfg.Sink.Write(logging.Record{
+			Time:    time.Now(),
+			Kind:    logging.KindLLMRequest,
+			Method:  http.MethodPost,
+			URL:     endpoint,
+			Headers: cloneHeader(httpReq.Header),
+			Body:    append([]byte(nil), payload...),
+		})
+	}
+
 	httpResp, err := c.httpClient().Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("chat completions: %w", err)
+		return nil, "", fmt.Errorf("chat completions: %w", err)
 	}
-	return httpResp, nil
+	return httpResp, endpoint, nil
+}
+
+// cloneHeader deep-copies a header map so a log record is immune to later
+// mutation by the HTTP client.
+func cloneHeader(h http.Header) map[string][]string {
+	out := make(map[string][]string, len(h))
+	for k, v := range h {
+		out[textproto.CanonicalMIMEHeaderKey(k)] = append([]string(nil), v...)
+	}
+	return out
+}
+
+// responseHeaders builds the header map for a response log record: a copy
+// of the response headers plus a synthetic Status key carrying the status
+// code (not a header, but it belongs in the log's header block).
+func responseHeaders(resp *http.Response) map[string][]string {
+	out := cloneHeader(resp.Header)
+	out["Status"] = []string{fmt.Sprint(resp.StatusCode)}
+	return out
 }
 
 // wireMessage is the OpenAI-compatible message shape. Messages carrying tool

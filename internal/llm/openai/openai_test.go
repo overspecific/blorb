@@ -14,6 +14,7 @@ import (
 
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/llm/openai"
+	"github.com/overspecific/blorb/internal/logging"
 )
 
 func newTestClient(t *testing.T, baseURL string, opts ...func(*openai.Config)) *openai.Client {
@@ -1106,4 +1107,298 @@ func TestChatNonFunctionToolCallTypePreserved(t *testing.T) {
 	if got := resp.Message.ToolCalls[0].Type; got != "custom_tool" {
 		t.Errorf("tool call type = %q, want the server-sent custom_tool", got)
 	}
+}
+
+// failingSink is a logging.Sink whose Write always returns an error.
+type failingSink struct{}
+
+func (failingSink) Write(logging.Record) error { return errors.New("disk exploded") }
+
+func TestChatLogsRequestAndResponse(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Trace", "tr-1")
+		_, _ = w.Write([]byte(`{"id":"resp-1","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	sink := logging.NewBuffered(0)
+	c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Sink = sink })
+	resp, err := c.Chat(context.Background(), sampleRequest())
+	if err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+	if resp.ID != "resp-1" {
+		t.Fatalf("resp.ID = %q, want resp-1", resp.ID)
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2 (request + response)", len(recs))
+	}
+
+	reqRec, respRec := recs[0], recs[1]
+	if reqRec.Kind != logging.KindLLMRequest {
+		t.Errorf("record 0 kind = %q, want llm-request", reqRec.Kind)
+	}
+	if respRec.Kind != logging.KindLLMResponse {
+		t.Errorf("record 1 kind = %q, want llm-response", respRec.Kind)
+	}
+	if !reqRec.Time.Before(respRec.Time) {
+		t.Errorf("request time %v not before response time %v", reqRec.Time, respRec.Time)
+	}
+	if reqRec.Method != http.MethodPost {
+		t.Errorf("request method = %q, want POST", reqRec.Method)
+	}
+	if want := srv.URL + "/chat/completions"; reqRec.URL != want {
+		t.Errorf("request url = %q, want %q", reqRec.URL, want)
+	}
+	if got := reqRec.Headers["Content-Type"]; len(got) != 1 || got[0] != "application/json" {
+		t.Errorf("request Content-Type = %v, want application/json", got)
+	}
+
+	var wire map[string]any
+	if err := json.Unmarshal(reqRec.Body, &wire); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if wire["model"] != "gpt-4o-mini" {
+		t.Errorf("logged request model = %v, want gpt-4o-mini", wire["model"])
+	}
+	msgs, ok := wire["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Fatalf("logged request messages = %#v, want non-empty", wire["messages"])
+	}
+	first, _ := msgs[0].(map[string]any)
+	if first["content"] != "You are helpful." {
+		t.Errorf("logged first message = %v, want the system prompt", first)
+	}
+
+	if got := respRec.Headers["Status"]; len(got) != 1 || got[0] != "200" {
+		t.Errorf("response Status header = %v, want 200", got)
+	}
+	if got := respRec.Headers["X-Trace"]; len(got) != 1 || got[0] != "tr-1" {
+		t.Errorf("response X-Trace header = %v, want tr-1", got)
+	}
+	if string(respRec.Body) != `{"id":"resp-1","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}` {
+		t.Errorf("response body = %q, want the exact server bytes", respRec.Body)
+	}
+}
+
+func TestChatLogsNon2xxResponse(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"bad key"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	sink := logging.NewBuffered(0)
+	c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Sink = sink })
+	_, err := c.Chat(context.Background(), llm.Request{Model: "m"})
+	if err == nil {
+		t.Fatal("Chat succeeded, want error")
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	respRec := recs[1]
+	if got := respRec.Headers["Status"]; len(got) != 1 || got[0] != "401" {
+		t.Errorf("response Status header = %v, want 401", got)
+	}
+	if !strings.Contains(string(respRec.Body), "bad key") {
+		t.Errorf("response body = %q, want the server error body", respRec.Body)
+	}
+}
+
+func TestChatStreamLogsRawSSE(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseChunks(w,
+			`{"id":"r","choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}`,
+		)
+	}))
+	defer srv.Close()
+
+	sink := logging.NewBuffered(0)
+	c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Sink = sink })
+	resp, err := c.ChatStream(context.Background(), sampleRequest(), func(d llm.Delta) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want nil", err)
+	}
+	if resp.Message.Content != "Hello" {
+		t.Fatalf("resp content = %q, want Hello", resp.Message.Content)
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+
+	reqRec, respRec := recs[0], recs[1]
+	if reqRec.Kind != logging.KindLLMRequest || respRec.Kind != logging.KindLLMResponse {
+		t.Fatalf("kinds = %q, %q, want llm-request, llm-response", reqRec.Kind, respRec.Kind)
+	}
+	if !strings.Contains(string(reqRec.Body), `"stream":true`) {
+		t.Errorf("request body = %q, want stream:true", reqRec.Body)
+	}
+	if !strings.Contains(string(respRec.Body), `data: {"id":"r"`) {
+		t.Errorf("response body = %q, want raw SSE data lines", respRec.Body)
+	}
+	if !strings.Contains(string(respRec.Body), "data: [DONE]") {
+		t.Errorf("response body = %q, want the [DONE] terminator", respRec.Body)
+	}
+	if !reqRec.Time.Before(respRec.Time) {
+		t.Errorf("request time %v not before response time %v", reqRec.Time, respRec.Time)
+	}
+}
+
+func TestChatStreamLogsAbortedStream(t *testing.T) {
+	t.Parallel()
+
+	// Chunks are flushed with pauses so the abort lands while "never
+	// seen" is still unsent; otherwise it streams into the same TCP
+	// read as the aborting chunk and legitimately shows up in the log.
+	// (No t.Parallel: the handler sleeps on the test's clock.)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flush := func(s string) {
+			_, _ = io.WriteString(w, "data: "+s+"\n\n")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flush(`{"id":"r","choices":[{"delta":{"content":"first"},"finish_reason":null}]}`)
+		time.Sleep(200 * time.Millisecond)
+		flush(`{"id":"r","choices":[{"delta":{"content":"second"},"finish_reason":null}]}`)
+		time.Sleep(200 * time.Millisecond)
+		flush(`{"id":"r","choices":[{"delta":{"content":"never seen"},"finish_reason":null}]}`)
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	sink := logging.NewBuffered(0)
+	c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Sink = sink })
+
+	// Aborting readStream drops the connection so the server's late
+	// chunks do not block the response log write.
+	wantErr := errors.New("stop streaming")
+	var saw int
+	_, err := c.ChatStream(context.Background(), llm.Request{Model: "m"}, func(d llm.Delta) error {
+		saw++
+		if saw == 2 {
+			return wantErr
+		}
+		return nil
+	})
+	if err != wantErr {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2 (the aborted stream still logs)", len(recs))
+	}
+	body := string(recs[1].Body)
+	if !strings.Contains(body, "first") || !strings.Contains(body, "second") {
+		t.Errorf("logged body = %q, want the bytes received up to the abort", body)
+	}
+	if strings.Contains(body, "never seen") {
+		t.Errorf("logged body = %q, want it cut off at the abort", body)
+	}
+}
+
+func TestChatStreamLogsNon2xx(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"bad key"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	sink := logging.NewBuffered(0)
+	c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Sink = sink })
+	_, err := c.ChatStream(context.Background(), llm.Request{Model: "m"}, func(d llm.Delta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("ChatStream succeeded, want error")
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	respRec := recs[1]
+	if got := respRec.Headers["Status"]; len(got) != 1 || got[0] != "401" {
+		t.Errorf("response Status header = %v, want 401", got)
+	}
+	if !strings.Contains(string(respRec.Body), "bad key") {
+		t.Errorf("response body = %q, want the server error body", respRec.Body)
+	}
+}
+
+func TestLoggingSinkErrorsAreIgnored(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	baselineClient := newTestClient(t, srv.URL)
+	wantResp, err := baselineResp(t, baselineClient)
+	if err != nil {
+		t.Fatalf("baseline Chat error = %v, want nil", err)
+	}
+
+	failingClient := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Sink = failingSink{} })
+	gotResp, err := failingClient.Chat(context.Background(), sampleRequest())
+	if err != nil {
+		t.Errorf("Chat with failing sink error = %v, want nil", err)
+	}
+	if gotResp != nil && gotResp.Message.Content != wantResp.Message.Content {
+		t.Errorf("Chat response content = %q, want %q (same as no sink)", gotResp.Message.Content, wantResp.Message.Content)
+	}
+
+	// ChatStream needs an SSE server, so it gets its own.
+	streamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseChunks(w,
+			`{"id":"r","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`,
+		)
+	}))
+	defer streamSrv.Close()
+
+	sinkClient := newTestClient(t, streamSrv.URL, func(cfg *openai.Config) { cfg.Sink = failingSink{} })
+	gotStream, gotStreamErr := sinkStream(t, sinkClient)
+	if gotStreamErr != nil {
+		t.Errorf("ChatStream with failing sink error = %v, want nil", gotStreamErr)
+	}
+	if gotStream != nil && gotStream.Message.Content != wantResp.Message.Content {
+		t.Errorf("ChatStream response content = %q, want %q", gotStream.Message.Content, wantResp.Message.Content)
+	}
+}
+
+// baselineResp captures the no-sink results the sink-error tests compare
+// against.
+func baselineResp(t *testing.T, c *openai.Client) (*llm.Response, error) {
+	t.Helper()
+	return c.Chat(context.Background(), sampleRequest())
+}
+
+func sinkStream(t *testing.T, c *openai.Client) (*llm.Response, error) {
+	t.Helper()
+	return c.ChatStream(context.Background(), sampleRequest(), func(d llm.Delta) error {
+		return nil
+	})
 }
