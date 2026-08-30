@@ -42,7 +42,7 @@ func TestRegisterInstance(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Errorf("decode request body: %v", err)
 		}
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "success",
 			"details": map[string]any{
 				"id": "inst-123",
@@ -96,7 +96,7 @@ func TestStartInstance(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Errorf("decode request body: %v", err)
 		}
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "success",
 			"details": map[string]any{
 				"id":         "inst-123",
@@ -105,7 +105,7 @@ func TestStartInstance(t *testing.T) {
 		})
 	}))
 
-	details, err := client.StartInstance(context.Background(), "inst-123", prefactor.StartInstanceRequest{})
+	resp, err := client.StartInstance(context.Background(), "inst-123", prefactor.StartInstanceRequest{})
 	if err != nil {
 		t.Fatalf("StartInstance error = %v, want nil", err)
 	}
@@ -116,8 +116,8 @@ func TestStartInstance(t *testing.T) {
 	if len(gotBody) != 0 {
 		t.Errorf("request body = %v, want empty for all-optional fields", gotBody)
 	}
-	if details.ID != "inst-123" {
-		t.Errorf("Details.ID = %q, want inst-123", details.ID)
+	if resp.Details.ID != "inst-123" {
+		t.Errorf("Details.ID = %q, want inst-123", resp.Details.ID)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestCreateSpan(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Errorf("decode request body: %v", err)
 		}
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "success",
 			"control": map[string]any{
 				"terminate": false,
@@ -190,7 +190,7 @@ func TestCreateSpan(t *testing.T) {
 
 func TestCreateSpanTerminate(t *testing.T) {
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "success",
 			"control": map[string]any{
 				"terminate": true,
@@ -221,7 +221,7 @@ func TestFinishSpan(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Errorf("decode request body: %v", err)
 		}
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",
 			"details": map[string]any{"id": "span-456", "status": "complete"},
 		})
@@ -250,7 +250,7 @@ func TestFinishSpanAlreadyFinished(t *testing.T) {
 	attempts := 0
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
-		writeJSON(t, w, http.StatusConflict, map[string]any{
+		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": map[string]any{
 				"code":    "invalid_action",
 				"message": "span already finished",
@@ -279,7 +279,7 @@ func TestFinishInstance(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Errorf("decode request body: %v", err)
 		}
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",
 			"details": map[string]any{"id": "inst-123"},
 		})
@@ -309,12 +309,12 @@ func TestRetry429ThenSuccess(t *testing.T) {
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&attempts, 1) == 1 {
 			w.Header().Set("Retry-After", "0")
-			writeJSON(t, w, http.StatusTooManyRequests, map[string]any{
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"error": map[string]any{"code": "rate_limited", "message": "slow down"},
 			})
 			return
 		}
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",
 			"details": map[string]any{"id": "span-1"},
 		})
@@ -338,10 +338,10 @@ func TestRetry503ThenSuccess(t *testing.T) {
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&attempts, 1) < 3 {
 			w.Header().Set("retry_after_ms", "10")
-			writeJSON(t, w, http.StatusServiceUnavailable, map[string]string{})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{})
 			return
 		}
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",
 			"details": map[string]any{"id": "span-2"},
 		})
@@ -365,7 +365,7 @@ func TestRetriesExhausted(t *testing.T) {
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.Header().Set("Retry-After", "0")
-		writeJSON(t, w, http.StatusTooManyRequests, map[string]any{
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error": map[string]any{"code": "rate_limited", "message": "slow down"},
 		})
 	}))
@@ -394,7 +394,7 @@ func TestNoRetryOn4xx(t *testing.T) {
 
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
-		writeJSON(t, w, http.StatusUnauthorized, map[string]any{
+		writeJSON(w, http.StatusUnauthorized, map[string]any{
 			"error": map[string]any{"code": "unauthorized", "message": "bad token"},
 		})
 	}))
@@ -425,7 +425,7 @@ func TestTransportErrorRetryThenSuccess(t *testing.T) {
 	var attempts int32
 
 	var handler http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",
 			"details": map[string]any{"id": "span-3"},
 		})
@@ -455,7 +455,7 @@ func TestTransportErrorRetryThenSuccess(t *testing.T) {
 func TestContextCancellation(t *testing.T) {
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
-		writeJSON(t, w, http.StatusOK, map[string]any{"status": "success", "details": map[string]any{}})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "success", "details": map[string]any{}})
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -480,7 +480,7 @@ func TestNoRetriesConfigured(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.Header().Set("Retry-After", "0")
-		writeJSON(t, w, http.StatusTooManyRequests, map[string]any{
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error": map[string]any{"code": "rate_limited", "message": "no"},
 		})
 	}))
@@ -532,13 +532,10 @@ func TestMalformedSuccessResponse(t *testing.T) {
 	}
 }
 
-func writeJSON(t *testing.T, w http.ResponseWriter, status int, body any) {
-	t.Helper()
+func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(body); err != nil {
-		t.Errorf("encode response: %v", err)
-	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func ptrTime(t time.Time) *time.Time {

@@ -70,16 +70,14 @@ func (c *Client) RegisterInstance(ctx context.Context, req RegisterInstanceReque
 	return out, nil
 }
 
-// StartInstance starts a registered instance.
-func (c *Client) StartInstance(ctx context.Context, instanceID string, req StartInstanceRequest) (InstanceDetails, error) {
-	var out struct {
-		Status  string          `json:"status"`
-		Details InstanceDetails `json:"details"`
-	}
+// StartInstance starts a registered instance, returning the details and the
+// platform control signal.
+func (c *Client) StartInstance(ctx context.Context, instanceID string, req StartInstanceRequest) (InstanceResponse, error) {
+	var out InstanceResponse
 	if err := c.do(ctx, http.MethodPost, "/agent_instance/"+instanceID+"/start", req, &out); err != nil {
-		return InstanceDetails{}, err
+		return InstanceResponse{}, err
 	}
-	return out.Details, nil
+	return out, nil
 }
 
 // CreateSpan creates a span and returns the response carrying the
@@ -109,10 +107,7 @@ func (c *Client) FinishSpan(ctx context.Context, spanID string, req FinishSpanRe
 // FinishInstance finishes an instance with a terminal status
 // (complete/failed/cancelled).
 func (c *Client) FinishInstance(ctx context.Context, instanceID string, req FinishInstanceRequest) (InstanceDetails, error) {
-	var out struct {
-		Status  string          `json:"status"`
-		Details InstanceDetails `json:"details"`
-	}
+	var out InstanceResponse
 	if err := c.do(ctx, http.MethodPost, "/agent_instance/"+instanceID+"/finish", req, &out); err != nil {
 		return InstanceDetails{}, err
 	}

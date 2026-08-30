@@ -62,6 +62,14 @@ type RegisterInstanceRequest struct {
 // Details.ID is the new instance ID.
 type RegisterInstanceResponse struct {
 	Status  string          `json:"status"`
+	Control Control         `json:"control"`
+	Details InstanceDetails `json:"details"`
+}
+
+// InstanceResponse is the response of instance start and finish calls.
+type InstanceResponse struct {
+	Status  string          `json:"status"`
+	Control Control         `json:"control"`
 	Details InstanceDetails `json:"details"`
 }
 
