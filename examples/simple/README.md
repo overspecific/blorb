@@ -30,15 +30,11 @@ Running the example produces a `.logs` directory next to `blorb.json`. Each chat
 
 ## Prefactor tracing (optional)
 
-To record runs to [Prefactor](https://prefactor.ai), add a `prefactor` block to `blorb.json`:
+`blorb.json` ships with a minimal `prefactor` block enabled:
 
 ```json
-"prefactor": {
-  "api_token_env": "PREFACTOR_API_TOKEN"
-}
+"prefactor": { "api_token_env": "PREFACTOR_API_TOKEN" }
 ```
-
-(The JSON above is illustrative — JSON has no comments, so it is documented here rather than in `blorb.json`. Copy the block into the top level of `blorb.json`.)
 
 Export the token (or point `api_token_env` at whatever variable holds yours):
 
@@ -46,4 +42,4 @@ Export the token (or point `api_token_env` at whatever variable holds yours):
 export PREFACTOR_API_TOKEN="pf_..."
 ```
 
-With the block present, each chat session registers a Prefactor agent instance and records every user message, LLM call, and tool call as a span; see the [Prefactor tracing section](../../README.md#prefactor-tracing) in the main README for the full field reference. Omitting the block runs exactly as before — tracing is entirely opt-in at the config level, though a Prefactor failure with the block present fails the run rather than continuing untraced.
+With the block present, each chat session registers a Prefactor agent instance and records every user message, LLM call, and tool call as a span; see the [Prefactor tracing section](../../README.md#prefactor-tracing) in the main README for the full field reference. To run without tracing, remove the block — blorb then behaves exactly as before. Note that a Prefactor failure with the block present fails the run rather than continuing untraced.
