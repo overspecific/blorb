@@ -11,6 +11,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 - [x] Commit 5: Documentation and gitignore
 - [x] Commit 6: Log the assembled response for streamed turns
 - [x] Commit 7: Per-conversation log directories
+- [ ] Commit 8: Fix reasoning loss in streamed-response log records
 
 ---
 
@@ -143,6 +144,25 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 > - README/example docs: update the Logging section (and the `examples/simple` paragraph) to say each session's logs go into its own `<timestamp>-<uuid>` subdirectory of `.logs`, so conversations never interleave.
 >
 > No engine changes. Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 8: Fix reasoning loss in streamed-response log records
+
+> Two defects surfaced in the Commit 6/7 review, both in `internal/llm/openai/openai.go`'s streaming log path:
+>
+> 1. Major bug: `marshalWireResponse` builds the logged message via `wireMessages`, which deliberately drops `Reasoning` for messages without tool calls (the re-send-to-server rule: a final answer's reasoning is stale by the next request). That rule is about *requests*; an `llm-response` log must be full-fidelity — what the model actually produced. As it stands, a streamed final answer's chain-of-thought is silently missing from the log, corrupting the record of what the model said.
+> 2. Minor, related cleanup: `readStream`'s `logResponse` closure takes a `resp *llm.Response` parameter that is never used — only `body` flows into the record, and the no-data path passes `nil`. Dead API surface that invites confusion.
+>
+> Changes, both confined to `internal/llm/openai/openai.go`:
+>
+> - In `marshalWireResponse`, stop routing through `wireMessages`: build the `wireMessage` for the response message directly, keeping `Reasoning` unconditionally (set `Reasoning: resp.Message.Reasoning` along with Role, Content, ToolCallID, and the ToolCalls conversion — mirroring `wireMessages`' conversion loop but without its reasoning-dropping branch). Add a short comment that the log record is full-fidelity and deliberately differs from `wireMessages`' request-side reasoning rule. Factor the tool-call conversion loop shared by both (the `for _, tc := range m.ToolCalls` body) into a small unexported helper if it keeps the duplication honest — otherwise leave `wireMessages` untouched.
+> - Drop the unused `resp` parameter from `logResponse` (it becomes `func(body []byte)`), and update its three call sites; the `fail` helper no longer needs to pass the response alongside the body.
+>
+> Tests in `internal/llm/openai/openai_test.go`:
+> - Extend `TestChatStreamLogsAssembledResponse`'s server chunks with a `reasoning_content` fragment, and assert the logged response body carries the assembled reasoning in `choices[0].message.reasoning_content` — pinning that the log is full-fidelity even for a final answer (no tool calls) where the *request* path would drop it.
+> - The aborted-stream test (`TestChatStreamLogsAbortedStream`) already asserts the partial assembled JSON; no change needed beyond confirming it still passes.
+> - No other tests change; the request-side reasoning behavior (resending reasoning only with tool-call rounds) is already pinned by existing tests and must remain intact.
+>
+> No other packages change. Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
 
 ## Commit 5: Documentation and gitignore
 
