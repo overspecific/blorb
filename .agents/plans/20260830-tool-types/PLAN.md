@@ -9,6 +9,10 @@ Tools in blorb.json currently must all be local commands. This plan introduces a
 - [x] Commit 3: builtin tools package with `read` and `grep`
 - [x] Commit 4: wire `builtin` type through config and registry
 - [x] Commit 5: README and examples
+- [x] Commit 6: hold the `os.Root` for the tool's lifetime (security)
+- [ ] Commit 7: normalize trailing-slash grep paths
+- [ ] Commit 8: make builtins honor the per-call context/timeout
+- [ ] Commit 9: minor nits (fixture typo, dead test variable, oversized-read message)
 
 ---
 
@@ -141,5 +145,45 @@ Tools in blorb.json currently must all be local commands. This plan introduces a
 > - `internal/config/testdata/valid.json`: add a builtin entry alongside the command ones so the canonical valid fixture covers both types (update its assertions in `config_test.go` if it asserts exact tool entries).
 > - Skim `AGENTS.md` - only touch it if it describes tools as commands (per the survey it does not appear to; leave it alone if so).
 > - If the README documents project layout (lines 232-240), add `internal/tools/builtin` to it.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 6: hold the `os.Root` for the tool's lifetime (security, plan deviation)
+
+> The stage 4 design says "the open `*os.Root` is held by the tool instance for its lifetime" — that lifetime ownership is what eliminates the TOCTOU window. The implementation instead re-opens the sandbox on every run (`openSandbox(fc.resolved)` in `runRead` and `runGrep`), so the validated-at-construction guarantee is lost. **Verified exploit: rename the base dir away after construction and symlink it to an outside directory — the builtin reads outside files, sandbox defeated.**
+>
+> - Move sandbox opening out of the per-run path and into construction: add an exported `Prepare` step on the builtin package's `Options` (e.g. `Prepare() error`, or fold it into the `Builtin` API as `Prepare(opts Options) (Options, error)`) that resolves `base_dir`, calls `os.OpenRoot`, and returns a prepared options value carrying the open `*os.Root`. `newBuiltinTool` in `internal/tools/builtin_tool.go` calls it once after `builtin.ParseConfig` and holds the result in `builtinTool.opts`; the `Options` value flowing into `Run` is the prepared one, so run functions take the root from the options instead of calling `openSandbox`.
+> - `ParseConfig` keeps its existing validation (base_dir required, exists, is a directory) so config-layer errors stay unchanged; `Prepare` re-opens and fails construction on a race (directory removed between validate and prepare).
+> - The prepared options need a cleanup path so the Root isn't leaked: `builtinTool` gains a `Close`/`close` that closes the root when the registry is discarded (a registry is built once at startup and held for the process/REPL lifetime, so closing at teardown — or relying on process exit — is acceptable; if wiring teardown is disproportionate, an explicit comment on the ownership is enough, but the root itself must be per-tool-instance, not per-run).
+> - Test (in `internal/tools/builtin/builtin_test.go`): construct a prepared read over `t.TempDir()`, then rename the base away and symlink it to an outside temp dir; run a read of the outside file through the *prepared* options and assert the sandbox error — this exact sequence is the exploit, so the test pins it.
+> - Test (in `internal/tools/builtin_tool_test.go`): same swap through `tools.NewRegistry` + `Registry.Run`, asserting the tool result is the sandbox error, not outside content.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 7: normalize trailing-slash grep paths
+
+> **Verified defect: `"path": "sub/"` and `"./"` return empty output with no error** (a natural path form a model could produce), while `"sub"` works. `cleanRel` (internal/tools/builtin/grep.go) only trims a `./` prefix; a trailing slash makes `fs.WalkDir`'s root name never match walked paths, so every entry is skipped. Silent-empty is the worst outcome: the model believes there were no matches.
+>
+> - Fix in `cleanRel`: also trim trailing slashes (via `strings.TrimSuffix` or `path.Clean`-style normalization) so `sub/`, `./`, and `sub` all behave identically. Note `"."` and `"./"` must still normalize to `""`/`"."` correctly (the base itself is addressable).
+> - Also decide read's stance: read of `"f.txt/"` currently surfaces the uniform sandbox error — leave that as-is (Root rejects it), but add a pinning test so the behavior is conscious.
+> - Tests: grep over `sub/`, `./`, `sub//`, and `./sub/` all produce the identical output to grep over `sub`; read of `"f.txt/"` pinned as the sandbox error.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 8: make builtins honor the per-call context/timeout
+
+> The registry derives the per-call `context.WithTimeout`, but `runGrep` never checks `ctx.Done()` — a grep over a huge tree runs to completion regardless of the deadline. `runRead` is a single bounded read so it is less exposed, but the grep walk is unbounded.
+>
+> - In `sandbox.grep`, check `ctx.Err()` at the top of the `fs.WalkDir` callback (cheap, per-entry) and return the context error so the walk aborts; map a `context.Canceled`/`context.DeadlineExceeded` through as a tool-reported failure (consistent with the error contract: the model should see the tool stopped early) — or as a Go error if we prefer infra framing; pick one, document it in the test.
+> - `runRead` may pass untouched if reads are bounded and fast; note the decision in the test naming.
+> - Rework `TestBuiltinTimeoutEnforcement` (internal/tools/builtin_tool_test.go) into an honest test: with the ctx checks in place, a grep against a prepared registry with an already-canceled context must abort (assert non-success or the ctx error, not `_ = err`). Remove the misfiled nonexistent-`base_dir` construction block (it duplicates `TestBuiltinRegistryConstruction/unresolvable base_dir`) and the misleading FIFO comment. A direct deadline test (grep over a big synthetic tree with `WithTimeout(1ms)`) is feasible once the ctx check lands in the walk; add it if it stays fast, otherwise the canceled-context test is the honest minimum.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 9: minor nits (fixture typo, dead test variable, oversized-read message)
+
+> - Fix the `grebFixture` typo in `internal/tools/builtin/builtin_test.go` (rename to `grepFixture`).
+> - Remove the dead `dotdotOutput` variable in `TestSandbox` (builtin_test.go): it is assigned in the `dotdot traversal` subtest but never read — the subtest should keep its leak assertion and drop the shared variable (note the subtests run under `t.Parallel()`, so the cross-subtest sharing was never sound anyway).
+> - Read's oversized-file message: it currently reports "at least 1048577 bytes" because the read goes one byte past the cap for detection. Reword to lead with the cap, e.g. `error: file exceeds the 1048576 byte read cap`, dropping the odd size; update the asserting test (it checks for "exceeding" and the cap number — keep both assertions passing).
 >
 > Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
