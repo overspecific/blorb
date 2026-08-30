@@ -305,6 +305,9 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 		if err != nil {
 			return nil, fmt.Errorf("read response body: %w", err)
 		}
+		if len(respBody) == maxBodyLen {
+			return nil, fmt.Errorf("read response body: response exceeds %d byte limit", maxBodyLen)
+		}
 		return nil, fmt.Errorf("chat completions: unexpected status %d: %s",
 			httpResp.StatusCode, truncate(respBody, maxErrorBodyLen))
 	}
@@ -313,9 +316,11 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 }
 
 // readStream consumes an SSE body, emitting deltas and accumulating the
-// complete response.
+// complete response. It errors when the stream carries no data chunks at
+// all: an empty stream would otherwise surface as a silent empty answer.
 func (c *Client) readStream(r io.Reader, onDelta func(llm.Delta) error) (*llm.Response, error) {
 	acc := newStreamAccumulator()
+	sawData := false
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxBodyLen)
@@ -335,6 +340,7 @@ func (c *Client) readStream(r io.Reader, onDelta func(llm.Delta) error) (*llm.Re
 			// skip it rather than aborting the stream.
 			continue
 		}
+		sawData = true
 
 		if err := acc.addDelta(&chunk, onDelta); err != nil {
 			return nil, err
@@ -342,6 +348,9 @@ func (c *Client) readStream(r io.Reader, onDelta func(llm.Delta) error) (*llm.Re
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read stream: %w", err)
+	}
+	if !sawData {
+		return nil, fmt.Errorf("decode response: no data in stream")
 	}
 
 	resp := acc.response()

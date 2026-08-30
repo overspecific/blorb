@@ -958,6 +958,59 @@ func TestChatStreamToolCallArgumentsOverLimitErrors(t *testing.T) {
 	}
 }
 
+func TestChatStreamEmptyBodyErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty body", ""},
+		{"comments and blank lines", ": keepalive\n\n\n: another comment\n\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+
+			_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{Model: "m"}, func(d llm.Delta) error {
+				return nil
+			})
+			if err == nil {
+				t.Fatal("ChatStream succeeded, want a no-data error")
+			}
+			if !strings.Contains(err.Error(), "no data in stream") {
+				t.Errorf("error = %q, want a no-data-in-stream error", err)
+			}
+		})
+	}
+}
+
+func TestChatStreamNon2xxBodyOverLimitErrors(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 17 MiB error body, exceeding the 16 MiB read cap.
+		http.Error(w, strings.Repeat("x", 17<<20), http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{Model: "m"}, func(d llm.Delta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("ChatStream succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Errorf("error = %q, want a limit mention", err)
+	}
+}
+
 func TestChatImplementsStreamingClient(t *testing.T) {
 	t.Parallel()
 
