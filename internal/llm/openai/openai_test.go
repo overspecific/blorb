@@ -1220,6 +1220,7 @@ func TestChatStreamLogsAssembledResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		sseChunks(w,
+			`{"id":"r","choices":[{"delta":{"role":"assistant","reasoning_content":"thinking hard"},"finish_reason":null}]}`,
 			`{"id":"r","choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}`,
 			`{"id":"r","choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}`,
 		)
@@ -1257,8 +1258,9 @@ func TestChatStreamLogsAssembledResponse(t *testing.T) {
 		ID      string `json:"id"`
 		Choices []struct {
 			Message struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				Reasoning string `json:"reasoning_content"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -1279,6 +1281,11 @@ func TestChatStreamLogsAssembledResponse(t *testing.T) {
 	}
 	if choice.Message.Role != "assistant" {
 		t.Errorf("response role = %q, want assistant", choice.Message.Role)
+	}
+	// The log record is full-fidelity: the reasoning appears even though
+	// this final answer has no tool calls (the request path would drop it).
+	if choice.Message.Reasoning != "thinking hard" {
+		t.Errorf("response reasoning_content = %q, want thinking hard", choice.Message.Reasoning)
 	}
 	if choice.FinishReason != "stop" {
 		t.Errorf("response finish_reason = %q, want stop", choice.FinishReason)

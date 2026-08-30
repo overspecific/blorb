@@ -11,7 +11,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 - [x] Commit 5: Documentation and gitignore
 - [x] Commit 6: Log the assembled response for streamed turns
 - [x] Commit 7: Per-conversation log directories
-- [ ] Commit 8: Fix reasoning loss in streamed-response log records
+- [x] Commit 8: Fix reasoning loss in streamed-response log records
 
 ---
 

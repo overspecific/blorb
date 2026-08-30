@@ -296,10 +296,15 @@ func (a *streamAccumulator) response() *llm.Response {
 }
 
 // marshalWireResponse renders a completed neutral response back into the
-// OpenAI wire response envelope, reusing the neutral→wire message shape
-// that wireMessages builds for conversation history. Streaming and
-// non-streaming llm-response log records then carry directly comparable
-// bodies.
+// OpenAI wire response envelope, so streaming and non-streaming
+// llm-response log records carry directly comparable bodies.
+//
+// The message is built directly rather than via wireMessages: the log is
+// full-fidelity — what the model actually produced — and deliberately
+// keeps Reasoning even for a final answer without tool calls, where
+// wireMessages would drop it per its request-side re-send rule (a final
+// answer's reasoning is stale by the next *request*, but the *log* must
+// record it).
 func marshalWireResponse(resp *llm.Response) ([]byte, error) {
 	envelope := wireResponse{
 		ID:    resp.ID,
@@ -309,10 +314,24 @@ func marshalWireResponse(resp *llm.Response) ([]byte, error) {
 		Message      wireMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`
 	}{
-		Message:      wireMessages([]llm.Message{resp.Message})[0],
+		Message:      wireMessageForLog(resp.Message),
 		FinishReason: resp.FinishReason,
 	})
 	return json.Marshal(envelope)
+}
+
+// wireMessageForLog converts a neutral message to the wire shape without
+// the request-side reasoning rule: reasoning is kept unconditionally.
+func wireMessageForLog(m llm.Message) wireMessage {
+	wm := wireMessage{Role: string(m.Role), Content: m.Content, Reasoning: m.Reasoning, ToolCallID: m.ToolCallID}
+	for _, tc := range m.ToolCalls {
+		wm.ToolCalls = append(wm.ToolCalls, wireToolCall{
+			ID:       tc.ID,
+			Type:     llm.ToolCallType,
+			Function: wireToolCallFn{Name: tc.FunctionName, Arguments: tc.FunctionArgs},
+		})
+	}
+	return wm
 }
 
 // ChatStream sends a chat completion request with stream:true and reads the
@@ -376,7 +395,7 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 // "error: ..." body when the stream carried no data at all. Write errors
 // are ignored — logging is best-effort.
 func (c *Client) readStream(httpResp *http.Response, endpoint string, onDelta func(llm.Delta) error) (*llm.Response, error) {
-	logResponse := func(resp *llm.Response, body []byte) {
+	logResponse := func(body []byte) {
 		if c.cfg.Sink == nil {
 			return
 		}
@@ -397,7 +416,7 @@ func (c *Client) readStream(httpResp *http.Response, endpoint string, onDelta fu
 		// Log what the model had produced so far; with no data at all
 		// there is nothing assembled, so log the error itself.
 		if !sawData {
-			logResponse(nil, []byte("error: "+err.Error()))
+			logResponse([]byte("error: " + err.Error()))
 			return nil, err
 		}
 		resp := acc.response()
@@ -405,7 +424,7 @@ func (c *Client) readStream(httpResp *http.Response, endpoint string, onDelta fu
 		if marshalErr != nil {
 			body = []byte("error: " + marshalErr.Error())
 		}
-		logResponse(resp, body)
+		logResponse(body)
 		return nil, err
 	}
 
@@ -451,9 +470,9 @@ func (c *Client) readStream(httpResp *http.Response, endpoint string, onDelta fu
 	// A marshal failure still leaves a record: error: <marshal error>.
 	body, err := marshalWireResponse(resp)
 	if err != nil {
-		logResponse(resp, []byte("error: "+err.Error()))
+		logResponse([]byte("error: " + err.Error()))
 	} else {
-		logResponse(resp, body)
+		logResponse(body)
 	}
 	return resp, nil
 }
