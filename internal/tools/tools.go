@@ -1,18 +1,16 @@
-// Package tools implements execution of tools declared in blorb.json as
-// subprocesses, plus the registry mapping tool names to their definitions.
+// Package tools implements execution of tools declared in blorb.json,
+// plus the registry mapping tool names to their definitions. Tool
+// implementations are dispatched on the entry's type: "command" tools run
+// as subprocesses, and other tool types live in their own packages.
 package tools
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -31,14 +29,13 @@ const maxOutputLen = 1 << 20
 // maxStderrLen bounds captured stderr included in failure output.
 const maxStderrLen = 4 << 10
 
-// Tool is an executable tool with its API-facing definition.
-type Tool struct {
-	Name        string
-	Description string
-	// ArgsSchema is the JSON schema describing the arguments, passed
-	// through to the API. When nil, "{}" is used.
-	ArgsSchema json.RawMessage
-	Command    []string
+// tool is the internal interface every tool implementation satisfies. The
+// registry applies the per-call timeout and sink; each implementation owns
+// its execution and its wire-log result record.
+type tool interface {
+	name() string
+	definition() llm.Tool
+	run(ctx context.Context, args json.RawMessage, sink logging.Sink) (ToolResult, error)
 }
 
 // ToolResult is the outcome of running a tool. Err marks tool-level failure
@@ -51,7 +48,7 @@ type ToolResult struct {
 
 // Registry holds the configured tools.
 type Registry struct {
-	tools   map[string]Tool
+	tools   map[string]tool
 	timeout time.Duration
 	sink    logging.Sink
 }
@@ -71,10 +68,10 @@ func WithSink(s logging.Sink) Option {
 }
 
 // NewRegistry converts config tool entries into a registry, revalidating
-// names. Configuration validation errors surface here.
+// each entry per its type. Configuration validation errors surface here.
 func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) {
 	r := &Registry{
-		tools:   make(map[string]Tool, len(entries)),
+		tools:   make(map[string]tool, len(entries)),
 		timeout: DefaultTimeout,
 	}
 	for _, opt := range opts {
@@ -90,23 +87,24 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 		if e.Description == "" {
 			return nil, fmt.Errorf("tool %q: description is required", e.Name)
 		}
-		if len(e.Command) == 0 {
-			return nil, fmt.Errorf("tool %q: command is required", e.Name)
+		var t tool
+		var err error
+		switch e.Type {
+		case config.ToolTypeCommand:
+			t, err = newCommandTool(e)
+		case config.ToolTypeBuiltin:
+			return nil, fmt.Errorf("tool %q: builtin tools are not yet supported", e.Name)
+		default:
+			err = fmt.Errorf("tool %q: unknown tool type %q (supported: %s)",
+				e.Name, e.Type, strings.Join(config.SupportedToolTypes(), ", "))
 		}
-		for _, cmd := range e.Command {
-			if cmd == "" {
-				return nil, fmt.Errorf("tool %q: command must not contain empty strings", e.Name)
-			}
+		if err != nil {
+			return nil, err
 		}
-		if _, dup := r.tools[e.Name]; dup {
-			return nil, fmt.Errorf("duplicate tool name %q", e.Name)
+		if _, dup := r.tools[t.name()]; dup {
+			return nil, fmt.Errorf("duplicate tool name %q", t.name())
 		}
-		r.tools[e.Name] = Tool{
-			Name:        e.Name,
-			Description: e.Description,
-			ArgsSchema:  e.ArgsSchema,
-			Command:     e.Command,
-		}
+		r.tools[t.name()] = t
 	}
 	return r, nil
 }
@@ -126,33 +124,23 @@ func (r *Registry) Names() []string {
 func (r *Registry) Definitions() []llm.Tool {
 	defs := make([]llm.Tool, 0, len(r.tools))
 	for _, name := range r.Names() {
-		t := r.tools[name]
-		schema := t.ArgsSchema
-		if len(schema) == 0 {
-			schema = json.RawMessage("{}")
-		}
-		defs = append(defs, llm.Tool{
-			Name:        t.Name,
-			Description: t.Description,
-			Parameters:  schema,
-		})
+		defs = append(defs, r.tools[name].definition())
 	}
 	return defs
 }
 
-// Run executes the named tool with the given JSON args (the args become the
-// tool process's stdin). Infrastructure failures (unknown tool, bad args,
-// timeout, unusable stdin) return an error; tool-level failures (non-zero
-// exit) come back as ToolResult{Err: true} with no error.
+// Run executes the named tool with the given JSON args. Infrastructure
+// failures (unknown tool, bad args, timeout, spawn failure) return an
+// error; tool-reported failures (non-zero exit, tool-reported errors) come
+// back as ToolResult{Err: true} with no error.
 //
-// When a sink is configured (WithSink), two log records are written per
-// invocation: one KindToolRequest before the process starts (the validated
-// args bytes) and one KindToolResult once the outcome is known. Nothing is
-// logged for unknown tools or invalid args: no process ran, so there is no
-// wire traffic to record. Sink write errors are ignored — logging is
-// best-effort.
+// Each implementation writes its own KindToolResult wire-log record at each
+// outcome point; the registry writes the shared KindToolRequest record just
+// before execution starts. Nothing is logged for unknown tools or invalid
+// args: nothing ran, so there is no wire traffic to record. Sink write
+// errors are ignored — logging is best-effort.
 func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
-	tool, ok := r.tools[name]
+	t, ok := r.tools[name]
 	if !ok {
 		return ToolResult{}, fmt.Errorf("unknown tool %q (known tools: %s)", name, strings.Join(r.Names(), ", "))
 	}
@@ -164,8 +152,9 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 		return ToolResult{}, fmt.Errorf("tool %q: args are not valid JSON", name)
 	}
 
-	// Logged only once execution is possible, immediately before
-	// cmd.Start. The write error is ignored — logging is best-effort.
+	// Logged only once execution is possible, immediately before the
+	// implementation runs. The write error is ignored — logging is
+	// best-effort.
 	if r.sink != nil {
 		r.sink.Write(logging.Record{
 			Time:   time.Now(),
@@ -179,71 +168,18 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 	runCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, tool.Command[0], tool.Command[1:]...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	cmd.Stdin = bytes.NewReader(args)
-	var stdout, stderr limitedBuffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
-		err = fmt.Errorf("tool %q: start %s: %w", name, tool.Command[0], err)
-		r.writeResult(name, "error: "+err.Error())
-		return ToolResult{}, err
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Wait()
-	}()
-
-	var runErr error
-	select {
-	case runErr = <-errCh:
-	case <-runCtx.Done():
-		killProcessGroup(cmd.Process)
-		<-errCh // reap the child; the outcome no longer matters
-		var err error
-		if ctx.Err() != nil {
-			err = fmt.Errorf("tool %q: %w", name, ctx.Err())
-		} else {
-			err = fmt.Errorf("tool %q: timed out after %s", name, r.timeout)
-		}
-		r.writeResult(name, "error: "+err.Error())
-		return ToolResult{}, err
-	}
-
-	if runErr == nil {
-		res := ToolResult{Output: trimSingleTrailingNewline(stdout.String())}
-		r.writeResult(name, res.Output)
-		return res, nil
-	}
-
-	var exitErr *exec.ExitError
-	if errors.As(runErr, &exitErr) {
-		res := ToolResult{
-			Output: fmt.Sprintf("Tool %s failed with exit code %d.\nStderr: %s",
-				name, exitErr.ExitCode(), truncateStderr(stderr.String())),
-			Err: true,
-		}
-		r.writeResult(name, res.Output)
-		return res, nil
-	}
-	err := fmt.Errorf("tool %q: %w", name, runErr)
-	r.writeResult(name, "error: "+err.Error())
-	return ToolResult{}, err
+	return t.run(runCtx, args, r.sink)
 }
 
-// writeResult logs one KindToolResult record with the given body. It is
-// called directly at each outcome point (not deferred) so the timestamp
-// reflects when the outcome was known and the helper cannot fire twice.
-// Write errors are ignored — logging is best-effort.
-func (r *Registry) writeResult(name, body string) {
-	if r.sink == nil {
+// writeResultRecord logs one KindToolResult record with the given body.
+// Called directly at each outcome point (not deferred) so the timestamp
+// reflects when the outcome was known. Write errors are ignored — logging
+// is best-effort.
+func writeResultRecord(sink logging.Sink, name, body string) {
+	if sink == nil {
 		return
 	}
-	r.sink.Write(logging.Record{
+	sink.Write(logging.Record{
 		Time:   time.Now(),
 		Kind:   logging.KindToolResult,
 		Method: "RUN",
@@ -252,16 +188,7 @@ func (r *Registry) writeResult(name, body string) {
 	})
 }
 
-// killProcessGroup kills the tool and anything it spawned. The process was
-// started with Setpgid, so its pid is its process group id.
-func killProcessGroup(p *os.Process) {
-	if p == nil {
-		return
-	}
-	_ = syscall.Kill(-p.Pid, syscall.SIGKILL)
-	_ = p.Kill()
-}
-
+// trimSingleTrailingNewline trims one trailing newline (\n or \r\n).
 func trimSingleTrailingNewline(s string) string {
 	if strings.HasSuffix(s, "\r\n") {
 		return s[:len(s)-2]
