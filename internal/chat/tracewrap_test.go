@@ -337,6 +337,38 @@ func TestRunTracedTurnSpanCarriesFinalText(t *testing.T) {
 	}
 }
 
+// TestRunTracedLLMSpanRecordsConfiguredModel verifies the blorb:llm span
+// payload names the configured model even though the engine leaves
+// Request.Model empty (the provider injects its model at the wire layer).
+func TestRunTracedLLMSpanRecordsConfiguredModel(t *testing.T) {
+	f, srv := newFakePFServer(t)
+
+	var stdout syncBuffer
+	o := chat.Options{Stdout: &stdout}
+	cfg := minimalConfig() // Provider.Model = "gpt-test"
+	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	for _, c := range f.spanCreates() {
+		if spanSchema(c) != "blorb:llm" {
+			continue
+		}
+		d := pfDetail(c)
+		payload, _ := d["payload"].(map[string]any)
+		if payload["model"] == "gpt-test" {
+			return
+		}
+		t.Errorf("llm span payload model = %v, want gpt-test (payload: %v)", payload["model"], payload)
+		return
+	}
+	t.Fatal("no blorb:llm span create recorded")
+}
+
 // TestRunNonStreamingClientRendersWithStreamRequested is the untraced
 // sibling: Stream: true with a non-streaming client must still render.
 func TestRunNonStreamingClientRendersWithStreamRequested(t *testing.T) {

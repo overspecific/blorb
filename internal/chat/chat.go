@@ -318,7 +318,7 @@ func runTurn(
 		return tracerFailure(err)
 	}
 
-	holder.inner = newTracingClient(holder.inner, turn)
+	holder.inner = newTracingClient(holder.inner, turn, opts.Config.Provider.Model)
 	defer func() { holder.inner = unwrapTracingClient(holder.inner) }()
 
 	finalText, runErr := eng.RunTurn(turnCtx, line, traceEvent(turn, printEvent))

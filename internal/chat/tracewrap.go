@@ -41,16 +41,29 @@ func (h *clientHolder) ChatStream(ctx context.Context, req llm.Request, onDelta 
 type tracingClient struct {
 	inner llm.Client
 	turn  *prefactor.Turn
+	// model is the configured model name, recorded on llm spans when the
+	// engine's request does not name one (the provider injects its model
+	// at the wire layer, so the engine leaves Request.Model empty).
+	model string
 }
 
-// newTracingClient wraps inner for the given turn.
-func newTracingClient(inner llm.Client, turn *prefactor.Turn) *tracingClient {
-	return &tracingClient{inner: inner, turn: turn}
+// newTracingClient wraps inner for the given turn. model is the configured
+// provider model, used when the request's model is empty.
+func newTracingClient(inner llm.Client, turn *prefactor.Turn, model string) *tracingClient {
+	return &tracingClient{inner: inner, turn: turn, model: model}
+}
+
+// spanRequest returns req with the model filled in for tracing when empty.
+func (c *tracingClient) spanRequest(req llm.Request) llm.Request {
+	if req.Model == "" && c.model != "" {
+		req.Model = c.model
+	}
+	return req
 }
 
 // Chat implements llm.Client, wrapping the call in a blorb:llm span.
 func (c *tracingClient) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
-	span, err := c.turn.LLMCall(ctx, req)
+	span, err := c.turn.LLMCall(ctx, c.spanRequest(req))
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +92,7 @@ func (c *tracingClient) ChatStream(ctx context.Context, req llm.Request, onDelta
 		return c.Chat(ctx, req)
 	}
 
-	span, err := c.turn.LLMCall(ctx, req)
+	span, err := c.turn.LLMCall(ctx, c.spanRequest(req))
 	if err != nil {
 		return nil, err
 	}

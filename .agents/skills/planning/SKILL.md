@@ -50,3 +50,9 @@ Plans are written into `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` - a new di
 <as above>
 ```
 
+## Reviewing an implemented plan
+
+After a plan is implemented, the user may ask for a review. Find the commits that relate to the plan, and examine them for alignment to the plan, quality and correctness. If there are any issues found, let the user know what they are.
+
+If the user asks for the issues to be fixed, add them into the plan as new stages, one per issue.
+
