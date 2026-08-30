@@ -2,9 +2,15 @@ package chat_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -897,5 +903,238 @@ func TestRunLongLineDeliveredAsOneTurn(t *testing.T) {
 	last := fc.requests[0].Messages[len(fc.requests[0].Messages)-1]
 	if last.Content != long {
 		t.Errorf("user message length = %d, want %d (full line)", len(last.Content), len(long))
+	}
+}
+
+// writeBlorbConfig writes a minimal valid config with the given raw JSON
+// merged at the top level (as a raw map) and returns its path.
+func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
+	t.Helper()
+
+	base := map[string]any{
+		"name":          "logger",
+		"system_prompt": "You are helpful.",
+		"max_turns":     5,
+		"provider": map[string]any{
+			"type":     "openai",
+			"model":    "gpt-test",
+			"base_url": "placeholder",
+		},
+		"tools": []map[string]any{{
+			"name":        "echo",
+			"description": "Echo stdin back.",
+			"command":     []string{"sh", "-c", `printf '%s' "$(cat)" && echo`},
+		}},
+	}
+	for k, v := range extra {
+		base[k] = v
+	}
+
+	data, err := json.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	path := filepath.Join(dir, "blorb.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+// runLoggedSession runs a real-client chat session against a canned server
+// and returns the .logs directory contents sorted lexically.
+func runLoggedSession(t *testing.T, cfgPath, stdin string) []string {
+	t.Helper()
+	return runLoggedSessionWithDir(t, cfgPath, filepath.Join(filepath.Dir(cfgPath), ".logs"), stdin)
+}
+
+// runLoggedSessionWithDir runs a real-client chat session and returns the
+// .txt files in logDir sorted lexically.
+func runLoggedSessionWithDir(t *testing.T, cfgPath, logDir, stdin string) []string {
+	t.Helper()
+
+	var stdout strings.Builder
+	o, err := optionsFromConfigPath(t, cfgPath, stdin, &stdout)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	names, err := sortLogNames(logDir)
+	if err != nil {
+		t.Fatalf("list logs: %v", err)
+	}
+	return names
+}
+
+// optionsFromConfigPath builds chat.Options from a config file on disk,
+// using the real (non-fake) client path so wire logging actually engages.
+func optionsFromConfigPath(t *testing.T, cfgPath, stdin string, stdout io.Writer) (chat.Options, error) {
+	t.Helper()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return chat.Options{}, err
+	}
+	return chat.Options{
+		Config:     cfg,
+		Version:    "test",
+		Stdin:      strings.NewReader(stdin),
+		Stdout:     stdout,
+		ConfigPath: cfgPath,
+	}, nil
+}
+
+// sortLogNames lists the .txt files in dir sorted lexically.
+func sortLogNames(dir string) ([]string, error) {
+	names, err := filepath.Glob(filepath.Join(dir, "*.txt"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// TestRunWritesLogFilesForToolRound is the end-to-end wire logging test: a
+// full one-tool-round turn over the real OpenAI client must produce exactly
+// six log files whose lexically sorted names follow the true sequence of
+// the turn.
+func TestRunWritesLogFilesForToolRound(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	toolCallJSON := `{"id":"call_1","type":"function","function":{"name":"echo","arguments":"{\"text\":\"ping\"}"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"id":"resp-1","choices":[{"message":{"role":"assistant","content":"","tool_calls":[%s]},"finish_reason":"tool_calls"}]}`, toolCallJSON)))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp-2","choices":[{"message":{"role":"assistant","content":"all done"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfgPath := writeBlorbConfig(t, dir, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai",
+			"model":    "gpt-test",
+			"base_url": srv.URL,
+		},
+	})
+
+	names := runLoggedSession(t, cfgPath, "do it\nexit\n")
+	if len(names) != 6 {
+		t.Fatalf("got %d log files, want 6: %v", len(names), names)
+	}
+
+	wantKinds := []string{
+		"llm-request",
+		"llm-response",
+		"tool-request",
+		"tool-result",
+		"llm-request",
+		"llm-response",
+	}
+	for i, want := range wantKinds {
+		got := filepath.Base(names[i])
+		if !strings.HasSuffix(got, "-"+want+".txt") {
+			t.Errorf("sorted log %d: got %q, want suffix -%s.txt", i, got, want)
+		}
+	}
+
+	// The tool request file names the tool and carries the args.
+	toolReqData, err := os.ReadFile(names[2])
+	if err != nil {
+		t.Fatalf("read tool request log: %v", err)
+	}
+	if !strings.Contains(string(toolReqData), "echo") || !strings.Contains(string(toolReqData), "ping") {
+		t.Errorf("tool request log = %q, want the tool name and args", toolReqData)
+	}
+
+	// An LLM request file carries the user message text.
+	llmReqData, err := os.ReadFile(names[0])
+	if err != nil {
+		t.Fatalf("read llm request log: %v", err)
+	}
+	if !strings.Contains(string(llmReqData), "do it") {
+		t.Errorf("llm request log = %q, want the user message text", llmReqData)
+	}
+}
+
+func TestRunLoggingDisabledWritesNothing(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfgPath := writeBlorbConfig(t, dir, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai",
+			"model":    "gpt-test",
+			"base_url": srv.URL,
+		},
+		"logging": map[string]any{"enabled": false},
+	})
+
+	var stdout strings.Builder
+	o, err := optionsFromConfigPath(t, cfgPath, "do it\nexit\n", &stdout)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".logs")); !os.IsNotExist(err) {
+		t.Errorf("stat .logs error = %v, want IsNotExist", err)
+	}
+}
+
+func TestRunCustomLogPath(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfgPath := writeBlorbConfig(t, dir, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai",
+			"model":    "gpt-test",
+			"base_url": srv.URL,
+		},
+		"logging": map[string]any{"path": "mylogs"},
+	})
+
+	names := runLoggedSessionWithDir(t, cfgPath, filepath.Join(dir, "mylogs"), "do it\nexit\n")
+	if len(names) == 0 {
+		t.Fatal("got 0 log files, want at least one request/response pair")
+	}
+	for _, name := range names {
+		if base := filepath.Base(filepath.Dir(name)); base != "mylogs" {
+			t.Errorf("log file %q outside mylogs/", name)
+		}
+	}
+}
+
+func TestNewClientWithGetenvNilSink(t *testing.T) {
+	t.Setenv("BLORB_TEST_KEY", "key-value")
+
+	cfg := minimalConfig()
+	cfg.Provider.APIKeyEnv = ptr("BLORB_TEST_KEY")
+
+	client, err := chat.NewClientWithGetenv(cfg, os.Getenv, nil)
+	if err != nil || client == nil {
+		t.Fatalf("NewClientWithGetenv error = %v, want a client (nil sink = logging off)", err)
 	}
 }

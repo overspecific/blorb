@@ -64,11 +64,12 @@ func chatCommand() *cli.Command {
 			}
 
 			err = chat.Run(ctx, chat.Options{
-				Config:  cfg,
-				Version: cmd.Root().Version,
-				Stdin:   os.Stdin,
-				Stdout:  os.Stdout,
-				Stream:  !cmd.Bool("no-stream"),
+				Config:     cfg,
+				Version:    cmd.Root().Version,
+				Stdin:      os.Stdin,
+				Stdout:     os.Stdout,
+				Stream:     !cmd.Bool("no-stream"),
+				ConfigPath: cmd.String("config"),
 			})
 			if err != nil {
 				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)

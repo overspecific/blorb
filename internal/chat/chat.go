@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,6 +17,7 @@ import (
 	"github.com/overspecific/blorb/internal/engine"
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/llm/openai"
+	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/tools"
 )
 
@@ -34,6 +36,11 @@ type Options struct {
 	// true and the client supports it, text, reasoning, and tool call
 	// fragments are printed as they arrive. Disabled by --no-stream.
 	Stream bool
+	// ConfigPath is the path to the blorb.json that produced Config. When
+	// empty, the session runs without file logging. When set and logging
+	// is enabled in the config, the session writes wire logs into the
+	// resolved log directory next to the config file.
+	ConfigPath string
 }
 
 // Run drives one interactive chat session. It returns nil on graceful exit
@@ -41,12 +48,17 @@ type Options struct {
 // startup failures. Turn failures are printed to stdout and keep the
 // session alive. SIGINT during a turn cancels just that turn.
 func Run(ctx context.Context, opts Options) error {
-	client, err := opts.newClient()
+	sink, err := resolveSink(opts)
 	if err != nil {
 		return err
 	}
 
-	registry, err := tools.NewRegistry(opts.Config.Tools)
+	client, err := opts.newClient(sink)
+	if err != nil {
+		return err
+	}
+
+	registry, err := tools.NewRegistry(opts.Config.Tools, tools.WithSink(sink))
 	if err != nil {
 		return fmt.Errorf("build tools: %w", err)
 	}
@@ -343,11 +355,30 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
 	return onEvent, flush
 }
 
+// resolveSink builds the wire-log sink for a session. File logging is on
+// only when ConfigPath is set and the config enables logging; otherwise a
+// no-op sink is returned so downstream code always has a non-nil sink.
+func resolveSink(opts Options) (logging.Sink, error) {
+	if opts.ConfigPath == "" || !opts.Config.LoggingEnabled() {
+		return logging.NewNop(), nil
+	}
+
+	dir := filepath.Join(filepath.Dir(opts.ConfigPath), opts.Config.LogDir())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create log dir: %w", err)
+	}
+	sink, err := logging.New(dir)
+	if err != nil {
+		return nil, fmt.Errorf("open log dir: %w", err)
+	}
+	return sink, nil
+}
+
 // NewClient builds the LLM client described by a config, switching on
 // provider.type. When a second provider lands this graduates to a registry
 // map. getenv is the environment lookup, injectable for tests; pass
-// os.Getenv in production.
-func NewClientWithGetenv(cfg config.Config, getenv func(string) string) (llm.Client, error) {
+// os.Getenv in production. sink receives LLM wire logs; nil disables them.
+func NewClientWithGetenv(cfg config.Config, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
 	switch cfg.Provider.Type {
 	case config.ProviderTypeOpenAI:
 		apiKey := ""
@@ -361,6 +392,7 @@ func NewClientWithGetenv(cfg config.Config, getenv func(string) string) (llm.Cli
 			BaseURL: cfg.Provider.BaseURL,
 			Model:   cfg.Provider.Model,
 			APIKey:  apiKey,
+			Sink:    sink,
 		})
 	default:
 		return nil, fmt.Errorf("provider type %q is not supported (supported: %v)", cfg.Provider.Type, config.SupportedProviderTypes())
@@ -369,10 +401,10 @@ func NewClientWithGetenv(cfg config.Config, getenv func(string) string) (llm.Cli
 
 // NewClient builds the LLM client described by a config using os.Getenv.
 func NewClient(cfg config.Config) (llm.Client, error) {
-	return NewClientWithGetenv(cfg, os.Getenv)
+	return NewClientWithGetenv(cfg, os.Getenv, logging.NewNop())
 }
 
-func (o Options) newClient() (llm.Client, error) {
+func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
 	if o.NewClient != nil {
 		return o.NewClient(o.Config)
 	}
@@ -380,5 +412,5 @@ func (o Options) newClient() (llm.Client, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	return NewClientWithGetenv(o.Config, getenv)
+	return NewClientWithGetenv(o.Config, getenv, sink)
 }

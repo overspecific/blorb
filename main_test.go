@@ -138,3 +138,15 @@ func TestChatNoStreamFlag(t *testing.T) {
 		t.Errorf("no-stream default = true, want false (streaming on by default)")
 	}
 }
+
+func TestChatCommandHasNoNewFlags(t *testing.T) {
+	cmd := chatCommand()
+	if len(cmd.Flags) != 2 {
+		t.Errorf("chat has %d flags, want 2 (config, no-stream): %+v", len(cmd.Flags), cmd.Flags)
+	}
+	for _, f := range cmd.Flags {
+		if f.Names()[0] == "logging" {
+			t.Error("chat has a logging flag; logging must be configured via blorb.json only")
+		}
+	}
+}

@@ -3,6 +3,7 @@ package config_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,4 +241,86 @@ func TestLoadErrors(t *testing.T) {
 
 func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
+}
+
+// loggingConfig builds a valid Config with the given logging settings.
+func loggingConfig(t *testing.T, logging json.RawMessage) (config.Config, error) {
+	t.Helper()
+	var full string
+	if len(logging) > 0 {
+		full = fmt.Sprintf(`{
+			"name": "helper",
+			"system_prompt": "You are helpful.",
+			"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+			"max_turns": 1,
+			"logging": %s
+		}`, logging)
+	} else {
+		full = `{
+			"name": "helper",
+			"system_prompt": "You are helpful.",
+			"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+			"max_turns": 1
+		}`
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blorb.json")
+	if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
+		return config.Config{}, err
+	}
+	return config.Load(path)
+}
+
+func TestLoggingDefaults(t *testing.T) {
+	cfg, err := loggingConfig(t, nil)
+	if err != nil {
+		t.Fatalf("Load error = %v, want nil", err)
+	}
+	if !cfg.LoggingEnabled() {
+		t.Error("LoggingEnabled() = false, want true (default enabled)")
+	}
+	if got := cfg.LogDir(); got != ".logs" {
+		t.Errorf("LogDir() = %q, want .logs", got)
+	}
+}
+
+func TestLoggingExplicitlyDisabled(t *testing.T) {
+	cfg, err := loggingConfig(t, json.RawMessage(`{"enabled": false}`))
+	if err != nil {
+		t.Fatalf("Load error = %v, want nil", err)
+	}
+	if cfg.LoggingEnabled() {
+		t.Error("LoggingEnabled() = true, want false")
+	}
+	// The path is independent of enabled.
+	if got := cfg.LogDir(); got != ".logs" {
+		t.Errorf("LogDir() = %q, want .logs", got)
+	}
+}
+
+func TestLoggingCustomPath(t *testing.T) {
+	cfg, err := loggingConfig(t, json.RawMessage(`{"path": "mylogs"}`))
+	if err != nil {
+		t.Fatalf("Load error = %v, want nil", err)
+	}
+	if !cfg.LoggingEnabled() {
+		t.Error("LoggingEnabled() = false, want true")
+	}
+	if got := cfg.LogDir(); got != "mylogs" {
+		t.Errorf("LogDir() = %q, want mylogs", got)
+	}
+}
+
+func TestValidateRejectsBadLoggingPath(t *testing.T) {
+	for _, path := range []string{"a/b", "..", ".", "../escape"} {
+		_, err := loggingConfig(t, json.RawMessage(fmt.Sprintf(`{"path": %q}`, path)))
+		if err == nil {
+			t.Errorf("path %q: Load succeeded, want error", path)
+			continue
+		}
+		if !strings.Contains(err.Error(), "logging") {
+			t.Errorf("path %q: error = %v, want it to mention logging", path, err)
+		}
+	}
 }

@@ -7,7 +7,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 - [x] Commit 1: Logging package (`internal/logging`)
 - [x] Commit 2: OpenAI client request/response logging
 - [x] Commit 3: Tool registry call/result logging
-- [ ] Commit 4: Thread the logger through config, chat, and CLI
+- [x] Commit 4: Thread the logger through config, chat, and CLI
 - [ ] Commit 5: Documentation and gitignore
 
 ---

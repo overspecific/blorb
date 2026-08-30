@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 )
 
@@ -23,6 +24,10 @@ const (
 	// DefaultMaxTurns is used when max_turns is unset.
 	DefaultMaxTurns = 10
 
+	// DefaultLogDir is used when logging.path is unset: logs land in a
+	// .logs directory next to the config file.
+	DefaultLogDir = ".logs"
+
 	// ProviderTypeOpenAI selects an OpenAI-compatible chat completions API.
 	ProviderTypeOpenAI = "openai"
 )
@@ -34,6 +39,32 @@ type Config struct {
 	Provider     Provider    `json:"provider"`
 	MaxTurns     int         `json:"max_turns,omitempty"`
 	Tools        []ToolEntry `json:"tools,omitempty"`
+	Logging      LogConfig   `json:"logging"`
+}
+
+// LogConfig is the logging object in blorb.json.
+type LogConfig struct {
+	// Path is the log directory name, resolved relative to the config
+	// file's directory. When empty, .logs is used. Restricted to a single
+	// path component so ../ traversal cannot escape the config directory.
+	Path string `json:"path,omitempty"`
+	// Enabled is a pointer so an explicit "enabled": false is
+	// distinguishable from an absent field: nil means enabled.
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// LoggingEnabled reports whether wire logging is on: true unless
+// "enabled": false was set explicitly.
+func (c *Config) LoggingEnabled() bool {
+	return c.Logging.Enabled == nil || *c.Logging.Enabled
+}
+
+// LogDir returns the configured logging path, or DefaultLogDir when unset.
+func (c *Config) LogDir() string {
+	if c.Logging.Path == "" {
+		return DefaultLogDir
+	}
+	return c.Logging.Path
 }
 
 // Provider is the provider object, the extension point for multiple LLM
@@ -124,6 +155,22 @@ func (c *Config) Validate() error {
 	}
 	if err := validateUniqueToolNames(c.Tools); err != nil {
 		return err
+	}
+	if err := c.Logging.validate(); err != nil {
+		return fmt.Errorf("logging: %w", err)
+	}
+	return nil
+}
+
+// validate rejects a logging.path that is not a single clean path
+// component: the directory is resolved relative to the config file's
+// directory, and separators or . / .. would traverse elsewhere.
+func (l *LogConfig) validate() error {
+	if l.Path == "" {
+		return nil
+	}
+	if filepath.Base(l.Path) != l.Path || l.Path == "." || l.Path == ".." {
+		return fmt.Errorf("path %q must be a single directory name (no separators)", l.Path)
 	}
 	return nil
 }
