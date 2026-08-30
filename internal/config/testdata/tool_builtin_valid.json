@@ -13,7 +13,7 @@
       "name": "read",
       "description": "Read a file.",
       "builtin": "read",
-      "config": {"base_dir": "testdata"}
+      "config": {"base_dir": "."}
     }
   ]
 }

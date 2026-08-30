@@ -78,7 +78,8 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
-	registry, err := tools.NewRegistry(opts.Config.Tools, tools.WithSink(sink))
+	registry, err := tools.NewRegistry(opts.Config.Tools,
+		tools.WithSink(sink), tools.WithConfigDir(opts.Config.Dir()))
 	if err != nil {
 		return fmt.Errorf("build tools: %w", err)
 	}

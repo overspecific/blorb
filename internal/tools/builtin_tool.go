@@ -26,8 +26,9 @@ type builtinTool struct {
 
 // newBuiltinTool validates a builtin tool entry and constructs the tool,
 // parsing the settings (which for file builtins also verifies base_dir
-// resolves to an existing directory).
-func newBuiltinTool(e config.ToolEntry) (tool, error) {
+// resolves to an existing directory). Relative base_dir paths resolve
+// against baseDir, the config file's directory.
+func newBuiltinTool(e config.ToolEntry, baseDir string) (tool, error) {
 	if e.Builtin == "" {
 		return nil, fmt.Errorf("tool %q: builtin is required", e.Name)
 	}
@@ -39,7 +40,7 @@ func newBuiltinTool(e config.ToolEntry) (tool, error) {
 	if e.Description == "" {
 		return nil, fmt.Errorf("tool %q: description is required", e.Name)
 	}
-	opts, err := builtin.ParseConfig(e.Builtin, e.Config)
+	opts, err := builtin.ParseConfig(e.Builtin, e.Config, builtin.ParseOptions{BaseDir: baseDir})
 	if err != nil {
 		return nil, fmt.Errorf("tool %q: %w", e.Name, err)
 	}

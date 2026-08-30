@@ -17,7 +17,7 @@ import (
 // error.
 func opts(t *testing.T, name, raw string) builtin.Options {
 	t.Helper()
-	o, err := builtin.ParseConfig(name, json.RawMessage(raw))
+	o, err := builtin.ParseConfig(name, json.RawMessage(raw), builtin.ParseOptions{})
 	if err != nil {
 		t.Fatalf("ParseConfig(%s) error = %v, want nil", name, err)
 	}
@@ -87,21 +87,21 @@ func TestParseConfig(t *testing.T) {
 
 	t.Run("read valid", func(t *testing.T) {
 		t.Parallel()
-		if _, err := builtin.ParseConfig("read", json.RawMessage(`{"base_dir":"."}`)); err != nil {
+		if _, err := builtin.ParseConfig("read", json.RawMessage(`{"base_dir":"."}`), builtin.ParseOptions{}); err != nil {
 			t.Errorf("ParseConfig error = %v, want nil", err)
 		}
 	})
 
 	t.Run("grep valid", func(t *testing.T) {
 		t.Parallel()
-		if _, err := builtin.ParseConfig("grep", json.RawMessage(`{"base_dir":"."}`)); err != nil {
+		if _, err := builtin.ParseConfig("grep", json.RawMessage(`{"base_dir":"."}`), builtin.ParseOptions{}); err != nil {
 			t.Errorf("ParseConfig error = %v, want nil", err)
 		}
 	})
 
 	t.Run("missing base_dir", func(t *testing.T) {
 		t.Parallel()
-		_, err := builtin.ParseConfig("read", nil)
+		_, err := builtin.ParseConfig("read", nil, builtin.ParseOptions{})
 		if err == nil || !strings.Contains(err.Error(), "base_dir is required") {
 			t.Errorf("error = %v, want a base_dir required error", err)
 		}
@@ -109,7 +109,7 @@ func TestParseConfig(t *testing.T) {
 
 	t.Run("empty config object", func(t *testing.T) {
 		t.Parallel()
-		_, err := builtin.ParseConfig("read", json.RawMessage(`{}`))
+		_, err := builtin.ParseConfig("read", json.RawMessage(`{}`), builtin.ParseOptions{})
 		if err == nil || !strings.Contains(err.Error(), "base_dir is required") {
 			t.Errorf("error = %v, want a base_dir is required error", err)
 		}
@@ -117,7 +117,7 @@ func TestParseConfig(t *testing.T) {
 
 	t.Run("base_dir wrong type", func(t *testing.T) {
 		t.Parallel()
-		_, err := builtin.ParseConfig("read", json.RawMessage(`{"base_dir":42}`))
+		_, err := builtin.ParseConfig("read", json.RawMessage(`{"base_dir":42}`), builtin.ParseOptions{})
 		if err == nil {
 			t.Error("ParseConfig succeeded, want error")
 		}
@@ -125,7 +125,7 @@ func TestParseConfig(t *testing.T) {
 
 	t.Run("unknown field rejected", func(t *testing.T) {
 		t.Parallel()
-		_, err := builtin.ParseConfig("read", json.RawMessage(`{"base_dir":".","extra":1}`))
+		_, err := builtin.ParseConfig("read", json.RawMessage(`{"base_dir":".","extra":1}`), builtin.ParseOptions{})
 		if err == nil {
 			t.Error("ParseConfig succeeded, want unknown-field error")
 		}
@@ -133,7 +133,7 @@ func TestParseConfig(t *testing.T) {
 
 	t.Run("unknown builtin name", func(t *testing.T) {
 		t.Parallel()
-		_, err := builtin.ParseConfig("nope", json.RawMessage(`{}`))
+		_, err := builtin.ParseConfig("nope", json.RawMessage(`{}`), builtin.ParseOptions{})
 		if err == nil || !strings.Contains(err.Error(), "unknown builtin") {
 			t.Errorf("error = %v, want an unknown-builtin error", err)
 		}
@@ -149,7 +149,7 @@ func TestParseConfigBaseDirMustBeDirectory(t *testing.T) {
 		if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, err := builtin.ParseConfig("read", json.RawMessage(`{"base_dir":"`+file+`"}`))
+		_, err := builtin.ParseConfig("read", json.RawMessage(`{"base_dir":"`+file+`"}`), builtin.ParseOptions{})
 		if err == nil || !strings.Contains(err.Error(), "is not a directory") {
 			t.Errorf("error = %v, want a not-a-directory error", err)
 		}
@@ -157,7 +157,7 @@ func TestParseConfigBaseDirMustBeDirectory(t *testing.T) {
 
 	t.Run("does not exist", func(t *testing.T) {
 		t.Parallel()
-		_, err := builtin.ParseConfig("grep", json.RawMessage(`{"base_dir":"`+filepath.Join(t.TempDir(), "missing")+`"}`))
+		_, err := builtin.ParseConfig("grep", json.RawMessage(`{"base_dir":"`+filepath.Join(t.TempDir(), "missing")+`"}`), builtin.ParseOptions{})
 		if err == nil {
 			t.Error("ParseConfig succeeded, want error")
 		}

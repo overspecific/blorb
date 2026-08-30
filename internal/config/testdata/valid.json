@@ -26,7 +26,7 @@
       "name": "read_fixture",
       "description": "Read a fixture file.",
       "builtin": "read",
-      "config": {"base_dir": "testdata"}
+      "config": {"base_dir": "."}
     }
   ]
 }

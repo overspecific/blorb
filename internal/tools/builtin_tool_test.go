@@ -331,6 +331,27 @@ func TestBuiltinTimeoutEnforcement(t *testing.T) {
 	_ = err
 }
 
+func TestBuiltinBaseDirRelativeToConfigDir(t *testing.T) {
+	t.Parallel()
+
+	// WithConfigDir anchors relative base_dir values at the config file's
+	// directory; registry construction verifies the directory exists, so a
+	// resolution failure surfaces as a construction error.
+	baseDir := t.TempDir()
+	kb := filepath.Join(baseDir, "kb")
+	if err := os.MkdirAll(kb, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := builtinEntry("read", "Read a file.", "read", `{"base_dir":"kb"}`)
+
+	if _, err := tools.NewRegistry([]config.ToolEntry{entry}, tools.WithConfigDir(baseDir)); err != nil {
+		t.Errorf("NewRegistry error = %v, want nil (kb exists inside the config dir)", err)
+	}
+	if _, err := tools.NewRegistry([]config.ToolEntry{entry}, tools.WithConfigDir(filepath.Join(baseDir, "elsewhere"))); err == nil {
+		t.Error("NewRegistry succeeded, want error (kb missing in the given config dir)")
+	}
+}
+
 func TestBuiltinMixedRegistry(t *testing.T) {
 	t.Parallel()
 

@@ -26,8 +26,9 @@ type fileConfig struct {
 
 // parseFileConfig validates the shared file-tool settings object:
 // base_dir is required and must exist and be a directory. Unknown fields
-// are rejected.
-func parseFileConfig(raw json.RawMessage) (Options, error) {
+// are rejected. A relative base_dir resolves against po.BaseDir (the
+// config file's directory), or the process working directory when empty.
+func parseFileConfig(raw json.RawMessage, po ParseOptions) (Options, error) {
 	var opts fileOptions
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
@@ -40,7 +41,11 @@ func parseFileConfig(raw json.RawMessage) (Options, error) {
 	if opts.BaseDir == "" {
 		return nil, fmt.Errorf("base_dir is required")
 	}
-	abs, err := filepath.Abs(opts.BaseDir)
+	base := opts.BaseDir
+	if !filepath.IsAbs(base) && po.BaseDir != "" {
+		base = filepath.Join(po.BaseDir, base)
+	}
+	abs, err := filepath.Abs(base)
 	if err != nil {
 		return nil, fmt.Errorf("base_dir %q: %w", opts.BaseDir, err)
 	}

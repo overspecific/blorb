@@ -331,6 +331,88 @@ func TestLoadBuiltinValid(t *testing.T) {
 	if len(tool.Command) != 0 {
 		t.Errorf("Command = %v, want empty for a builtin entry", tool.Command)
 	}
+	// base_dir "." resolves relative to the config file, so valid.json's
+	// builtin read with base_dir "." anchors at testdata/ — proven by the
+	// fixture loading at all (the parse stats the directory).
+}
+
+func TestConfigDir(t *testing.T) {
+	cfg, err := loadTestdata(t, "valid.json")
+	if err != nil {
+		t.Fatalf("Load error = %v, want nil", err)
+	}
+	if got, want := cfg.Dir(), "testdata"; !strings.HasSuffix(got, want) {
+		t.Errorf("Dir() = %q, want it to end with %q", got, want)
+	}
+
+	// A programmatically-built Config has no directory: config-relative
+	// paths fall back to the process working directory.
+	prog := config.Config{Name: "x", SystemPrompt: "s", MaxTurns: 1}
+	if got := prog.Dir(); got != "" {
+		t.Errorf("Dir() = %q, want empty for a built Config", got)
+	}
+}
+
+func TestLoadBuiltinBaseDirRelativeToConfig(t *testing.T) {
+	t.Parallel()
+
+	// base_dir resolves against the config file's directory, not the
+	// process working directory (matching logging.path's rule).
+	t.Run("resolves relative paths", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		cfgDir := filepath.Join(dir, "cfg")
+		if err := os.MkdirAll(filepath.Join(cfgDir, "kb"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(cfgDir, "blorb.json")
+		if err := os.WriteFile(path, []byte(`{
+			"name": "helper",
+			"system_prompt": "s",
+			"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+			"max_turns": 1,
+			"tools": [{
+				"type": "builtin",
+				"name": "read",
+				"description": "Read a file.",
+				"builtin": "read",
+				"config": {"base_dir": "kb"}
+			}]
+		}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Loading from a different working directory must still resolve
+		// kb against the config's directory.
+		if _, err := config.Load(path); err != nil {
+			t.Errorf("Load error = %v, want nil (base_dir resolves against the config file)", err)
+		}
+	})
+
+	t.Run("missing dir relative to config fails", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "blorb.json")
+		if err := os.WriteFile(path, []byte(`{
+			"name": "helper",
+			"system_prompt": "s",
+			"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+			"max_turns": 1,
+			"tools": [{
+				"type": "builtin",
+				"name": "read",
+				"description": "Read a file.",
+				"builtin": "read",
+				"config": {"base_dir": "does-not-exist"}
+			}]
+		}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := config.Load(path)
+		if err == nil || !strings.Contains(err.Error(), "does-not-exist") {
+			t.Errorf("error = %v, want a base_dir resolution error", err)
+		}
+	})
 }
 
 func TestLoadErrors(t *testing.T) {

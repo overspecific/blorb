@@ -51,6 +51,7 @@ type Registry struct {
 	tools   map[string]tool
 	timeout time.Duration
 	sink    logging.Sink
+	baseDir string
 }
 
 // Option customizes a Registry.
@@ -65,6 +66,13 @@ func WithTimeout(d time.Duration) Option {
 // (the default) disables logging.
 func WithSink(s logging.Sink) Option {
 	return func(r *Registry) { r.sink = s }
+}
+
+// WithConfigDir sets the directory that config-relative paths (builtin
+// base_dir) resolve against. Callers pass config.Dir(); empty means the
+// process working directory.
+func WithConfigDir(dir string) Option {
+	return func(r *Registry) { r.baseDir = dir }
 }
 
 // NewRegistry converts config tool entries into a registry, revalidating
@@ -93,7 +101,7 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 		case config.ToolTypeCommand:
 			t, err = newCommandTool(e)
 		case config.ToolTypeBuiltin:
-			t, err = newBuiltinTool(e)
+			t, err = newBuiltinTool(e, r.baseDir)
 		default:
 			err = fmt.Errorf("tool %q: unknown tool type %q (supported: %s)",
 				e.Name, e.Type, strings.Join(config.SupportedToolTypes(), ", "))

@@ -24,6 +24,13 @@ import (
 // settings type; callers treat the value as opaque.
 type Options interface{}
 
+// ParseOptions customizes settings parsing. BaseDir is the directory that
+// builtin-relative paths (base_dir and friends) resolve against; empty
+// means the process working directory.
+type ParseOptions struct {
+	BaseDir string
+}
+
 // Result is the outcome of a builtin run, mirroring tools.ToolResult: Err
 // marks a tool-reported failure, which is still a valid result for the
 // model and does not surface as a Go error.
@@ -43,7 +50,7 @@ type Builtin struct {
 	// ArgsSchema is the model-facing JSON schema for the tool's arguments.
 	ArgsSchema json.RawMessage
 
-	parseConfig func(raw json.RawMessage) (Options, error)
+	parseConfig func(raw json.RawMessage, po ParseOptions) (Options, error)
 	run         func(ctx context.Context, opts Options, args json.RawMessage) (Result, error)
 }
 
@@ -68,13 +75,15 @@ func Lookup(name string) (Builtin, bool) {
 // producing the opaque Options that its Run consumes. raw may be nil or
 // empty (not the case for the current builtins, which require base_dir).
 // Settings here are strict: unknown fields are rejected, and each builtin
-// applies its own semantic checks.
-func ParseConfig(name string, raw json.RawMessage) (Options, error) {
+// applies its own semantic checks. Relative paths in settings resolve
+// against po.BaseDir (the config file's directory), or the process working
+// directory when po.BaseDir is empty.
+func ParseConfig(name string, raw json.RawMessage, po ParseOptions) (Options, error) {
 	b, ok := Lookup(name)
 	if !ok {
 		return nil, fmt.Errorf("unknown builtin %q (supported: %s)", name, strings.Join(Supported(), ", "))
 	}
-	return b.parseConfig(raw)
+	return b.parseConfig(raw, po)
 }
 
 // Run executes the builtin with previously-parsed settings.

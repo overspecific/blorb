@@ -38,14 +38,14 @@
       "name": "read",
       "description": "Read a file at the given path, relative to the knowledgebase directory, and return its contents.",
       "builtin": "read",
-      "config": {"base_dir": "examples/simple/knowledgebase"}
+      "config": {"base_dir": "knowledgebase"}
     },
     {
       "type": "builtin",
       "name": "grep",
       "description": "Search the knowledgebase directory's files for lines matching a regular expression pattern, returning matches as path:line:text.",
       "builtin": "grep",
-      "config": {"base_dir": "examples/simple/knowledgebase"}
+      "config": {"base_dir": "knowledgebase"}
     }
   ]
 }

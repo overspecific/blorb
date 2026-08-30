@@ -64,6 +64,19 @@ type Config struct {
 	Tools        []ToolEntry      `json:"tools,omitempty"`
 	Logging      LogConfig        `json:"logging"`
 	Prefactor    *PrefactorConfig `json:"prefactor,omitempty"`
+
+	// dir is the directory of the loaded config file, the anchor for all
+	// config-relative paths (logging.path, builtin base_dir). Empty for a
+	// programmatically-built Config that never went through Load, which
+	// makes relative paths resolve against the process working directory.
+	dir string
+}
+
+// Dir returns the directory of the file this Config was loaded from, or
+// "" for a programmatically-built Config. Config-relative paths resolve
+// against it.
+func (c *Config) Dir() string {
+	return c.dir
 }
 
 // PrefactorEnabled reports whether Prefactor tracing is configured: a
@@ -219,6 +232,7 @@ func Load(path string) (Config, error) {
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return Config{}, fmt.Errorf("parse config %s: unexpected trailing data after JSON value", path)
 	}
+	cfg.dir = filepath.Dir(path)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid config %s: %w", path, err)
 	}
@@ -253,7 +267,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max_turns must be at least 1 (got %d)", c.MaxTurns)
 	}
 	for _, t := range c.Tools {
-		if err := t.validate(); err != nil {
+		if err := t.validate(c.dir); err != nil {
 			return fmt.Errorf("tool %q: %w", t.Name, err)
 		}
 	}
@@ -315,7 +329,7 @@ func SupportedToolTypes() []string {
 	return []string{string(ToolTypeBuiltin), string(ToolTypeCommand)}
 }
 
-func (t *ToolEntry) validate() error {
+func (t *ToolEntry) validate(dir string) error {
 	if t.Type == "" {
 		return fmt.Errorf("type is required (one of: %s)", strings.Join(SupportedToolTypes(), ", "))
 	}
@@ -360,7 +374,7 @@ func (t *ToolEntry) validate() error {
 		if len(t.ArgsSchema) > 0 {
 			return fmt.Errorf("args_schema is not valid for builtin tools")
 		}
-		if _, err := builtin.ParseConfig(t.Builtin, t.Config); err != nil {
+		if _, err := builtin.ParseConfig(t.Builtin, t.Config, builtin.ParseOptions{BaseDir: dir}); err != nil {
 			return err
 		}
 	default:
