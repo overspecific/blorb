@@ -14,6 +14,7 @@ Tools are plain executables declared in the config. When the model calls a tool,
 
 - Agent definition via a single `blorb.json` file
 - Interactive chat REPL with multi-turn tool calling
+- Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
 - Tools as local subprocesses with JSON-schema argument declarations
 - Any OpenAI-compatible chat completions endpoint as the LLM backend
 - Per-tool 30s timeout, process-group cleanup, and stderr capture
@@ -70,7 +71,7 @@ Commands:
 ./blorb chat --config examples/simple/blorb.json
 ```
 
-Flags: `-c | --config <path>`, `-h | --help`. Version: `blorb --version` or `blorb version`.
+Flags: `-c | --config <path>`, `--no-stream` (disable streamed responses), `-h | --help`. Version: `blorb --version` or `blorb version`.
 
 Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C while idle exits the session.
 
@@ -169,7 +170,7 @@ Layout:
 - `internal/chat` — the interactive chat REPL
 - `internal/tools` — tool registry and subprocess execution
 - `internal/llm` — provider-neutral LLM types
-- `internal/llm/openai` — OpenAI-compatible client
+- `internal/llm/openai` — OpenAI-compatible client, with SSE streaming support
 
 
 
