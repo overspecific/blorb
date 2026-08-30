@@ -1,8 +1,10 @@
 package tools_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -295,40 +297,34 @@ func TestBuiltinInvalidArgsReturnError(t *testing.T) {
 func TestBuiltinTimeoutEnforcement(t *testing.T) {
 	t.Parallel()
 
-	// The per-call timeout wraps both tool types; a builtin exercising it
-	// needs a slow operation. A blocked reader on a FIFO holds the read
-	// open until the deadline fires.
-	if _, err := tools.NewRegistry([]config.ToolEntry{
-		builtinEntry("read", "Read a file.", "read", `{"base_dir":"/nonexistent-blorb-test"}`),
-	}); err == nil {
-		t.Error("NewRegistry with nonexistent base_dir succeeded, want error")
-	}
-
-	// A stub builtin cannot be registered (Lookup is fixed), so verify the
-	// wrapper indirectly: registry construction with a slow sink and a
-	// valid builtin shares the same Run path as commandTool, whose timeout
-	// behavior is covered by TestRunTimeout. Here we at least assert a
-	// builtin Run respects an already-canceled context.
-
+	// The registry derives the per-call context.WithTimeout; the grep
+	// walk checks ctx.Err() per entry, so an already-canceled call
+	// context (or an expired per-call deadline) aborts the walk and the
+	// tool reports a context failure instead of running to completion.
 	base := t.TempDir()
-	if err := os.WriteFile(filepath.Join(base, "f.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 4; i++ {
+		name := filepath.Join(base, fmt.Sprintf("big%d.txt", i))
+		if err := os.WriteFile(name, bytes.Repeat([]byte("match me\n"), 2000), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	r, err := tools.NewRegistry([]config.ToolEntry{
-		builtinEntry("read", "Read a file.", "read", `{"base_dir":"`+base+`"}`),
+		builtinEntry("grep", "Search files.", "grep", `{"base_dir":"`+base+`"}`),
 	}, tools.WithTimeout(time.Hour))
 	if err != nil {
 		t.Fatalf("NewRegistry error = %v, want nil", err)
 	}
+	defer r.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = r.Run(ctx, "read", json.RawMessage(`{"path":"f.txt"}`))
-	// The read completes despite cancellation (Root reads are
-	// synchronous and fast), so the result is fine - the context only
-	// governs the deadline, and no exec process is involved. Just record
-	// behavior so a future change is a conscious one.
-	_ = err
+	res, err := r.Run(ctx, "grep", json.RawMessage(`{"pattern":"match"}`))
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (a canceled walk is a tool result)", err)
+	}
+	if !res.Err || !strings.Contains(res.Output, "context canceled") {
+		t.Errorf("res = %+v, want a context-canceled tool failure", res)
+	}
 }
 
 func TestBuiltinBaseDirRelativeToConfigDir(t *testing.T) {

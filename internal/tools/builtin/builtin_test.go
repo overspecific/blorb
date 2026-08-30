@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/overspecific/blorb/internal/tools/builtin"
 )
@@ -469,6 +470,69 @@ func TestGrep(t *testing.T) {
 		}
 		if !strings.Contains(r.Output, "nested/deep.txt:1:needle here") {
 			t.Errorf("Run(path=./).Output = %q, want the same matches as the default path", r.Output)
+		}
+	})
+
+	t.Run("canceled context aborts the walk as a tool failure", func(t *testing.T) {
+		t.Parallel()
+		big := t.TempDir()
+		for i := 0; i < 8; i++ {
+			name := filepath.Join(big, fmt.Sprintf("big%02d.txt", i))
+			if err := os.WriteFile(name, bytes.Repeat([]byte("match me\n"), 15000), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		no := opts(t, "grep", `{"base_dir":"`+big+`"}`)
+		g, _ := builtin.Lookup("grep")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		res, err := g.Run(ctx, no, json.RawMessage(`{"pattern":"match"}`))
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil (a canceled walk is a tool result)", err)
+		}
+		if !res.Err || !strings.Contains(res.Output, "context canceled") {
+			t.Errorf("res = %+v, want a context-canceled tool failure showing the tool stopped early", res)
+		}
+	})
+
+	t.Run("deadline aborts the walk as a tool failure", func(t *testing.T) {
+		t.Parallel()
+		big := t.TempDir()
+		for i := 0; i < 8; i++ {
+			name := filepath.Join(big, fmt.Sprintf("big%02d.txt", i))
+			if err := os.WriteFile(name, bytes.Repeat([]byte("match me\n"), 15000), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		no := opts(t, "grep", `{"base_dir":"`+big+`"}`)
+		g, _ := builtin.Lookup("grep")
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		res, err := g.Run(ctx, no, json.RawMessage(`{"pattern":"match"}`))
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil (a timed-out walk is a tool result)", err)
+		}
+		if !res.Err || !strings.Contains(res.Output, "context deadline exceeded") {
+			t.Errorf("res = %+v, want a deadline-exceeded tool failure showing the tool stopped early", res)
+		}
+	})
+
+	t.Run("read of a single file does not consult the context", func(t *testing.T) {
+		t.Parallel()
+		// Reads are single bounded (1 MiB-capped) file reads: fast enough
+		// that a context check adds nothing. Read ignores ctx; pinned via
+		// a completed read under an already-canceled context.
+		base := t.TempDir()
+		if err := os.WriteFile(filepath.Join(base, "f.txt"), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		no := opts(t, "read", `{"base_dir":"`+base+`"}`)
+		rd, _ := builtin.Lookup("read")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		res, err := rd.Run(ctx, no, json.RawMessage(`{"path":"f.txt"}`))
+		if err != nil || res.Err || res.Output != "x" {
+			t.Errorf("res = %+v, %v; want the read to complete as usual", res, err)
 		}
 	})
 

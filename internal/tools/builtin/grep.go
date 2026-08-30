@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -95,6 +96,12 @@ func (s *sandbox) grep(ctx context.Context, re *regexp.Regexp, path string) (str
 
 	root := cleanRel(path)
 	err = fs.WalkDir(s.root.FS(), root, func(p string, d fs.DirEntry, err error) error {
+		// An expired or canceled context aborts the walk: the deadline
+		// governs the whole call, so a huge tree cannot run to completion
+		// regardless of it.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return nil // unreadable entries are skipped silently
 		}
@@ -109,6 +116,12 @@ func (s *sandbox) grep(ctx context.Context, re *regexp.Regexp, path string) (str
 		s.scanFile(re, p, &b)
 		return nil
 	})
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		// Tool-reported failure, not a Go error: the model should see the
+		// tool stopped early, consistent with the other tool-reported
+		// outcomes.
+		return "", err
+	}
 	if err != nil {
 		return "", mapErr(err)
 	}
