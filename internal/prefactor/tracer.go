@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/overspecific/blorb/internal/llm"
@@ -85,6 +87,11 @@ type Tracer struct {
 	agentVer string
 	now      func() time.Time
 
+	// idemSeq numbers idempotency keys; each must be unique within the
+	// session so a retried create cannot duplicate a span.
+	idemSeq  atomic.Uint64
+	idemSalt string
+
 	mu         sync.Mutex
 	instanceID string
 	terminated bool
@@ -109,7 +116,14 @@ func NewTracer(cfg TracerConfig) *Tracer {
 		agentNm:  cfg.AgentName,
 		agentVer: version,
 		now:      now,
+		idemSalt: strconv.FormatInt(now().UnixNano(), 36),
 	}
+}
+
+// nextIdempotencyKey returns a session-unique key for one mutating call.
+func (t *Tracer) nextIdempotencyKey() string {
+	n := t.idemSeq.Add(1)
+	return "blorb-" + t.idemSalt + "-" + strconv.FormatUint(n, 36)
 }
 
 // StartSession registers the agent instance (with the span schema) and
@@ -134,22 +148,25 @@ func (t *Tracer) StartSession(ctx context.Context, schemaVersion AgentSchemaVers
 			ExternalIdentifier: t.agentVer,
 		},
 		AgentSchemaVersion: &schemaVersion,
+		IdempotencyKey:     t.nextIdempotencyKey(),
 	})
 	if err != nil {
 		return fmt.Errorf("prefactor: register instance: %w", err)
 	}
-	if err := t.observeControl(resp.Control, "register instance"); err != nil {
+	if err := t.observeControl(resp.Control); err != nil {
 		return err
 	}
 	if resp.Details.ID == "" {
 		return fmt.Errorf("prefactor: register instance: response has no instance id")
 	}
 
-	startResp, err := t.client.StartInstance(ctx, resp.Details.ID, StartInstanceRequest{})
+	startResp, err := t.client.StartInstance(ctx, resp.Details.ID, StartInstanceRequest{
+		IdempotencyKey: t.nextIdempotencyKey(),
+	})
 	if err != nil {
 		return fmt.Errorf("prefactor: start instance: %w", err)
 	}
-	if err := t.observeControl(startResp.Control, "start instance"); err != nil {
+	if err := t.observeControl(startResp.Control); err != nil {
 		return err
 	}
 
@@ -170,14 +187,13 @@ func (t *Tracer) agentName() string {
 
 // observeControl converts a control response into ErrTerminated when the
 // platform requested the run stop, and latches the terminated state.
-func (t *Tracer) observeControl(c Control, what string) error {
+func (t *Tracer) observeControl(c Control) error {
 	if !c.Terminate {
 		return nil
 	}
 	t.mu.Lock()
 	t.terminated = true
 	t.mu.Unlock()
-	_ = what // context for debugging; reason text is carried by the error
 	return &TerminatedError{Reason: c.Reason}
 }
 
@@ -222,11 +238,12 @@ func (t *Tracer) StartTurn(ctx context.Context, userMessage string) (*Turn, erro
 			Payload:         map[string]any{"user_message": userMessage},
 			StartedAt:       ptr(now),
 		},
+		IdempotencyKey: t.nextIdempotencyKey(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("prefactor: start turn: %w", err)
 	}
-	if err := t.observeControl(turnResp.Control, "start turn"); err != nil {
+	if err := t.observeControl(turnResp.Control); err != nil {
 		return nil, err
 	}
 
@@ -240,11 +257,12 @@ func (t *Tracer) StartTurn(ctx context.Context, userMessage string) (*Turn, erro
 			StartedAt:       ptr(now),
 			FinishedAt:      ptr(now),
 		},
+		IdempotencyKey: t.nextIdempotencyKey(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("prefactor: record user message: %w", err)
 	}
-	if err := t.observeControl(msgResp.Control, "record user message"); err != nil {
+	if err := t.observeControl(msgResp.Control); err != nil {
 		return nil, err
 	}
 
@@ -332,11 +350,12 @@ func (tn *Turn) startChild(ctx context.Context, schema string, payload map[strin
 			ParentSpanID:    tn.spanID,
 			StartedAt:       ptr(tn.tracer.now()),
 		},
+		IdempotencyKey: tn.tracer.nextIdempotencyKey(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("prefactor: %s: %w", what, err)
 	}
-	if err := tn.tracer.observeControl(resp.Control, what); err != nil {
+	if err := tn.tracer.observeControl(resp.Control); err != nil {
 		return "", err
 	}
 	return resp.Details.ID, nil
@@ -354,7 +373,7 @@ func (ls *LLMSpan) Fail(err error) error {
 }
 
 func (ls *LLMSpan) complete(result map[string]any, err error) error {
-	return ls.turn.finishSpan(ls.spanID, SchemaLLM, result, err, "finish llm span")
+	return ls.turn.finishSpan(ls.spanID, result, err, "finish llm span")
 }
 
 // llmResultPayload builds the blorb:llm result payload from the response.
@@ -424,11 +443,12 @@ func (tn *Turn) OrphanToolResult(ctx context.Context, name, output string, faile
 			StartedAt:       ptr(now),
 			FinishedAt:      ptr(now),
 		},
+		IdempotencyKey: tn.tracer.nextIdempotencyKey(),
 	})
 	if err != nil {
 		return fmt.Errorf("prefactor: record tool %q result: %w", name, err)
 	}
-	return tn.tracer.observeControl(resp.Control, "record tool result")
+	return tn.tracer.observeControl(resp.Control)
 }
 
 // Complete finishes the tool span with its output.
@@ -442,7 +462,7 @@ func (ts *ToolSpan) Fail(err error) error {
 }
 
 func (ts *ToolSpan) complete(result map[string]any, err error) error {
-	return ts.turn.finishSpan(ts.spanID, ts.name, result, err, "finish tool span")
+	return ts.turn.finishSpan(ts.spanID, result, err, "finish tool span")
 }
 
 // toolArgsValue embeds a JSON string arg, decoding to raw JSON when valid
@@ -480,15 +500,16 @@ func (tn *Turn) AssistantMessage(ctx context.Context, content, reasoning string)
 			StartedAt:     ptr(now),
 			FinishedAt:    ptr(now),
 		},
+		IdempotencyKey: tn.tracer.nextIdempotencyKey(),
 	})
 	if err != nil {
 		return fmt.Errorf("prefactor: record assistant message: %w", err)
 	}
-	return tn.tracer.observeControl(resp.Control, "record assistant message")
+	return tn.tracer.observeControl(resp.Control)
 }
 
 // finishSpan finishes a child span of the turn with a terminal status.
-func (tn *Turn) finishSpan(spanID, what string, result map[string]any, err error, whatFailed string) error {
+func (tn *Turn) finishSpan(spanID string, result map[string]any, err error, whatFailed string) error {
 	status := StatusComplete
 	if err != nil {
 		status = StatusFailed
@@ -497,12 +518,12 @@ func (tn *Turn) finishSpan(spanID, what string, result map[string]any, err error
 		}
 	}
 
-	finish := FinishSpanRequest{Status: status, ResultPayload: result}
+	finish := FinishSpanRequest{Status: status, ResultPayload: result, IdempotencyKey: tn.tracer.nextIdempotencyKey()}
 	resp, ferr := tn.tracer.client.FinishSpan(context.Background(), spanID, finish)
 	if ferr != nil {
 		return fmt.Errorf("prefactor: %s: %w", whatFailed, ferr)
 	}
-	return tn.tracer.observeControl(resp.Control, whatFailed)
+	return tn.tracer.observeControl(resp.Control)
 }
 
 // Complete finishes the turn span as complete with the final assistant text.
@@ -531,13 +552,14 @@ func (tn *Turn) Cancel() error {
 // finish finishes the turn span with the given status and result.
 func (tn *Turn) finish(status string, result map[string]any, what string) error {
 	resp, err := tn.tracer.client.FinishSpan(context.Background(), tn.spanID, FinishSpanRequest{
-		Status:        status,
-		ResultPayload: result,
+		Status:         status,
+		ResultPayload:  result,
+		IdempotencyKey: tn.tracer.nextIdempotencyKey(),
 	})
 	if err != nil {
 		return fmt.Errorf("prefactor: %s: %w", what, err)
 	}
-	return tn.tracer.observeControl(resp.Control, what)
+	return tn.tracer.observeControl(resp.Control)
 }
 
 // FinishSession finishes the instance with a terminal status
@@ -560,7 +582,10 @@ func (t *Tracer) FinishSession(ctx context.Context, status string) error {
 	instanceID := t.instanceID
 	t.mu.Unlock()
 
-	_, err := t.client.FinishInstance(ctx, instanceID, FinishInstanceRequest{Status: status})
+	_, err := t.client.FinishInstance(ctx, instanceID, FinishInstanceRequest{
+		Status:         status,
+		IdempotencyKey: t.nextIdempotencyKey(),
+	})
 	if err != nil {
 		return fmt.Errorf("prefactor: finish instance: %w", err)
 	}

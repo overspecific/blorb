@@ -714,3 +714,63 @@ func TestTracerTurnWithoutSession(t *testing.T) {
 		t.Error("StartTurn succeeded before StartSession, want error")
 	}
 }
+
+// TestTracerIdempotencyKeysUnique verifies every mutating call
+// (register, start, span create, span finish, instance finish) carries a
+// non-empty idempotency key, and that all keys within the session are
+// unique so retried creates cannot duplicate spans.
+func TestTracerIdempotencyKeysUnique(t *testing.T) {
+	f, client := newFakePF(t)
+	tr := newTestTracer(t, f, client)
+	ctx := context.Background()
+
+	if err := tr.StartSession(ctx, testSchema()); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	turn, err := tr.StartTurn(ctx, "hello")
+	if err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+	ls, err := turn.LLMCall(ctx, testRequest())
+	if err != nil {
+		t.Fatalf("LLMCall: %v", err)
+	}
+	if err := ls.Complete(testResponse()); err != nil {
+		t.Fatalf("LLMSpan.Complete: %v", err)
+	}
+	if err := turn.Complete("hi there"); err != nil {
+		t.Fatalf("Turn.Complete: %v", err)
+	}
+	if err := tr.FinishSession(ctx, prefactor.InstanceComplete); err != nil {
+		t.Fatalf("FinishSession: %v", err)
+	}
+
+	// Every mutating call must carry a non-empty, unique idempotency key.
+	seen := make(map[string]string) // key -> path
+	for _, c := range f.snapshot() {
+		key, _ := c.Body["idempotency_key"].(string)
+		switch {
+		case strings.HasPrefix(c.Path, "/agent_instance/"):
+			// start/finish instance
+		case c.Path == "/agent_instance/register",
+			c.Path == "/agent_spans",
+			strings.HasPrefix(c.Path, "/agent_spans/") && strings.HasSuffix(c.Path, "/finish"):
+		default:
+			continue
+		}
+		if key == "" {
+			t.Errorf("mutating call %s has no idempotency_key", c.Path)
+			continue
+		}
+		if prev, dup := seen[key]; dup {
+			t.Errorf("duplicate idempotency key %q used for %s and %s", key, prev, c.Path)
+		}
+		seen[key] = c.Path
+	}
+	// register, start, turn create, user_message create, llm create,
+	// llm finish, turn finish, instance finish = 8 mutating calls.
+	const wantKeys = 8
+	if len(seen) != wantKeys {
+		t.Errorf("recorded %d unique keys, want %d", len(seen), wantKeys)
+	}
+}

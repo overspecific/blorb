@@ -337,8 +337,10 @@ func TestRetry503ThenSuccess(t *testing.T) {
 
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&attempts, 1) < 3 {
-			w.Header().Set("retry_after_ms", "10")
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{})
+			// retry_after_ms rides in the response body per the API docs.
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"retry_after_ms": 10,
+			})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{

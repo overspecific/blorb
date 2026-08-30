@@ -116,7 +116,7 @@ func Run(ctx context.Context, opts Options) error {
 				fmt.Fprintf(opts.Stdout, "stopped by platform: %v\n", terminationReason(err))
 				return nil
 			}
-			return fmt.Errorf("chat: prefactor: %w", err)
+			return fmt.Errorf("chat: %w", err)
 		}
 	}
 
@@ -280,7 +280,7 @@ func Run(ctx context.Context, opts Options) error {
 			if runErr != nil {
 				return runErr
 			}
-			return fmt.Errorf("chat: prefactor: %w", err)
+			return fmt.Errorf("chat: %w", err)
 		}
 	}
 	return runErr
@@ -358,7 +358,7 @@ func tracerFailure(err error) (sessionResult, error) {
 	if isTerminated(err) {
 		return sessionTerminate, err
 	}
-	return sessionFailure, fmt.Errorf("chat: prefactor: %w", err)
+	return sessionFailure, fmt.Errorf("chat: %w", err)
 }
 
 // classifyTurnOutcome maps a turn error (already reflected in the tracer)

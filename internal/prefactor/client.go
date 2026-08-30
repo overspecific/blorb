@@ -198,6 +198,9 @@ func handleResponse(resp *http.Response, out any) (apiErr *APIError, decErr erro
 				Code    string `json:"code"`
 				Message string `json:"message"`
 				Detail  string `json:"detail"`
+				// retry_after_ms rides in the body of rate-limited
+				// responses per the API docs.
+				RetryAfterMS int64 `json:"retry_after_ms"`
 			}
 			if json.Unmarshal(data, &errBody) == nil {
 				apiErr.Code = errBody.Error.Code
@@ -211,6 +214,9 @@ func handleResponse(resp *http.Response, out any) (apiErr *APIError, decErr erro
 				if apiErr.Message == "" {
 					apiErr.Message = errBody.Detail
 				}
+				if apiErr.RetryAfter == 0 && errBody.RetryAfterMS > 0 && retryableStatus(resp.StatusCode) {
+					apiErr.RetryAfter = time.Duration(errBody.RetryAfterMS) * time.Millisecond
+				}
 			}
 			if apiErr.Message == "" {
 				apiErr.Message = strings.TrimSpace(string(data))
@@ -221,11 +227,6 @@ func handleResponse(resp *http.Response, out any) (apiErr *APIError, decErr erro
 		}
 		if hint := parseRetryAfter(resp.Header.Get("Retry-After")); hint > 0 {
 			apiErr.RetryAfter = hint
-		}
-		if ms := resp.Header.Get("retry_after_ms"); ms != "" {
-			if millis, err := strconv.Atoi(ms); err == nil && millis > 0 {
-				apiErr.RetryAfter = time.Duration(millis) * time.Millisecond
-			}
 		}
 		return apiErr, apiErr
 	}
@@ -259,16 +260,11 @@ func retryableStatus(code int) bool {
 }
 
 // retryDelay computes the backoff delay before the next attempt,
-// preferring the server's Retry-After hint over linear backoff.
+// preferring the server's retry hint over linear backoff.
 func retryDelay(err error, attempt int) time.Duration {
 	var apiErr *APIError
-	if ok := errorsAs(err, &apiErr); ok && apiErr.RetryAfter > 0 {
+	if errors.As(err, &apiErr) && apiErr.RetryAfter > 0 {
 		return apiErr.RetryAfter
 	}
 	return time.Duration(attempt) * time.Second
-}
-
-// errorsAs unwraps err looking for an *APIError.
-func errorsAs(err error, target **APIError) bool {
-	return errors.As(err, target)
 }

@@ -92,15 +92,17 @@ type FinishInstanceRequest struct {
 // SpanDetailsForCreate is the details object of POST /agent_spans. The
 // timestamps are pointers so they serialize only when set.
 type SpanDetailsForCreate struct {
-	AgentInstanceID   string         `json:"agent_instance_id"`
-	SchemaName        string         `json:"schema_name"`
-	Status            string         `json:"status"`
-	Payload           map[string]any `json:"payload,omitempty"`
-	ResultPayload     map[string]any `json:"result_payload,omitempty"`
-	ParentSpanID      string         `json:"parent_span_id,omitempty"`
-	StartedAt         *time.Time     `json:"started_at,omitempty"`
-	FinishedAt        *time.Time     `json:"finished_at,omitempty"`
-	SensitiveEncoding string         `json:"sensitive_encoding,omitempty"`
+	AgentInstanceID string         `json:"agent_instance_id"`
+	SchemaName      string         `json:"schema_name"`
+	Status          string         `json:"status"`
+	Payload         map[string]any `json:"payload,omitempty"`
+	ResultPayload   map[string]any `json:"result_payload,omitempty"`
+	ParentSpanID    string         `json:"parent_span_id,omitempty"`
+	StartedAt       *time.Time     `json:"started_at,omitempty"`
+	FinishedAt      *time.Time     `json:"finished_at,omitempty"`
+	// SensitiveEncoding tells the platform the payload fields are
+	// encoded to hide sensitive values. Never set by blorb today.
+	SensitiveEncoding bool `json:"sensitive_encoding,omitempty"`
 }
 
 // CreateSpanRequest is the body of POST /agent_spans.
@@ -145,8 +147,9 @@ type APIError struct {
 	StatusCode int
 	Code       string
 	Message    string
-	// RetryAfter is the server's retry hint from a Retry-After or
-	// retry_after_ms header, when present on a retryable response.
+	// RetryAfter is the server's retry hint, from the Retry-After header
+	// or the retry_after_ms body field, when present on a retryable
+	// response.
 	RetryAfter time.Duration
 }
 
