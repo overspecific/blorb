@@ -197,7 +197,7 @@ Blorb can trace every agent run to [Prefactor](https://prefactor.ai), an agent-a
 | `agent_id`       | _(empty)_                           | Prefactor agent to register instances under. Optional; may be empty for deployment-scoped tokens.    |
 | `environment_id` | _(empty)_                           | Prefactor environment to register instances under. Optional.                                         |
 
-**What maps to what.** A chat session is one Prefactor agent instance: registered on startup, finished when the session ends (`complete` on graceful exit, `cancelled` on SIGINT exit, `failed` on any error exit). Within the session, each user message opens a `blorb:agent_turn` span that stays open while the agent works, with these child spans:
+**What maps to what.** A chat session is one Prefactor agent instance: registered on startup, finished when the session ends (`complete` whenever the chat exits normally — exit/quit, EOF, or SIGINT at the prompt, since quitting the chat is a finished chat; `failed` on any error exit). Within the session, each user message opens a `blorb:agent_turn` span that stays open while the agent works, with these child spans:
 
 - `blorb:user_message` — the user's input.
 - `blorb:llm` — one LLM API call, with the model, full message history, response content, reasoning, tool calls, and token usage.

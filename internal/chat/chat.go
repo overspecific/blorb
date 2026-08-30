@@ -271,8 +271,6 @@ func Run(ctx context.Context, opts Options) error {
 		}
 		status := prefactor.InstanceComplete
 		switch result {
-		case sessionGracefulInterrupted:
-			status = prefactor.InstanceCancelled
 		case sessionFailure:
 			status = prefactor.InstanceFailed
 		}
@@ -330,8 +328,9 @@ func runTurn(
 
 	interrupted := takeInterrupted()
 
-	// Finish the turn span to match the outcome. Termination wins;
-	// a cancelled turn context (SIGINT) cancels; other errors fail.
+	// Finish the turn span to match the turn's actual outcome: a signal
+	// landing just as a successful turn completes does not cancel
+	// anything — the turn is done, and the session exits cleanly.
 	switch {
 	case runErr != nil && isTerminated(runErr):
 		if err := turn.Fail(runErr); err != nil && !isTerminated(err) {
@@ -339,7 +338,7 @@ func runTurn(
 			_ = err
 		}
 		return sessionTerminate, runErr
-	case interrupted || turnCtx.Err() != nil:
+	case runErr != nil && (interrupted || turnCtx.Err() != nil):
 		if err := turn.Cancel(); err != nil {
 			return tracerFailure(err)
 		}

@@ -566,7 +566,8 @@ func TestRunTracedInterruptedTurn(t *testing.T) {
 }
 
 // TestRunTracedSigintWhileIdle verifies SIGINT with no turn in flight ends
-// the session and the instance finishes cancelled.
+// the session and the instance finishes complete: quitting the chat with
+// Ctrl-C is a finished chat, not a cancelled one.
 func TestRunTracedSigintWhileIdle(t *testing.T) {
 	f, srv := newFakePFServer(t)
 
@@ -601,8 +602,74 @@ func TestRunTracedSigintWhileIdle(t *testing.T) {
 			instanceFinish = c.Body
 		}
 	}
-	if instanceFinish == nil || instanceFinish["status"] != "cancelled" {
-		t.Errorf("instance finish = %v, want cancelled", instanceFinish)
+	if instanceFinish == nil || instanceFinish["status"] != "complete" {
+		t.Errorf("instance finish = %v, want complete (quitting the chat ends the session)", instanceFinish)
+	}
+}
+
+// interruptedButSuccessClient blocks until its context is cancelled, then
+// returns a successful response anyway — simulating a signal that lands
+// just as the model call finishes, too late to actually interrupt it.
+type interruptedButSuccessClient struct {
+	started chan struct{}
+}
+
+func (c *interruptedButSuccessClient) Chat(ctx context.Context, _ llm.Request) (*llm.Response, error) {
+	close(c.started)
+	<-ctx.Done()
+	return &llm.Response{
+		Message:      llm.NewTextMessage(llm.RoleAssistant, "finished anyway"),
+		FinishReason: llm.FinishStop,
+	}, nil
+}
+
+// TestRunTracedInterruptLandsAsTurnFinishes verifies the race where SIGINT
+// arrives just as a turn completes: the turn itself succeeded, so its span
+// finishes complete and the session exits as a finished chat, not a
+// cancelled one.
+func TestRunTracedInterruptLandsAsTurnFinishes(t *testing.T) {
+	f, srv := newFakePFServer(t)
+
+	sigint := make(chan os.Signal, 1)
+
+	client := &interruptedButSuccessClient{started: make(chan struct{})}
+	cfg := minimalConfig()
+	var stdout syncBuffer
+	o := chat.Options{Stdout: &stdout, SigintChan: sigint}
+	newTracedTestOptions(cfg, &o, srv, "hello\n")
+	o.NewClient = func(config.Config) (llm.Client, error) { return client, nil }
+
+	done := make(chan error, 1)
+	go func() { done <- chat.Run(context.Background(), o) }()
+
+	select {
+	case <-client.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn never started")
+	}
+	sigint <- syscall.SIGINT
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	// The turn completed, so its span finishes complete.
+	var turnFinish, instanceFinish map[string]any
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_spans/") {
+			turnFinish = c.Body
+		}
+	}
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			instanceFinish = c.Body
+		}
+	}
+	if turnFinish == nil || turnFinish["status"] != "complete" {
+		t.Errorf("turn finish = %v, want complete (the turn finished before the signal landed)", turnFinish)
+	}
+	if instanceFinish == nil || instanceFinish["status"] != "complete" {
+		t.Errorf("instance finish = %v, want complete (the chat finished)", instanceFinish)
 	}
 }
 
