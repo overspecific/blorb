@@ -23,3 +23,7 @@ echo "blorb is fun"
 ```
 
 Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C while idle exits.
+
+## Logs
+
+Running the example produces a `.logs` directory next to `blorb.json` with one file per LLM request/response and per tool call/result. Each filename starts with a nanosecond timestamp, so sorting the filenames replays the conversation in order. Logging can be disabled by adding `"logging": { "enabled": false }` to `blorb.json`.

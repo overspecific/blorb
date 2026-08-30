@@ -15,6 +15,7 @@ Tools are plain executables declared in the config. When the model calls a tool,
 - Agent definition via a single `blorb.json` file
 - Interactive chat REPL with multi-turn tool calling
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
+- Full conversation and tool logging: every LLM request/response and tool call/result is written to `.logs` next to `blorb.json`, one timestamped file per wire interaction, so sorting the filenames replays the turn in order
 - Tools as local subprocesses with JSON-schema argument declarations
 - Any OpenAI-compatible chat completions endpoint as the LLM backend
 - Per-tool 30s timeout, process-group cleanup, and stderr capture
@@ -119,6 +120,7 @@ Agents are defined in a `blorb.json` file:
 | `provider`      | yes      | LLM backend config (see below).                |
 | `max_turns`     | no       | Max model turns per user message (default 10). |
 | `tools`         | no       | List of tool declarations (see below).         |
+| `logging`       | no       | Wire logging config (see below).               |
 
 
 
@@ -151,6 +153,25 @@ Each tool is an executable invoked as a subprocess:
 
 When the model calls a tool, Blorb runs the command with the model's JSON arguments piped to its stdin. Anything the tool writes to stdout (success) or stderr (failure) is returned to the model as the tool result. Each tool execution has a 30 second timeout, and on timeout the whole process group is killed.
 
+### Logging
+
+Blorb writes full conversation and tool logging by default. Every LLM request/response and every tool call/result is written as one timestamped file into a log directory next to the `blorb.json` file, so a plain lexical sort of the filenames reconstructs the exact sequence of a turn.
+
+```json
+{
+  "logging": { "path": ".logs", "enabled": true }
+}
+```
+
+| Field      | Default | Description                                                                        |
+| ---------- | ------- | ---------------------------------------------------------------------------------- |
+| `path`     | `.logs` | Log directory name, resolved relative to the config file. A single directory name — no separators. |
+| `enabled`  | `true`  | Set to `false` to turn logging off.                                                |
+
+Files are named `<timestamp>-<kind>.txt`, e.g. `20260830T142533-123456789-llm-request.txt`. The kinds are `llm-request`, `llm-response`, `tool-request`, and `tool-result`. Because the timestamp comes first with nanosecond precision, sorting the filenames replays the turn in order.
+
+Log files capture full request/response bodies and headers, including any API key sent to the provider, and the full content of tool calls and results. Keep them out of version control and treat them as sensitive. Log writes are best-effort: a logging failure never fails the agent run.
+
 ## Example
 
 See [examples/simple](examples/simple) for a minimal agent with `echo` and `current_time` tools, including notes on pointing the provider at different OpenAI-compatible servers.
@@ -171,6 +192,7 @@ Layout:
 - `internal/tools` — tool registry and subprocess execution
 - `internal/llm` — provider-neutral LLM types
 - `internal/llm/openai` — OpenAI-compatible client, with SSE streaming support
+- `internal/logging` — wire logging for LLM and tool interactions
 
 
 
