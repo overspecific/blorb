@@ -18,6 +18,7 @@ import (
 
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/logging"
 )
 
 // DefaultTimeout bounds each tool execution.
@@ -52,6 +53,7 @@ type ToolResult struct {
 type Registry struct {
 	tools   map[string]Tool
 	timeout time.Duration
+	sink    logging.Sink
 }
 
 // Option customizes a Registry.
@@ -60,6 +62,12 @@ type Option func(*Registry)
 // WithTimeout overrides the per-call execution timeout.
 func WithTimeout(d time.Duration) Option {
 	return func(r *Registry) { r.timeout = d }
+}
+
+// WithSink sets the wire-log sink for tool calls and results. A nil sink
+// (the default) disables logging.
+func WithSink(s logging.Sink) Option {
+	return func(r *Registry) { r.sink = s }
 }
 
 // NewRegistry converts config tool entries into a registry, revalidating
@@ -136,6 +144,13 @@ func (r *Registry) Definitions() []llm.Tool {
 // tool process's stdin). Infrastructure failures (unknown tool, bad args,
 // timeout, unusable stdin) return an error; tool-level failures (non-zero
 // exit) come back as ToolResult{Err: true} with no error.
+//
+// When a sink is configured (WithSink), two log records are written per
+// invocation: one KindToolRequest before the process starts (the validated
+// args bytes) and one KindToolResult once the outcome is known. Nothing is
+// logged for unknown tools or invalid args: no process ran, so there is no
+// wire traffic to record. Sink write errors are ignored — logging is
+// best-effort.
 func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
 	tool, ok := r.tools[name]
 	if !ok {
@@ -147,6 +162,18 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 	}
 	if !json.Valid(args) {
 		return ToolResult{}, fmt.Errorf("tool %q: args are not valid JSON", name)
+	}
+
+	// Logged only once execution is possible, immediately before
+	// cmd.Start. The write error is ignored — logging is best-effort.
+	if r.sink != nil {
+		r.sink.Write(logging.Record{
+			Time:   time.Now(),
+			Kind:   logging.KindToolRequest,
+			Method: "RUN",
+			URL:    name,
+			Body:   append([]byte(nil), args...),
+		})
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, r.timeout)
@@ -161,7 +188,9 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return ToolResult{}, fmt.Errorf("tool %q: start %s: %w", name, tool.Command[0], err)
+		err = fmt.Errorf("tool %q: start %s: %w", name, tool.Command[0], err)
+		r.writeResult(name, "error: "+err.Error())
+		return ToolResult{}, err
 	}
 
 	errCh := make(chan error, 1)
@@ -175,25 +204,52 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 	case <-runCtx.Done():
 		killProcessGroup(cmd.Process)
 		<-errCh // reap the child; the outcome no longer matters
+		var err error
 		if ctx.Err() != nil {
-			return ToolResult{}, fmt.Errorf("tool %q: %w", name, ctx.Err())
+			err = fmt.Errorf("tool %q: %w", name, ctx.Err())
+		} else {
+			err = fmt.Errorf("tool %q: timed out after %s", name, r.timeout)
 		}
-		return ToolResult{}, fmt.Errorf("tool %q: timed out after %s", name, r.timeout)
+		r.writeResult(name, "error: "+err.Error())
+		return ToolResult{}, err
 	}
 
 	if runErr == nil {
-		return ToolResult{Output: trimSingleTrailingNewline(stdout.String())}, nil
+		res := ToolResult{Output: trimSingleTrailingNewline(stdout.String())}
+		r.writeResult(name, res.Output)
+		return res, nil
 	}
 
 	var exitErr *exec.ExitError
 	if errors.As(runErr, &exitErr) {
-		return ToolResult{
+		res := ToolResult{
 			Output: fmt.Sprintf("Tool %s failed with exit code %d.\nStderr: %s",
 				name, exitErr.ExitCode(), truncateStderr(stderr.String())),
 			Err: true,
-		}, nil
+		}
+		r.writeResult(name, res.Output)
+		return res, nil
 	}
-	return ToolResult{}, fmt.Errorf("tool %q: %w", name, runErr)
+	err := fmt.Errorf("tool %q: %w", name, runErr)
+	r.writeResult(name, "error: "+err.Error())
+	return ToolResult{}, err
+}
+
+// writeResult logs one KindToolResult record with the given body. It is
+// called directly at each outcome point (not deferred) so the timestamp
+// reflects when the outcome was known and the helper cannot fire twice.
+// Write errors are ignored — logging is best-effort.
+func (r *Registry) writeResult(name, body string) {
+	if r.sink == nil {
+		return
+	}
+	r.sink.Write(logging.Record{
+		Time:   time.Now(),
+		Kind:   logging.KindToolResult,
+		Method: "RUN",
+		URL:    name,
+		Body:   []byte(body),
+	})
 }
 
 // killProcessGroup kills the tool and anything it spawned. The process was

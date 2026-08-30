@@ -13,8 +13,14 @@ import (
 
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/tools"
 )
+
+// failingSink is a logging.Sink whose Write always returns an error.
+type failingSink struct{}
+
+func (failingSink) Write(logging.Record) error { return errors.New("disk exploded") }
 
 func requireExecTools(t *testing.T) {
 	t.Helper()
@@ -338,5 +344,191 @@ func TestRunOutputCapTruncates(t *testing.T) {
 	}
 	if len(res.Output) > (1<<20)+64 {
 		t.Errorf("res.Output length = %d, want at most ~1 MiB plus notice", len(res.Output))
+	}
+}
+
+func TestRunLogsRequestAndResult(t *testing.T) {
+	requireExecTools(t)
+	t.Parallel()
+
+	sink := logging.NewBuffered(0)
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		entry("echo_args", "Echo stdin back.", "sh", "-c", `printf '%s' "$(cat)" && echo`),
+	}, tools.WithSink(sink))
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	args := json.RawMessage(`{"path":"."}`)
+	res, err := r.Run(context.Background(), "echo_args", args)
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2 (request + result)", len(recs))
+	}
+
+	reqRec, resRec := recs[0], recs[1]
+	if reqRec.Kind != logging.KindToolRequest {
+		t.Errorf("record 0 kind = %q, want tool-request", reqRec.Kind)
+	}
+	if resRec.Kind != logging.KindToolResult {
+		t.Errorf("record 1 kind = %q, want tool-result", resRec.Kind)
+	}
+	if !reqRec.Time.Before(resRec.Time) {
+		t.Errorf("request time %v not before result time %v", reqRec.Time, resRec.Time)
+	}
+	if reqRec.Method != "RUN" {
+		t.Errorf("request method = %q, want RUN", reqRec.Method)
+	}
+	if reqRec.URL != "echo_args" {
+		t.Errorf("request url (tool name) = %q, want echo_args", reqRec.URL)
+	}
+	if len(reqRec.Headers) != 0 {
+		t.Errorf("request headers = %v, want none", reqRec.Headers)
+	}
+	if string(reqRec.Body) != string(args) {
+		t.Errorf("request body = %q, want the args bytes %q", reqRec.Body, args)
+	}
+	if string(resRec.Body) != res.Output {
+		t.Errorf("result body = %q, want the ToolResult.Output %q", resRec.Body, res.Output)
+	}
+}
+
+func TestRunLogsNonZeroExitResult(t *testing.T) {
+	requireExecTools(t)
+	t.Parallel()
+
+	sink := logging.NewBuffered(0)
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		entry("failer", "Always fails.", "sh", "-c", "echo something went wrong >&2; exit 3"),
+	}, tools.WithSink(sink))
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	res, err := r.Run(context.Background(), "failer", nil)
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	if string(recs[1].Body) != res.Output {
+		t.Errorf("result body = %q, want the returned ToolResult.Output %q", recs[1].Body, res.Output)
+	}
+	if !strings.Contains(string(recs[1].Body), "failed with exit code 3") || !strings.Contains(string(recs[1].Body), "something went wrong") {
+		t.Errorf("result body = %q, want exit code and stderr capture", recs[1].Body)
+	}
+}
+
+func TestRunLogsTimeoutResult(t *testing.T) {
+	requireExecTools(t)
+	t.Parallel()
+
+	sink := logging.NewBuffered(0)
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		entry("sleeper", "Sleeps forever.", "sleep", "30"),
+	}, tools.WithSink(sink), tools.WithTimeout(300*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	if _, err := r.Run(context.Background(), "sleeper", nil); err == nil {
+		t.Fatal("Run succeeded, want timeout error")
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	if !strings.Contains(string(recs[1].Body), "error:") || !strings.Contains(string(recs[1].Body), "timed out") {
+		t.Errorf("result body = %q, want an error body mentioning the timeout", recs[1].Body)
+	}
+}
+
+func TestRunLogsNothingForUnknownToolOrBadArgs(t *testing.T) {
+	t.Parallel()
+
+	sink := logging.NewBuffered(0)
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		entry("known", "The only tool.", "echo"),
+	}, tools.WithSink(sink))
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	if _, err := r.Run(context.Background(), "mystery", nil); err == nil {
+		t.Error("Run with unknown tool succeeded, want error")
+	}
+	if _, err := r.Run(context.Background(), "known", json.RawMessage(`not json`)); err == nil {
+		t.Error("Run with invalid args succeeded, want error")
+	}
+	if recs := sink.Records(); len(recs) != 0 {
+		t.Errorf("got %d records, want 0 (no process ran)", len(recs))
+	}
+}
+
+func TestRunFailingSinkDoesNotAffectResults(t *testing.T) {
+	requireExecTools(t)
+	t.Parallel()
+
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		entry("hello", "Prints hello.", "echo", "hello"),
+	}, tools.WithSink(failingSink{}))
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	res, err := r.Run(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (sink errors never propagate)", err)
+	}
+	if res.Err || res.Output != "hello" {
+		t.Errorf("res = %+v, want clean output hello", res)
+	}
+}
+
+func TestWithSinkNilBehavesAsNoSink(t *testing.T) {
+	requireExecTools(t)
+	t.Parallel()
+
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		entry("hello", "Prints hello.", "echo", "hello"),
+	}, tools.WithSink(nil))
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	res, err := r.Run(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if res.Output != "hello" {
+		t.Errorf("res.Output = %q, want hello", res.Output)
+	}
+}
+
+func TestWithSinkComposesWithWithTimeout(t *testing.T) {
+	requireExecTools(t)
+	t.Parallel()
+
+	sink := logging.NewBuffered(0)
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		entry("sleeper", "Sleeps forever.", "sleep", "30"),
+	}, tools.WithSink(sink), tools.WithTimeout(300*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	if _, err := r.Run(context.Background(), "sleeper", nil); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error = %v, want timeout error", err)
+	}
+	if recs := sink.Records(); len(recs) != 2 {
+		t.Errorf("got %d records, want 2 (sink still active alongside WithTimeout)", len(recs))
 	}
 }
