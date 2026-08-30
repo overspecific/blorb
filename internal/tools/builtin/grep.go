@@ -45,6 +45,7 @@ var grepBuiltin = Builtin{
 
 func runGrep(ctx context.Context, opts Options, args json.RawMessage) (Result, error) {
 	fc := opts.(fileConfig)
+	sb := fc.sb
 	var a struct {
 		Pattern       *string `json:"pattern"`
 		Path          *string `json:"path"`
@@ -65,12 +66,6 @@ func runGrep(ctx context.Context, opts Options, args json.RawMessage) (Result, e
 	if a.Path != nil && *a.Path != "" {
 		path = *a.Path
 	}
-
-	sb, err := openSandbox(fc.resolved)
-	if err != nil {
-		return Result{}, err
-	}
-	defer sb.close()
 
 	out, err := sb.grep(ctx, re, path)
 	if err != nil {

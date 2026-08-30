@@ -83,6 +83,9 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("build tools: %w", err)
 	}
+	// Builtins hold per-instance resources (open sandbox roots) for their
+	// lifetime; release them when the session ends.
+	defer registry.Close()
 
 	// The holder lets per-turn tracing wrappers come and go without
 	// engine changes; the engine sees a stable llm.Client.

@@ -31,11 +31,13 @@ const maxStderrLen = 4 << 10
 
 // tool is the internal interface every tool implementation satisfies. The
 // registry applies the per-call timeout and sink; each implementation owns
-// its execution and its wire-log result record.
+// its execution and its wire-log result record. close releases per-instance
+// resources (the builtins' sandbox roots); command tools release nothing.
 type tool interface {
 	name() string
 	definition() llm.Tool
 	run(ctx context.Context, args json.RawMessage, sink logging.Sink) (ToolResult, error)
+	close()
 }
 
 // ToolResult is the outcome of running a tool. Err marks tool-level failure
@@ -115,6 +117,17 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 		r.tools[t.name()] = t
 	}
 	return r, nil
+}
+
+// Close releases per-instance resources held by the tools: the file
+// builtins' open sandbox roots. A registry is built once at startup and
+// held for the process or session lifetime; chat closes it at teardown so
+// the roots are not left open until process exit. Safe to call more than
+// once.
+func (r *Registry) Close() {
+	for _, t := range r.tools {
+		t.close()
+	}
 }
 
 // Names returns the registered tool names, sorted for stable output.

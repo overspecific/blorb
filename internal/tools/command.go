@@ -46,6 +46,9 @@ func newCommandTool(e config.ToolEntry) (tool, error) {
 
 func (t *commandTool) name() string { return t.toolName }
 
+// close releases per-instance resources; a command tool holds none.
+func (t *commandTool) close() {}
+
 func (t *commandTool) definition() llm.Tool {
 	schema := t.argsSchema
 	if len(schema) == 0 {

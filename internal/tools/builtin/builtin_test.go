@@ -13,15 +13,21 @@ import (
 	"github.com/overspecific/blorb/internal/tools/builtin"
 )
 
-// opts parses config settings for the named builtin, failing the test on
-// error.
+// opts parses config settings for the named builtin and prepares them
+// (opening the file builtins' sandbox root), failing the test on error.
+// The caller is not required to Clean up: the roots close with the process,
+// and t.TempDir cleanup does not depend on them.
 func opts(t *testing.T, name, raw string) builtin.Options {
 	t.Helper()
 	o, err := builtin.ParseConfig(name, json.RawMessage(raw), builtin.ParseOptions{})
 	if err != nil {
 		t.Fatalf("ParseConfig(%s) error = %v, want nil", name, err)
 	}
-	return o
+	p, err := builtin.Prepare(name, o)
+	if err != nil {
+		t.Fatalf("Prepare(%s) error = %v, want nil", name, err)
+	}
+	return p
 }
 
 func TestSupported(t *testing.T) {
@@ -464,6 +470,53 @@ func TestGrep(t *testing.T) {
 			t.Errorf("res.Output length = %d, want at most ~1 MiB plus notice", len(res.Output))
 		}
 	})
+}
+
+// TestSandboxBaseDirSwapPinsLifetimeRoot pins the exploit that motivated
+// holding the sandbox root for the tool's lifetime: with a per-run
+// openSandbox, renaming the base away and symlinking it to an outside
+// directory after parsing let a read reach outside files. With the root
+// held from Prepare, the swap must fail closed.
+func TestSandboxBaseDirSwapPinsLifetimeRoot(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	sibling := t.TempDir()
+	outside := filepath.Join(sibling, "secret.txt")
+	if err := os.WriteFile(outside, []byte("top secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "inside.txt"), []byte("inside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	o, err := builtin.ParseConfig("read", json.RawMessage(`{"base_dir":"`+base+`"}`), builtin.ParseOptions{})
+	if err != nil {
+		t.Fatalf("ParseConfig error = %v, want nil", err)
+	}
+	prepared, err := builtin.Prepare("read", o)
+	if err != nil {
+		t.Fatalf("Prepare error = %v, want nil", err)
+	}
+	defer builtin.Cleanup(prepared)
+
+	// The swap: remove the base and put a symlink to the outside dir in
+	// its place. Per-run sandbox opening would now follow it.
+	if err := os.RemoveAll(base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sibling, base); err != nil {
+		t.Fatal(err)
+	}
+
+	rd, _ := builtin.Lookup("read")
+	res, err := rd.Run(context.Background(), prepared, json.RawMessage(`{"path":"secret.txt"}`))
+	if err != nil {
+		t.Fatalf("Run error = %v, want a tool result", err)
+	}
+	if !res.Err || strings.Contains(res.Output, "top secret") {
+		t.Errorf("res = %+v, want a sandbox failure, never outside content", res)
+	}
 }
 
 func TestSandbox(t *testing.T) {

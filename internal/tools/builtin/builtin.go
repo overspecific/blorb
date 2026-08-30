@@ -86,7 +86,9 @@ func ParseConfig(name string, raw json.RawMessage, po ParseOptions) (Options, er
 	return b.parseConfig(raw, po)
 }
 
-// Run executes the builtin with previously-parsed settings.
+// Run executes the builtin with previously-parsed settings. For file
+// builtins, opts must be a prepared value from Prepare: an unprepared
+// options value has no sandbox and the run fails.
 func (b Builtin) Run(ctx context.Context, opts Options, args json.RawMessage) (Result, error) {
 	return b.run(ctx, opts, args)
 }

@@ -18,10 +18,14 @@ type fileOptions struct {
 }
 
 // fileConfig is the decoded shape with the resolved absolute base
-// directory added.
+// directory added. After Prepare it also holds the open sandbox; the
+// root is opened once per tool instance and lives for as long as the
+// options do, so the containment guarantee is fixed at construction and
+// cannot be raced by later filesystem changes to the base path.
 type fileConfig struct {
 	fileOptions
 	resolved string
+	sb       *sandbox
 }
 
 // parseFileConfig validates the shared file-tool settings object:
@@ -64,7 +68,8 @@ func isEOFErr(err error) bool {
 }
 
 // sandbox pairs an open os.Root with its base directory. All file access
-// for a builtin instance goes through it.
+// for a builtin instance goes through it; the root is opened once per
+// tool instance and held for its lifetime.
 type sandbox struct {
 	root *os.Root
 	base string
@@ -83,6 +88,33 @@ func openSandbox(base string) (*sandbox, error) {
 		return nil, fmt.Errorf("base_dir %q: %w", base, err)
 	}
 	return &sandbox{root: root, base: abs}, nil
+}
+
+// Prepare resolves the options' base directory and opens the sandbox root
+// once, returning prepared options that carry the open root. Run functions
+// take the root from the prepared value instead of re-opening per call, so
+// the validated-at-construction guarantee cannot be defeated by a later
+// rename-and-symlink of the base directory. The returned options own the
+// root; call Cleanup when done with them.
+func Prepare(name string, opts Options) (Options, error) {
+	fc, ok := opts.(fileConfig)
+	if !ok {
+		return opts, nil
+	}
+	sb, err := openSandbox(fc.resolved)
+	if err != nil {
+		return nil, err
+	}
+	fc.sb = sb
+	return fc, nil
+}
+
+// Cleanup releases resources held by prepared options: the open sandbox
+// root for file builtins. Safe on unprepared options or nil.
+func Cleanup(opts Options) {
+	if fc, ok := opts.(fileConfig); ok {
+		fc.sb.close()
+	}
 }
 
 // close releases the Root. Safe on a nil sandbox.

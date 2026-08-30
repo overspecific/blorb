@@ -352,6 +352,47 @@ func TestBuiltinBaseDirRelativeToConfigDir(t *testing.T) {
 	}
 }
 
+// TestBuiltinBaseDirSwapThroughRegistry pins the lifetime-root exploit at
+// the registry boundary: if the sandbox were re-opened per run, renaming
+// the base away and symlinking it to an outside directory after
+// construction would let a read reach outside files. The root is held from
+// construction, so the swap must surface as a sandbox failure.
+func TestBuiltinBaseDirSwapThroughRegistry(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	sibling := t.TempDir()
+	outside := filepath.Join(sibling, "secret.txt")
+	if err := os.WriteFile(outside, []byte("top secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "inside.txt"), []byte("inside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		builtinEntry("read", "Read a file.", "read", `{"base_dir":"`+base+`"}`),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+	defer r.Close()
+
+	if err := os.RemoveAll(base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sibling, base); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := r.Run(context.Background(), "read", json.RawMessage(`{"path":"secret.txt"}`))
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if !res.Err || strings.Contains(res.Output, "top secret") {
+		t.Errorf("res = %+v, want the sandbox error as a tool result, never outside content", res)
+	}
+}
+
 func TestBuiltinMixedRegistry(t *testing.T) {
 	t.Parallel()
 

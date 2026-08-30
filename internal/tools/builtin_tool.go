@@ -16,7 +16,8 @@ import (
 // entry's builtin field. The entry's name and description are the
 // user-facing model-facing identity; the builtin supplies the args schema
 // and execution, configured with the settings parsed from the entry's
-// config object.
+// config object. The prepared options hold any per-instance resources
+// (the file builtins' open sandbox root) for the tool's lifetime.
 type builtinTool struct {
 	toolName    string
 	description string
@@ -26,8 +27,9 @@ type builtinTool struct {
 
 // newBuiltinTool validates a builtin tool entry and constructs the tool,
 // parsing the settings (which for file builtins also verifies base_dir
-// resolves to an existing directory). Relative base_dir paths resolve
-// against baseDir, the config file's directory.
+// resolves to an existing directory) and preparing them: the sandbox root
+// is opened here, once, and held for the tool's lifetime. Relative
+// base_dir paths resolve against baseDir, the config file's directory.
 func newBuiltinTool(e config.ToolEntry, baseDir string) (tool, error) {
 	if e.Builtin == "" {
 		return nil, fmt.Errorf("tool %q: builtin is required", e.Name)
@@ -44,12 +46,21 @@ func newBuiltinTool(e config.ToolEntry, baseDir string) (tool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tool %q: %w", e.Name, err)
 	}
+	prepared, err := builtin.Prepare(e.Builtin, opts)
+	if err != nil {
+		return nil, fmt.Errorf("tool %q: %w", e.Name, err)
+	}
 	return &builtinTool{
 		toolName:    e.Name,
 		description: e.Description,
 		b:           b,
-		opts:        opts,
+		opts:        prepared,
 	}, nil
+}
+
+// close releases the prepared options, closing any open sandbox root.
+func (t *builtinTool) close() {
+	builtin.Cleanup(t.opts)
 }
 
 func (t *builtinTool) name() string { return t.toolName }

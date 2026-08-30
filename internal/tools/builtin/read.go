@@ -43,16 +43,11 @@ func pathArg(args json.RawMessage) (string, bool) {
 
 func runRead(ctx context.Context, opts Options, args json.RawMessage) (Result, error) {
 	fc := opts.(fileConfig)
+	sb := fc.sb
 	path, ok := pathArg(args)
 	if !ok {
 		return Result{Output: "error: path is required and must be a string", Err: true}, nil
 	}
-
-	sb, err := openSandbox(fc.resolved)
-	if err != nil {
-		return Result{}, err
-	}
-	defer sb.close()
 
 	info, err := sb.root.Stat(path)
 	if err != nil {
