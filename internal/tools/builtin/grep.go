@@ -31,6 +31,10 @@ var grepBuiltin = Builtin{
     "path": {
       "type": "string",
       "description": "File or directory to search, relative to the tool's configured directory (default: the directory itself)"
+    },
+    "case_sensitive": {
+      "type": "boolean",
+      "description": "Match case exactly (default: false, matches case-insensitively)"
     }
   },
   "required": ["pattern"]
@@ -42,11 +46,16 @@ var grepBuiltin = Builtin{
 func runGrep(ctx context.Context, opts Options, args json.RawMessage) (Result, error) {
 	fc := opts.(fileConfig)
 	var a struct {
-		Pattern *string `json:"pattern"`
-		Path    *string `json:"path"`
+		Pattern       *string `json:"pattern"`
+		Path          *string `json:"path"`
+		CaseSensitive *bool   `json:"case_sensitive"`
 	}
 	if err := json.Unmarshal(bytesOr(args, []byte("null")), &a); err != nil || a.Pattern == nil {
 		return Result{Output: "error: pattern is required and must be a string", Err: true}, nil
+	}
+	// Case-insensitive by default; case_sensitive opts into exact case.
+	if a.CaseSensitive == nil || !*a.CaseSensitive {
+		*a.Pattern = "(?i)" + *a.Pattern
 	}
 	re, err := regexp.Compile(*a.Pattern)
 	if err != nil {

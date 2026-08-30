@@ -75,7 +75,7 @@ func TestLookup(t *testing.T) {
 	if len(g.ArgsSchema) == 0 || !json.Valid(g.ArgsSchema) {
 		t.Errorf("grep ArgsSchema = %s, want valid JSON", g.ArgsSchema)
 	}
-	for _, prop := range []string{"pattern", "path"} {
+	for _, prop := range []string{"pattern", "path", "case_sensitive"} {
 		if !strings.Contains(string(g.ArgsSchema), `"`+prop+`"`) {
 			t.Errorf("grep args schema missing %q property", prop)
 		}
@@ -166,7 +166,7 @@ func TestParseConfigBaseDirMustBeDirectory(t *testing.T) {
 
 // grebFixture builds a base directory containing:
 //
-//	alpha.txt        two lines, one with "needle"
+//	alpha.txt        two lines, one with "needle" and one with "Needle"
 //	nested/deep.txt  "needle here"
 //	nested/inside.md no match
 //	bin.dat          contains NUL bytes (grep skips)
@@ -175,7 +175,7 @@ func grebFixture(t *testing.T) string {
 	t.Helper()
 	base := t.TempDir()
 	files := map[string]string{
-		"alpha.txt":        "first line\nsecond needle line\n",
+		"alpha.txt":        "first line\nsecond needle line\nthird Needle line\n",
 		"nested/deep.txt":  "needle here\n",
 		"nested/inside.md": "no match\n",
 		"bin.dat":          "ok\x00binary\nneedle here\n",
@@ -321,6 +321,7 @@ func TestGrep(t *testing.T) {
 
 	t.Run("walk finds matches with relative paths", func(t *testing.T) {
 		t.Parallel()
+		// Case-insensitive by default, so "Needle" matches too.
 		res, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"needle"}`))
 		if err != nil {
 			t.Fatalf("Run error = %v, want nil", err)
@@ -328,15 +329,59 @@ func TestGrep(t *testing.T) {
 		if res.Err {
 			t.Errorf("res.Err = true, want false; output %q", res.Output)
 		}
+		want := "alpha.txt:2:second needle line\nalpha.txt:3:third Needle line\nnested/deep.txt:1:needle here"
+		if res.Output != want {
+			t.Errorf("res.Output = %q, want %q", res.Output, want)
+		}
+	})
+
+	t.Run("case_sensitive true matches exact case only", func(t *testing.T) {
+		t.Parallel()
+		res, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"needle","case_sensitive":true}`))
+		if err != nil || res.Err {
+			t.Fatalf("Run = %+v, %v; want clean result", res, err)
+		}
+		if strings.Contains(res.Output, "Needle") {
+			t.Errorf("res.Output = %q, want no case-mismatched matches", res.Output)
+		}
 		want := "alpha.txt:2:second needle line\nnested/deep.txt:1:needle here"
 		if res.Output != want {
 			t.Errorf("res.Output = %q, want %q", res.Output, want)
 		}
 	})
 
+	t.Run("case_sensitive false is case-insensitive", func(t *testing.T) {
+		t.Parallel()
+		res, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"needle","case_sensitive":false}`))
+		if err != nil || res.Err {
+			t.Fatalf("Run = %+v, %v; want clean result", res, err)
+		}
+		if !strings.Contains(res.Output, "Needle") {
+			t.Errorf("res.Output = %q, want case-mismatched matches included", res.Output)
+		}
+	})
+
+	t.Run("case_sensitive single file", func(t *testing.T) {
+		t.Parallel()
+		res, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"Needle","case_sensitive":true,"path":"alpha.txt"}`))
+		if err != nil || res.Err {
+			t.Fatalf("Run = %+v, %v; want clean result", res, err)
+		}
+		if res.Output != "alpha.txt:3:third Needle line" {
+			t.Errorf("res.Output = %q, want only the exact-case match", res.Output)
+		}
+		res2, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"Needle","path":"alpha.txt"}`))
+		if err != nil || res2.Err {
+			t.Fatalf("Run = %+v, %v; want clean result", res2, err)
+		}
+		if !strings.Contains(res2.Output, "second needle line") {
+			t.Errorf("res2.Output = %q, want default case-insensitive match", res2.Output)
+		}
+	})
+
 	t.Run("single file path", func(t *testing.T) {
 		t.Parallel()
-		res, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"needle","path":"alpha.txt"}`))
+		res, err := g.Run(context.Background(), o, json.RawMessage(`{"pattern":"needle","case_sensitive":true,"path":"alpha.txt"}`))
 		if err != nil || res.Err {
 			t.Fatalf("Run = %+v, %v; want clean result", res, err)
 		}
