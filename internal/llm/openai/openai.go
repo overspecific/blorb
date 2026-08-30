@@ -295,32 +295,25 @@ func (a *streamAccumulator) response() *llm.Response {
 	return &llm.Response{ID: a.id, Message: msg, FinishReason: a.finishReason, Usage: a.usage}
 }
 
-// loggingBody is an io.ReadCloser that accumulates every successfully read
-// chunk into a buffer so the bytes received over a streamed response can be
-// logged once the stream path finishes, however it ends. Accumulation stops
-// (with a truncation marker) at maxBodyLen; reads continue unbounded.
-type loggingBody struct {
-	rc      io.ReadCloser
-	capture bytes.Buffer
-	full    bool
-}
-
-func (b *loggingBody) Read(p []byte) (int, error) {
-	n, err := b.rc.Read(p)
-	if n > 0 && !b.full {
-		room := maxBodyLen - b.capture.Len()
-		if room > 0 {
-			b.capture.Write(p[:min(n, room)])
-		}
-		if b.capture.Len() >= maxBodyLen {
-			b.full = true
-			b.capture.WriteString("...(truncated)")
-		}
+// marshalWireResponse renders a completed neutral response back into the
+// OpenAI wire response envelope, reusing the neutral→wire message shape
+// that wireMessages builds for conversation history. Streaming and
+// non-streaming llm-response log records then carry directly comparable
+// bodies.
+func marshalWireResponse(resp *llm.Response) ([]byte, error) {
+	envelope := wireResponse{
+		ID:    resp.ID,
+		Usage: resp.Usage,
 	}
-	return n, err
+	envelope.Choices = append(envelope.Choices, struct {
+		Message      wireMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
+	}{
+		Message:      wireMessages([]llm.Message{resp.Message})[0],
+		FinishReason: resp.FinishReason,
+	})
+	return json.Marshal(envelope)
 }
-
-func (b *loggingBody) Close() error { return b.rc.Close() }
 
 // ChatStream sends a chat completion request with stream:true and reads the
 // response as a Server-Sent Events stream, calling onDelta for each
@@ -354,7 +347,7 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 		if len(respBody) == maxBodyLen {
 			return nil, fmt.Errorf("read response body: response exceeds %d byte limit", maxBodyLen)
 		}
-		// Logged here rather than via the stream capture: this body
+		// Logged here rather than via the assembled response: this body
 		// was already read whole. Write errors are ignored.
 		if c.cfg.Sink != nil {
 			c.cfg.Sink.Write(logging.Record{
@@ -370,37 +363,53 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 			httpResp.StatusCode, truncate(respBody, maxErrorBodyLen))
 	}
 
-	// Capture the stream bytes for the response log record. Registered
-	// as the last defer so it fires on every return path below this
-	// point — completion, scanner error, onDelta abort, cancellation —
-	// with whatever bytes arrived. Write errors are ignored.
-	var wireBody *loggingBody
-	if c.cfg.Sink != nil {
-		wireBody = &loggingBody{rc: httpResp.Body}
-		httpResp.Body = wireBody
-		defer func() {
-			c.cfg.Sink.Write(logging.Record{
-				Time:    time.Now(),
-				Kind:    logging.KindLLMResponse,
-				Method:  http.MethodPost,
-				URL:     endpoint,
-				Headers: responseHeaders(httpResp),
-				Body:    append([]byte(nil), wireBody.capture.Bytes()...),
-			})
-		}()
-	}
-
-	return c.readStream(httpResp.Body, onDelta)
+	return c.readStream(httpResp, endpoint, onDelta)
 }
 
 // readStream consumes an SSE body, emitting deltas and accumulating the
 // complete response. It errors when the stream carries no data chunks at
 // all: an empty stream would otherwise surface as a silent empty answer.
-func (c *Client) readStream(r io.Reader, onDelta func(llm.Delta) error) (*llm.Response, error) {
+//
+// The response log record is written here, where the accumulator's
+// assembled response exists: the assembled response on the happy path, the
+// partial response on abort/error paths after data arrived, and an
+// "error: ..." body when the stream carried no data at all. Write errors
+// are ignored — logging is best-effort.
+func (c *Client) readStream(httpResp *http.Response, endpoint string, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	logResponse := func(resp *llm.Response, body []byte) {
+		if c.cfg.Sink == nil {
+			return
+		}
+		c.cfg.Sink.Write(logging.Record{
+			Time:    time.Now(),
+			Kind:    logging.KindLLMResponse,
+			Method:  http.MethodPost,
+			URL:     endpoint,
+			Headers: responseHeaders(httpResp),
+			Body:    body,
+		})
+	}
+
 	acc := newStreamAccumulator()
 	sawData := false
 
-	scanner := bufio.NewScanner(r)
+	fail := func(err error) (*llm.Response, error) {
+		// Log what the model had produced so far; with no data at all
+		// there is nothing assembled, so log the error itself.
+		if !sawData {
+			logResponse(nil, []byte("error: "+err.Error()))
+			return nil, err
+		}
+		resp := acc.response()
+		body, marshalErr := marshalWireResponse(resp)
+		if marshalErr != nil {
+			body = []byte("error: " + marshalErr.Error())
+		}
+		logResponse(resp, body)
+		return nil, err
+	}
+
+	scanner := bufio.NewScanner(httpResp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxBodyLen)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -421,22 +430,30 @@ func (c *Client) readStream(r io.Reader, onDelta func(llm.Delta) error) (*llm.Re
 		sawData = true
 
 		if err := acc.addDelta(&chunk, onDelta); err != nil {
-			return nil, err
+			return fail(err)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read stream: %w", err)
+		return fail(fmt.Errorf("read stream: %w", err))
 	}
 	if !sawData {
-		return nil, fmt.Errorf("decode response: no data in stream")
+		return fail(fmt.Errorf("decode response: no data in stream"))
 	}
 
 	resp := acc.response()
 	if hasToolCallWithoutID(resp.Message.ToolCalls) {
-		return nil, fmt.Errorf("decode response: tool call missing id")
+		return fail(fmt.Errorf("decode response: tool call missing id"))
 	}
 	if hasToolCallWithoutName(resp.Message.ToolCalls) {
-		return nil, fmt.Errorf("decode response: tool call missing name")
+		return fail(fmt.Errorf("decode response: tool call missing name"))
+	}
+
+	// A marshal failure still leaves a record: error: <marshal error>.
+	body, err := marshalWireResponse(resp)
+	if err != nil {
+		logResponse(resp, []byte("error: "+err.Error()))
+	} else {
+		logResponse(resp, body)
 	}
 	return resp, nil
 }

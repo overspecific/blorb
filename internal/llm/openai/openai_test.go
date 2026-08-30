@@ -1214,7 +1214,7 @@ func TestChatLogsNon2xxResponse(t *testing.T) {
 	}
 }
 
-func TestChatStreamLogsRawSSE(t *testing.T) {
+func TestChatStreamLogsAssembledResponse(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1250,11 +1250,41 @@ func TestChatStreamLogsRawSSE(t *testing.T) {
 	if !strings.Contains(string(reqRec.Body), `"stream":true`) {
 		t.Errorf("request body = %q, want stream:true", reqRec.Body)
 	}
-	if !strings.Contains(string(respRec.Body), `data: {"id":"r"`) {
-		t.Errorf("response body = %q, want raw SSE data lines", respRec.Body)
+
+	// The response record carries the assembled response, not the raw
+	// SSE stream: same envelope shape as a non-streaming response body.
+	var wire struct {
+		ID      string `json:"id"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage llm.Usage `json:"usage"`
 	}
-	if !strings.Contains(string(respRec.Body), "data: [DONE]") {
-		t.Errorf("response body = %q, want the [DONE] terminator", respRec.Body)
+	if err := json.Unmarshal(respRec.Body, &wire); err != nil {
+		t.Fatalf("response body is not assembled JSON: %v (body: %s)", err, respRec.Body)
+	}
+	if len(wire.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(wire.Choices))
+	}
+	choice := wire.Choices[0]
+	if wire.ID != "r" {
+		t.Errorf("response id = %q, want r (round-trips)", wire.ID)
+	}
+	if choice.Message.Content != "Hello" {
+		t.Errorf("response content = %q, want the concatenated Hello", choice.Message.Content)
+	}
+	if choice.Message.Role != "assistant" {
+		t.Errorf("response role = %q, want assistant", choice.Message.Role)
+	}
+	if choice.FinishReason != "stop" {
+		t.Errorf("response finish_reason = %q, want stop", choice.FinishReason)
+	}
+	if strings.Contains(string(respRec.Body), "data:") || strings.Contains(string(respRec.Body), "[DONE]") {
+		t.Errorf("response body = %q, want no raw SSE markers", respRec.Body)
 	}
 	if !reqRec.Time.Before(respRec.Time) {
 		t.Errorf("request time %v not before response time %v", reqRec.Time, respRec.Time)
@@ -1309,10 +1339,61 @@ func TestChatStreamLogsAbortedStream(t *testing.T) {
 	}
 	body := string(recs[1].Body)
 	if !strings.Contains(body, "first") || !strings.Contains(body, "second") {
-		t.Errorf("logged body = %q, want the bytes received up to the abort", body)
+		t.Errorf("logged body = %q, want the content received up to the abort", body)
 	}
 	if strings.Contains(body, "never seen") {
 		t.Errorf("logged body = %q, want it cut off at the abort", body)
+	}
+	// The record carries the assembled response, not raw SSE lines. The
+	// partial response is still valid assembled JSON with content.
+	if strings.Contains(body, "data:") || strings.Contains(body, "[DONE]") {
+		t.Errorf("logged body = %q, want assembled JSON, not raw SSE lines", body)
+	}
+	var wire struct {
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(recs[1].Body, &wire); err != nil {
+		t.Fatalf("partial response body is not assembled JSON: %v (body: %s)", err, body)
+	}
+	if len(wire.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(wire.Choices))
+	}
+	if got := wire.Choices[0].Message.Content; got != "firstsecond" {
+		t.Errorf("partial content = %q, want the concatenated firstsecond", got)
+	}
+}
+
+func TestChatStreamLogsNoDataError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// A 200 with an empty SSE body: no data lines at all.
+	}))
+	defer srv.Close()
+
+	sink := logging.NewBuffered(0)
+	c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Sink = sink })
+
+	_, err := c.ChatStream(context.Background(), llm.Request{Model: "m"}, func(d llm.Delta) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "no data in stream") {
+		t.Fatalf("error = %v, want the no-data error", err)
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	body := string(recs[1].Body)
+	if !strings.HasPrefix(body, "error:") || !strings.Contains(body, "no data in stream") {
+		t.Errorf("response record body = %q, want error: ... mentioning no data", body)
 	}
 }
 
