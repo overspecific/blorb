@@ -32,6 +32,20 @@
       "name": "current_time",
       "description": "Returns the current date and time.",
       "command": ["date"]
+    },
+    {
+      "type": "builtin",
+      "name": "read",
+      "description": "Read a file at the given path, relative to this directory, and return its contents.",
+      "builtin": "read",
+      "config": {"base_dir": "."}
+    },
+    {
+      "type": "builtin",
+      "name": "grep",
+      "description": "Search this directory's files for lines matching a regular expression pattern, returning matches as path:line:text.",
+      "builtin": "grep",
+      "config": {"base_dir": "."}
     }
   ]
 }

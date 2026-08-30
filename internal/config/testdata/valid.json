@@ -20,6 +20,13 @@
       "description": "Return a greeting.",
       "command": ["echo", "hello"],
       "args_schema": {"type": "object"}
+    },
+    {
+      "type": "builtin",
+      "name": "read_fixture",
+      "description": "Read a fixture file.",
+      "builtin": "read",
+      "config": {"base_dir": "testdata"}
     }
   ]
 }

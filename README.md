@@ -8,7 +8,7 @@ A single-binary tool for making AI agents.
 
 Blorb lets you define an agent in a `blorb.json` file and run it in a simple interactive chat interface. It's built for experimentation: try out different system prompts and tool setups with minimal ceremony, using a plain JSON config and the standard library.
 
-Tools are plain executables declared in the config. When the model calls a tool, Blorb runs the command and pipes the model's JSON arguments to the tool's stdin; the tool's stdout goes back to the model. Anything on your machine that can read stdin and write stdout can be a tool.
+Tools are plain executables declared in the config, or built-ins implemented inside Blorb itself. When the model calls a tool, Blorb runs it and pipes the model's JSON arguments to it (for command tools, via stdin); the tool's output goes back to the model. Anything on your machine that can read stdin and write stdout can be a tool.
 
 ## Features
 
@@ -16,7 +16,7 @@ Tools are plain executables declared in the config. When the model calls a tool,
 - Interactive chat REPL with multi-turn tool calling
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
 - Full conversation and tool logging — every LLM request/response and tool call/result is written to a per-session subdirectory of `.logs` next to `blorb.json`, one timestamped file per wire interaction, so sorting the filenames replays the turn in order and sessions never interleave
-- Tools as local subprocesses with JSON-schema argument declarations
+- Tools as local subprocesses or built-ins (read/grep), with JSON-schema argument declarations for commands
 - Any OpenAI-compatible chat completions endpoint as the LLM backend
 - Per-tool 30s timeout, process-group cleanup, and stderr capture
 - Single dependency-free Go binary
@@ -93,6 +93,7 @@ Agents are defined in a `blorb.json` file:
   "max_turns": 10,
   "tools": [
     {
+      "type": "command",
       "name": "echo",
       "description": "Echoes back whatever text you pass in.",
       "command": ["echo"],
@@ -103,6 +104,13 @@ Agents are defined in a `blorb.json` file:
         },
         "required": ["message"]
       }
+    },
+    {
+      "type": "builtin",
+      "name": "read",
+      "description": "Read a file at the given path and return its contents.",
+      "builtin": "read",
+      "config": { "base_dir": "." }
     }
   ]
 }
@@ -145,14 +153,30 @@ Currently supported: `openai` — any OpenAI-compatible chat completions API (Op
 
 ### Tools
 
-Each tool is an executable invoked as a subprocess:
+Each tool has a required `type` field selecting one of two kinds:
+
+**`command` tools** run an executable as a subprocess:
 
 - `name` — identifier the model uses to call it; must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
 - `description` — tells the model what the tool does and when to use it.
 - `command` — the argv to run, e.g. `["python", "-u", "my_tool.py"]`.
-- `args_schema` — optional JSON Schema object describing the arguments; passed through to the API. When omitted, an empty schema is used.
+- `args_schema` — optional JSON Schema object describing the arguments; passed through to the API. When omitted, an empty schema is used. Command tools only: builtins define their own model-facing schema.
 
 When the model calls a tool, Blorb runs the command with the model's JSON arguments piped to its stdin. Anything the tool writes to stdout (success) or stderr (failure) is returned to the model as the tool result. Each tool execution has a 30 second timeout, and on timeout the whole process group is killed.
+
+**`builtin` tools** are implemented inside Blorb itself and need no executable. The `builtin` field selects the implementation — currently `read` and `grep` — and the `config` object configures it:
+
+```json
+{
+  "type": "builtin",
+  "name": "read",
+  "description": "Look inside project files.",
+  "builtin": "read",
+  "config": { "base_dir": "./src" }
+}
+```
+
+Both builtins are file tools sharing one setting: `base_dir`, a required path to a directory the tool is sandboxed to. The model's path arguments resolve inside that directory tree, and only that tree is accessible — attempts to escape (including through symlinks) fail; symlinks are followed only when they resolve back inside `base_dir`. `read` takes `{"path": ...}` and returns a file's contents; `grep` takes `{"pattern": ...}` and an optional `{"path": ...}` (default: the base directory) and returns matches as `path:line:text`, skipping `.git` directories and binary files. Each tool execution has a 30 second timeout like command tools.
 
 ### Logging
 
@@ -219,7 +243,7 @@ blorb chat
 
 ## Example
 
-See [examples/simple](examples/simple) for a minimal agent with `echo` and `current_time` tools, including notes on pointing the provider at different OpenAI-compatible servers.
+See [examples/simple](examples/simple) for a minimal agent with `echo` and `current_time` command tools and `read`/`grep` builtins, including notes on pointing the provider at different OpenAI-compatible servers.
 
 
 
@@ -235,6 +259,7 @@ Layout:
 - `internal/engine` — the agent loop: model calls, tool execution, turn limits
 - `internal/chat` — the interactive chat REPL
 - `internal/tools` — tool registry and subprocess execution
+- `internal/tools/builtin` — built-in tools (`read`, `grep`)
 - `internal/llm` — provider-neutral LLM types
 - `internal/llm/openai` — OpenAI-compatible client, with SSE streaming support
 - `internal/logging` — wire logging for LLM and tool interactions

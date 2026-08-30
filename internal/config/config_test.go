@@ -44,8 +44,8 @@ func TestLoadValid(t *testing.T) {
 	if got, want := cfg.MaxTurnsOrDefault(), 5; got != want {
 		t.Errorf("MaxTurnsOrDefault() = %d, want %d", got, want)
 	}
-	if len(cfg.Tools) != 2 {
-		t.Fatalf("len(Tools) = %d, want 2", len(cfg.Tools))
+	if len(cfg.Tools) != 3 {
+		t.Fatalf("len(Tools) = %d, want 3", len(cfg.Tools))
 	}
 
 	first := cfg.Tools[0]
