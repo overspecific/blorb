@@ -30,16 +30,31 @@ const (
 
 	// ProviderTypeOpenAI selects an OpenAI-compatible chat completions API.
 	ProviderTypeOpenAI = "openai"
+
+	// DefaultPrefactorAPIURL is the Prefactor API base URL used when
+	// api_url is unset in the prefactor config block.
+	DefaultPrefactorAPIURL = "https://app.prefactorai.com/api/v1"
+
+	// DefaultPrefactorTokenEnv is the environment variable the Prefactor
+	// API token is read from when api_token_env is unset.
+	DefaultPrefactorTokenEnv = "PREFACTOR_API_TOKEN"
 )
 
 // Config is the top-level blorb.json schema.
 type Config struct {
-	Name         string      `json:"name"`
-	SystemPrompt string      `json:"system_prompt"`
-	Provider     Provider    `json:"provider"`
-	MaxTurns     int         `json:"max_turns,omitempty"`
-	Tools        []ToolEntry `json:"tools,omitempty"`
-	Logging      LogConfig   `json:"logging"`
+	Name         string           `json:"name"`
+	SystemPrompt string           `json:"system_prompt"`
+	Provider     Provider         `json:"provider"`
+	MaxTurns     int              `json:"max_turns,omitempty"`
+	Tools        []ToolEntry      `json:"tools,omitempty"`
+	Logging      LogConfig        `json:"logging"`
+	Prefactor    *PrefactorConfig `json:"prefactor,omitempty"`
+}
+
+// PrefactorEnabled reports whether Prefactor tracing is configured: a
+// present prefactor block enables it.
+func (c *Config) PrefactorEnabled() bool {
+	return c.Prefactor != nil
 }
 
 // LogConfig is the logging object in blorb.json.
@@ -65,6 +80,64 @@ func (c *Config) LogDir() string {
 		return DefaultLogDir
 	}
 	return c.Logging.Path
+}
+
+// PrefactorConfig is the optional prefactor object in blorb.json, enabling
+// tracing of agent activity to the Prefactor platform.
+type PrefactorConfig struct {
+	// APITokenEnv names the environment variable holding the Prefactor
+	// API token. It is a pointer following the api_key_env convention:
+	// absent defaults to DefaultPrefactorTokenEnv, explicit empty is a
+	// config error.
+	APITokenEnv *string `json:"api_token_env,omitempty"`
+	// APIURL is the Prefactor API base URL. Optional; when empty
+	// DefaultPrefactorAPIURL applies (see APIURLOrDefault).
+	APIURL string `json:"api_url,omitempty"`
+	// AgentID is the Prefactor agent to register instances under.
+	// Optional; may be empty for deployment-scoped tokens.
+	AgentID string `json:"agent_id,omitempty"`
+	// EnvironmentID is the Prefactor environment to register instances
+	// under. Optional.
+	EnvironmentID string `json:"environment_id,omitempty"`
+}
+
+// APITokenEnvOrDefault returns the configured api_token_env, or
+// DefaultPrefactorTokenEnv when unset.
+func (p *PrefactorConfig) APITokenEnvOrDefault() string {
+	if p.APITokenEnv == nil {
+		return DefaultPrefactorTokenEnv
+	}
+	return *p.APITokenEnv
+}
+
+// APIURLOrDefault returns the configured api_url, or
+// DefaultPrefactorAPIURL when unset.
+func (p *PrefactorConfig) APIURLOrDefault() string {
+	if p.APIURL == "" {
+		return DefaultPrefactorAPIURL
+	}
+	return p.APIURL
+}
+
+// validate checks the prefactor block: api_url must be http/https with a
+// host when set, and an explicitly-set api_token_env must be non-empty.
+func (p *PrefactorConfig) validate() error {
+	if p.APIURL != "" {
+		u, err := url.Parse(p.APIURL)
+		if err != nil {
+			return fmt.Errorf("api_url %q: %w", p.APIURL, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("api_url %q must use http or https scheme", p.APIURL)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("api_url %q must include a host", p.APIURL)
+		}
+	}
+	if p.APITokenEnv != nil && *p.APITokenEnv == "" {
+		return fmt.Errorf("api_token_env must not be empty when set")
+	}
+	return nil
 }
 
 // Provider is the provider object, the extension point for multiple LLM
@@ -158,6 +231,11 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Logging.validate(); err != nil {
 		return fmt.Errorf("logging: %w", err)
+	}
+	if c.Prefactor != nil {
+		if err := c.Prefactor.validate(); err != nil {
+			return fmt.Errorf("prefactor: %w", err)
+		}
 	}
 	return nil
 }

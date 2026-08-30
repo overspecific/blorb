@@ -144,6 +144,68 @@ func TestValidateAcceptsMissingAPIKeyEnv(t *testing.T) {
 	}
 }
 
+func TestLoadWithPrefactor(t *testing.T) {
+	cfg, err := loadTestdata(t, "with_prefactor.json")
+	if err != nil {
+		t.Fatalf("Load(with_prefactor.json) error = %v, want nil", err)
+	}
+	if !cfg.PrefactorEnabled() {
+		t.Fatal("PrefactorEnabled() = false, want true")
+	}
+	pf := cfg.Prefactor
+	if pf == nil {
+		t.Fatal("Prefactor = nil, want non-nil")
+	}
+	if got := pf.APITokenEnvOrDefault(); got != "MY_PREFACTOR_TOKEN" {
+		t.Errorf("APITokenEnvOrDefault() = %q, want %q", got, "MY_PREFACTOR_TOKEN")
+	}
+	if got := pf.APIURLOrDefault(); got != "https://prefactor.example.com/api/v1" {
+		t.Errorf("APIURLOrDefault() = %q, want %q", got, "https://prefactor.example.com/api/v1")
+	}
+	if pf.AgentID != "agent-123" {
+		t.Errorf("AgentID = %q, want %q", pf.AgentID, "agent-123")
+	}
+	if pf.EnvironmentID != "env-456" {
+		t.Errorf("EnvironmentID = %q, want %q", pf.EnvironmentID, "env-456")
+	}
+}
+
+func TestPrefactorAbsent(t *testing.T) {
+	cfg, err := loadTestdata(t, "valid.json")
+	if err != nil {
+		t.Fatalf("Load(valid.json) error = %v, want nil", err)
+	}
+	if cfg.PrefactorEnabled() {
+		t.Error("PrefactorEnabled() = true, want false when the prefactor block is absent")
+	}
+}
+
+func TestPrefactorDefaults(t *testing.T) {
+	cfg := config.Config{
+		Name:         "helper",
+		SystemPrompt: "You are helpful.",
+		Provider: config.Provider{
+			Type:    config.ProviderTypeOpenAI,
+			Model:   "m",
+			BaseURL: "http://localhost:1",
+		},
+		MaxTurns:  1,
+		Prefactor: &config.PrefactorConfig{},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate error = %v, want nil", err)
+	}
+	if !cfg.PrefactorEnabled() {
+		t.Error("PrefactorEnabled() = false, want true with an empty prefactor block")
+	}
+	if got := cfg.Prefactor.APITokenEnvOrDefault(); got != config.DefaultPrefactorTokenEnv {
+		t.Errorf("APITokenEnvOrDefault() = %q, want %q", got, config.DefaultPrefactorTokenEnv)
+	}
+	if got := cfg.Prefactor.APIURLOrDefault(); got != config.DefaultPrefactorAPIURL {
+		t.Errorf("APIURLOrDefault() = %q, want %q", got, config.DefaultPrefactorAPIURL)
+	}
+}
+
 func TestLoadRejects(t *testing.T) {
 	t.Parallel()
 
@@ -166,6 +228,10 @@ func TestLoadRejects(t *testing.T) {
 		{"negative_max_turns.json", []string{"max_turns"}},
 		{"zero_max_turns.json", []string{"max_turns must be at least 1 (got 0)"}},
 		{"empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
+		{"prefactor_unknown_field.json", []string{"no_such_field"}},
+		{"prefactor_empty_token_env.json", []string{"api_token_env must not be empty when set"}},
+		{"prefactor_bad_api_url_scheme.json", []string{"ftp", "http or https"}},
+		{"prefactor_api_url_no_host.json", []string{"api_url", "host"}},
 	}
 
 	for _, tc := range cases {
