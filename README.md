@@ -41,14 +41,13 @@ Tools are plain executables declared in the config, or built-ins implemented ins
 
    This produces the `blorb` binary in the repo root.
 
-4. Run the example agent. It talks to whatever OpenAI-compatible chat completions endpoint you point it at, so adjust `base_url` and `model` in [examples/simple/blorb.json](examples/simple/blorb.json) to match yours (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...). The example config also enables Prefactor tracing, so export a token first (or delete its `prefactor` block to skip tracing):
+4. Run the example agent. It talks to whatever OpenAI-compatible chat completions endpoint you point it at, so adjust `base_url` and `model` in [examples/simple/blorb.json](examples/simple/blorb.json) to match yours (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...):
 
    ```sh
-   export PREFACTOR_API_TOKEN="pf_..."
    ./blorb chat --config examples/simple/blorb.json
    ```
 
-   Then try prompts like `tell me the time` or `echo "blorb is fun"`.
+   Then try prompts like `what's a jammie dodger?` or `which biscuits survive a long dunking?`.
 
 The `bin/` scripts add mise's shims to `PATH` if present, so you don't need to activate mise yourself to run them.
 
@@ -240,9 +239,11 @@ export PREFACTOR_API_TOKEN="pf_..."
 blorb chat
 ```
 
-## Example
+## Examples
 
 See [examples/simple](examples/simple) for a minimal agent with `echo` and `current_time` command tools and `read`/`grep` builtins (pointed at the example's `knowledgebase/` directory), including notes on pointing the provider at different OpenAI-compatible servers.
+
+See [examples/prefactor-tracing](examples/prefactor-tracing) for a stripped-down variant with just the `read`/`grep` builtins (sharing simple's `knowledgebase/`) and Prefactor tracing enabled.
 
 ## Development
 

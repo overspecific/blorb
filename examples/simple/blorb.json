@@ -7,9 +7,6 @@
     "base_url": "http://localhost:13305/v1"
   },
   "max_turns": 10,
-  "prefactor": {
-    "api_token_env": "PREFACTOR_API_TOKEN"
-  },
   "tools": [
     {
       "type": "command",
