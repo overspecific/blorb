@@ -22,7 +22,7 @@ Wire facts (from docs.prefactor.ai, cross-checked against the official SDKs' pay
 - [x] Commit 6: docs and example
 - [x] Commit 7: tolerate orphan tool results
 - [x] Commit 8: fix streaming detection through clientHolder
-- [ ] Commit 9: record final assistant text on the turn span
+- [x] Commit 9: record final assistant text on the turn span
 - [ ] Commit 10: record the model on llm spans
 - [ ] Commit 11: idempotency keys and client cleanups
 - [ ] Commit 12: finish the instance on a background context

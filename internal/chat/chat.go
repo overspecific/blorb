@@ -321,7 +321,7 @@ func runTurn(
 	holder.inner = newTracingClient(holder.inner, turn)
 	defer func() { holder.inner = unwrapTracingClient(holder.inner) }()
 
-	_, runErr := eng.RunTurn(turnCtx, line, traceEvent(turn, printEvent))
+	finalText, runErr := eng.RunTurn(turnCtx, line, traceEvent(turn, printEvent))
 	flush()
 
 	interrupted := takeInterrupted()
@@ -344,7 +344,7 @@ func runTurn(
 			return tracerFailure(err)
 		}
 	default:
-		if err := turn.Complete(""); err != nil {
+		if err := turn.Complete(finalText); err != nil {
 			return tracerFailure(err)
 		}
 	}

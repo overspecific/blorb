@@ -296,6 +296,47 @@ func TestRunTracedNonStreamingTurn(t *testing.T) {
 	}
 }
 
+// TestRunTracedTurnSpanCarriesFinalText verifies the blorb:agent_turn
+// finish carries the assistant's final text in result_payload. This
+// pins the RunTurn-return-value fix.
+func TestRunTracedTurnSpanCarriesFinalText(t *testing.T) {
+	f, srv := newFakePFServer(t)
+
+	// The turn span is the first span created after register+start.
+
+	var stdout syncBuffer
+	o := chat.Options{Stdout: &stdout}
+	cfg := minimalConfig()
+	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "the final words"), FinishReason: llm.FinishStop},
+	)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	// The turn-span finish carries the final text.
+	var found bool
+	for _, c := range f.finishCalls() {
+		if !strings.HasPrefix(c.Path, "/agent_spans/") {
+			continue
+		}
+		if rp, ok := c.Body["result_payload"].(map[string]any); ok {
+			if rp["assistant_text"] == "the final words" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		var all []string
+		for _, c := range f.finishCalls() {
+			b, _ := json.Marshal(c.Body["result_payload"])
+			all = append(all, string(b))
+		}
+		t.Errorf("no turn-span finish carries assistant_text; result payloads: %v", all)
+	}
+}
+
 // TestRunNonStreamingClientRendersWithStreamRequested is the untraced
 // sibling: Stream: true with a non-streaming client must still render.
 func TestRunNonStreamingClientRendersWithStreamRequested(t *testing.T) {
