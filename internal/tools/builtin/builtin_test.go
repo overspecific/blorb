@@ -286,15 +286,70 @@ func TestRead(t *testing.T) {
 		}
 	})
 
-	t.Run("directory", func(t *testing.T) {
+	t.Run("directory lists files", func(t *testing.T) {
 		t.Parallel()
+		tree := t.TempDir()
+		files := map[string]string{
+			"f.txt":          "x\n",
+			"sub/a.txt":      "x\n",
+			"sub/deep/b.txt": "x\n",
+			".hidden":        "x\n",
+		}
+		for p, content := range files {
+			full := filepath.Join(tree, p)
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		no := opts(t, "read", `{"base_dir":"`+tree+`"}`)
 		b, _ := builtin.Lookup("read")
-		res, err := b.Run(context.Background(), o, json.RawMessage(`{"path":"."}`))
+		res, err := b.Run(context.Background(), no, json.RawMessage(`{"path":"sub"}`))
 		if err != nil {
 			t.Fatalf("Run error = %v, want nil", err)
 		}
-		if !res.Err || !strings.Contains(res.Output, "is a directory") {
-			t.Errorf("res = %+v, want an is-a-directory failure", res)
+		if res.Err {
+			t.Errorf("res.Err = true, want false; output %q", res.Output)
+		}
+		// Files only (no directories), walk order (lexical), forward slashes.
+		want := "sub/a.txt\nsub/deep/b.txt"
+		if res.Output != want {
+			t.Errorf("res.Output = %q, want %q", res.Output, want)
+		}
+		ci, err := b.Run(context.Background(), no, json.RawMessage(`{"path":"."}`))
+		if err != nil || ci.Err {
+			t.Fatalf("Run(path=.) = %+v, %v; want clean listing", ci, err)
+		}
+		if !strings.Contains(ci.Output, "sub/a.txt") || !strings.Contains(ci.Output, ".hidden") {
+			t.Errorf("res.Output = %q, want the full recursive list", ci.Output)
+		}
+	})
+
+	t.Run("empty directory is empty success", func(t *testing.T) {
+		t.Parallel()
+		empty := t.TempDir()
+		no := opts(t, "read", `{"base_dir":"`+empty+`"}`)
+		b, _ := builtin.Lookup("read")
+		res, err := b.Run(context.Background(), no, json.RawMessage(`{"path":"."}`))
+		if err != nil || res.Err {
+			t.Fatalf("Run = %+v, %v; want clean empty result", res, err)
+		}
+		if res.Output != "" {
+			t.Errorf("res.Output = %q, want empty", res.Output)
+		}
+	})
+
+	t.Run("directory listing escapes fail like file reads", func(t *testing.T) {
+		t.Parallel()
+		b, _ := builtin.Lookup("read")
+		res, err := b.Run(context.Background(), o, json.RawMessage(`{"path":"../"}`))
+		if err != nil {
+			t.Fatalf("Run error = %v, want a tool result", err)
+		}
+		if !res.Err || res.Output != "error: path is outside the allowed directory" {
+			t.Errorf("res = %+v, want the uniform sandbox error", res)
 		}
 	})
 

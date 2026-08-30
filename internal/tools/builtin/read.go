@@ -6,21 +6,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
+	"strings"
 )
 
 // maxReadLen caps a read's output at the same 1 MiB as command tools.
 const maxReadLen = 1 << 20
 
-// readBuiltin reads a single file inside the sandbox.
+// readBuiltin reads a file or lists a directory inside the sandbox. Reading
+// a directory returns its files (recursively, one relative path per line,
+// forward slashes); directories, symlinks to directories, and .git are not
+// listed.
 var readBuiltin = Builtin{
 	Name:        "read",
-	Description: "Read a file at the given path and return its contents.",
+	Description: "Read a file at the given path and return its contents, or, if the path is a directory, return the list of files in it (recursively).",
 	ArgsSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path of the file to read, relative to the tool's configured directory"
+      "description": "Path of the file to read, or directory to list, relative to the tool's configured directory"
     }
   },
   "required": ["path"]
@@ -54,7 +59,7 @@ func runRead(ctx context.Context, opts Options, args json.RawMessage) (Result, e
 		return Result{Output: "error: " + mapErr(err).Error(), Err: true}, nil
 	}
 	if info.IsDir() {
-		return Result{Output: "error: read " + path + ": is a directory", Err: true}, nil
+		return sb.list(path)
 	}
 
 	f, err := sb.root.Open(path)
@@ -76,4 +81,33 @@ func runRead(ctx context.Context, opts Options, args json.RawMessage) (Result, e
 		}, nil
 	}
 	return Result{Output: trimSingleTrailingNewline(string(data))}, nil
+}
+
+// list returns the files under the directory at path as base-relative
+// paths, one per line (forward slashes, walk order). Directories, symlinks
+// to directories, and .git trees are not listed; unreadable entries are
+// skipped silently - mirroring grep's walk policy.
+func (s *sandbox) list(path string) (Result, error) {
+	root := cleanRel(path)
+	var b strings.Builder
+	err := fs.WalkDir(s.root.FS(), root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // unreadable entries are skipped silently
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" && p != root {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(relName(p))
+		return nil
+	})
+	if err != nil {
+		return Result{}, mapErr(err)
+	}
+	return Result{Output: b.String()}, nil
 }
