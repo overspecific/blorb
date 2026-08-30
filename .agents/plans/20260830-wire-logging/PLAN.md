@@ -9,6 +9,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 - [x] Commit 3: Tool registry call/result logging
 - [x] Commit 4: Thread the logger through config, chat, and CLI
 - [x] Commit 5: Documentation and gitignore
+- [ ] Commit 6: Log the assembled response for streamed turns
 
 ---
 
@@ -103,6 +104,31 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 >   - `main_test.go`: assert the chat command still defaults `--config` to `config.DefaultPath` (existing test) and no new flags were added to `chatCommand`.
 >
 > Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+> No other packages change. Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 6: Log the assembled response for streamed turns
+
+> Commit 2 made `ChatStream`'s `KindLLMResponse` record capture the raw SSE event-source stream (`data: ...` lines) via a `loggingBody` reader wrapper, while `Chat` logs the final JSON response body. That is inconsistent: an `llm-response` file should show the response the model produced, in the same shape regardless of which path produced it. Change the streaming path to log the assembled final response instead.
+>
+> - In `internal/llm/openai/openai.go`, delete the `loggingBody` wrapper and the capture/defer write in `ChatStream` (openai.go:298-323, 377-391): the raw byte capture has no consumer once the assembled response is logged.
+> - Add a `marshalWireResponse(resp *llm.Response) ([]byte, error)` helper that renders the completed neutral response back into the OpenAI wire response envelope — `{"id":...,"choices":[{"message":{...},"finish_reason":...}],"usage":{...}}` — reusing the existing neutral→wire message conversion (`neutralMessage`'s inverse: build a `wireMessage` from the response message the same way `wireMessages` does for history). Streaming and non-streaming `llm-response` files then carry directly comparable bodies.
+> - Move the response log write into `readStream` (or a closure passed from `ChatStream`), since that is where the accumulator's assembled response exists:
+>   - Stream completes normally → log the assembled response marshaled by `marshalWireResponse`, with the usual headers (`responseHeaders(httpResp)` including the synthetic `Status` entry).
+>   - Stream aborts or errors after data arrived (`onDelta` error, scanner error, context cancellation) → log the *partial* assembled response from the accumulator — what the model had produced so far, still useful for debugging — and then return the error as today. `readStream` currently returns before building `acc.response()` on these paths; build it for the log write regardless.
+>   - Stream fails with no data at all (the existing "no data in stream" error) → log a body of `error: <err>`, mirroring the tools' error-result convention, then return the error.
+>   - Non-2xx response → unchanged: the whole HTTP error body is already logged before any wrapping.
+> - `readStream` needs the response headers and endpoint URL for the record; pass them in (or pass a small log-options struct) from `ChatStream` rather than re-deriving. Keep the write best-effort: a `marshalWireResponse` or sink error on the happy path is ignored and never changes the return values; if marshaling fails, log `error: <marshal error>` so every streamed request still has a response record.
+> - Timestamps: the response record's `Time` is taken when the stream path finishes (as now), so request-before-response ordering still holds on every path.
+>
+> Tests in `internal/llm/openai/openai_test.go`:
+> - Update `TestChatStreamLogsRawSSE` (now misnamed — rename to `TestChatStreamLogsAssembledResponse`): the response record's body is the assembled JSON — `content` is the concatenated `"Hello"`, `finish_reason` is `"stop"`, the `id` round-trips, and it contains no `data:` lines and no `[DONE]` terminator. Its shape matches a non-streaming response record (same envelope structure).
+> - Update `TestChatStreamLogsAbortedStream`: the response record's body is the partial assembled response — it contains `"first"` and `"second"` (the content received before the abort), not `"never seen"`, and not raw SSE lines.
+> - Add `TestChatStreamLogsNoDataError`: a 200 response with an empty SSE body logs a response record whose body is `error: ...` mentioning no data, and `ChatStream` still returns the error.
+> - Unchanged and still passing: `TestChatStreamLogsNon2xx`, `TestChatLogsRequestAndResponse`, `TestLoggingSinkErrorsAreIgnored` (the stream half of it), and the end-to-end chat tests in `internal/chat/chat_test.go` (they assert file counts and the user message in the request log, not response body shape).
+> - Also verify no test still references `data:` lines or `[DONE]` in a *response* record assertion.
+>
+> No other packages change. Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
 
 ## Commit 5: Documentation and gitignore
 
