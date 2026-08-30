@@ -276,7 +276,11 @@ func Run(ctx context.Context, opts Options) error {
 		case sessionFailure:
 			status = prefactor.InstanceFailed
 		}
-		if err := opts.Tracer.FinishSession(ctx, status); err != nil {
+		// The instance finish uses a background context, like the span
+		// finishes: when the session exits via root-ctx cancellation the
+		// session ctx is already dead, and a clean exit must still be
+		// able to record its terminal state.
+		if err := opts.Tracer.FinishSession(context.Background(), status); err != nil {
 			if runErr != nil {
 				return runErr
 			}

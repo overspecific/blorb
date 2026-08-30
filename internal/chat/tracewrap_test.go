@@ -369,6 +369,51 @@ func TestRunTracedLLMSpanRecordsConfiguredModel(t *testing.T) {
 	t.Fatal("no blorb:llm span create recorded")
 }
 
+// TestRunTracedFinishSessionOnCancelledRootCtx verifies the instance
+// finish survives root-context cancellation: exiting the session by
+// cancelling the ctx must still record the terminal instance state.
+func TestRunTracedFinishSessionOnCancelledRootCtx(t *testing.T) {
+	f, srv := newFakePFServer(t)
+
+	var stdout syncBuffer
+	o := chat.Options{Stdout: &stdout}
+	cfg := minimalConfig()
+	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	// stdin blocks on the pipe until we cancel, so the session is alive
+	// when the root ctx goes.
+	stdinRead, stdinWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer stdinWrite.Close()
+	o.Stdin = stdinRead
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- chat.Run(ctx, o) }()
+
+	time.Sleep(50 * time.Millisecond) // let StartSession complete
+	cancel()
+	stdinWrite.Close() // unblock the reader goroutine too
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil (a cancelled root ctx is a clean exit)", err)
+	}
+
+	var instanceFinish map[string]any
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			instanceFinish = c.Body
+		}
+	}
+	if instanceFinish == nil || instanceFinish["status"] != "complete" {
+		t.Errorf("instance finish = %v, want status complete despite root-ctx cancellation", instanceFinish)
+	}
+}
+
 // TestRunNonStreamingClientRendersWithStreamRequested is the untraced
 // sibling: Stream: true with a non-streaming client must still render.
 func TestRunNonStreamingClientRendersWithStreamRequested(t *testing.T) {
