@@ -6,7 +6,7 @@ Tools in blorb.json currently must all be local commands. This plan introduces a
 
 - [x] Commit 1: required `type` field on tool entries (config layer)
 - [x] Commit 2: tool interface and type-tagged registry (tools layer)
-- [ ] Commit 3: builtin tools package with `read` and `grep`
+- [x] Commit 3: builtin tools package with `read` and `grep`
 - [ ] Commit 4: wire `builtin` type through config and registry
 - [ ] Commit 5: README and examples
 
