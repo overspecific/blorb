@@ -903,6 +903,61 @@ func TestChatStreamToolCallMissingName(t *testing.T) {
 	}
 }
 
+func TestChatStreamReasoningOverLimitErrors(t *testing.T) {
+	t.Parallel()
+
+	// Enough chunks of reasoning to exceed the 16 MiB accumulated cap.
+	chunk := strings.Repeat("x", 1<<20)
+	var payloads []string
+	for range 17 {
+		payloads = append(payloads,
+			`{"id":"r","choices":[{"delta":{"reasoning_content":"`+chunk+`"},"finish_reason":null}]}`)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseChunks(w, payloads...)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{Model: "m"}, func(d llm.Delta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("ChatStream succeeded, want a limit error")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Errorf("error = %q, want a limit mention", err)
+	}
+}
+
+func TestChatStreamToolCallArgumentsOverLimitErrors(t *testing.T) {
+	t.Parallel()
+
+	// Enough argument fragments to exceed the 16 MiB accumulated cap for
+	// a single tool call.
+	chunk := strings.Repeat("y", 1<<20)
+	var payloads []string
+	for range 17 {
+		payloads = append(payloads,
+			`{"id":"r","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ls","arguments":"`+chunk+`"}}]},"finish_reason":null}]}`)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseChunks(w, payloads...)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{Model: "m"}, func(d llm.Delta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("ChatStream succeeded, want a limit error")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Errorf("error = %q, want a limit mention", err)
+	}
+}
+
 func TestChatImplementsStreamingClient(t *testing.T) {
 	t.Parallel()
 

@@ -191,6 +191,9 @@ func (a *streamAccumulator) addDelta(chunk *wireStreamChunk, onDelta func(llm.De
 		delta := choice.Delta
 
 		if delta.Reasoning != "" {
+			if a.reasoning.Len()+len(delta.Reasoning) > maxContentLen {
+				return fmt.Errorf("read stream: reasoning exceeds %d byte limit", maxContentLen)
+			}
 			a.reasoning.WriteString(delta.Reasoning)
 			if err := onDelta(llm.Delta{Reasoning: delta.Reasoning}); err != nil {
 				return err
@@ -209,6 +212,9 @@ func (a *streamAccumulator) addDelta(chunk *wireStreamChunk, onDelta func(llm.De
 			wtd := &delta.ToolCalls[i]
 			tc, ok := a.toolCalls[wtd.Index]
 			if !ok {
+				if len(wtd.Function.Arguments) > maxContentLen {
+					return fmt.Errorf("read stream: tool call arguments exceed %d byte limit", maxContentLen)
+				}
 				tc = &wireToolCall{ID: wtd.ID, Type: wtd.Type, Function: wireToolCallFn{Name: wtd.Function.Name, Arguments: wtd.Function.Arguments}}
 				a.toolCalls[wtd.Index] = tc
 				a.order = append(a.order, wtd.Index)
@@ -224,6 +230,9 @@ func (a *streamAccumulator) addDelta(chunk *wireStreamChunk, onDelta func(llm.De
 				}
 				if wtd.Function.Name != "" {
 					tc.Function.Name = wtd.Function.Name
+				}
+				if len(tc.Function.Arguments)+len(wtd.Function.Arguments) > maxContentLen {
+					return fmt.Errorf("read stream: tool call arguments exceed %d byte limit", maxContentLen)
 				}
 				tc.Function.Arguments += wtd.Function.Arguments
 			}
