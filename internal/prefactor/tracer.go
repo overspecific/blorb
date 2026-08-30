@@ -398,6 +398,39 @@ func (tn *Turn) ToolCall(ctx context.Context, name string, args string) (*ToolSp
 	return &ToolSpan{turn: tn, spanID: spanID, name: name}, nil
 }
 
+// OrphanToolResult records a single-shot completed blorb:tool:<name> span
+// for a tool result that arrives without a preceding tool call event (the
+// engine emits these for malformed tool-call arguments and when no tools
+// are configured). failed marks the result as a tool failure.
+func (tn *Turn) OrphanToolResult(ctx context.Context, name, output string, failed bool) error {
+	instanceID, err := tn.tracer.currentInstanceID()
+	if err != nil {
+		return err
+	}
+
+	now := tn.tracer.now()
+	status := StatusComplete
+	if failed {
+		status = StatusFailed
+	}
+	resp, err := tn.tracer.client.CreateSpan(ctx, CreateSpanRequest{
+		Details: SpanDetailsForCreate{
+			AgentInstanceID: instanceID,
+			SchemaName:      ToolSchemaName(name),
+			Status:          status,
+			Payload:         map[string]any{"args": map[string]any{}},
+			ResultPayload:   map[string]any{"output": output, "failed": failed},
+			ParentSpanID:    tn.spanID,
+			StartedAt:       ptr(now),
+			FinishedAt:      ptr(now),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("prefactor: record tool %q result: %w", name, err)
+	}
+	return tn.tracer.observeControl(resp.Control, "record tool result")
+}
+
 // Complete finishes the tool span with its output.
 func (ts *ToolSpan) Complete(output string, failed bool) error {
 	return ts.complete(map[string]any{"output": output, "failed": failed}, nil)

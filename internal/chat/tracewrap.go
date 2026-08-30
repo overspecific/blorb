@@ -130,7 +130,11 @@ func unwrapTracingClient(c llm.Client) llm.Client {
 //     immediately before running the tool, in both streaming and
 //     whole-message modes);
 //   - EventToolResult completes the pending span with the outcome, paired
-//     in order (tools run sequentially within a turn);
+//     in order (tools run sequentially within a turn). When no span is
+//     pending — the engine emits tool results without a preceding tool
+//     call for malformed arguments and "no tools are configured" — a
+//     single-shot completed span records the outcome instead, so a
+//     recoverable model failure does not kill the turn.
 //   - EventAssistantText records a completed blorb:assistant_message span
 //     (whole-message events only, not deltas).
 //
@@ -154,7 +158,10 @@ func traceEvent(turn *prefactor.Turn, print func(engine.Event) error) func(engin
 			pending = append(pending, span)
 		case engine.EventToolResult:
 			if len(pending) == 0 {
-				return fmt.Errorf("prefactor: tool result for %q with no pending tool call span", ev.Name)
+				// Orphan result: no matching tool call event. Record a
+				// single-shot span so the failure is still audited, and
+				// let the turn proceed as it would without tracing.
+				return turn.OrphanToolResult(context.Background(), ev.Name, ev.Output, ev.Failed)
 			}
 			span := pending[0]
 			pending = pending[1:]

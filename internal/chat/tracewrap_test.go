@@ -479,6 +479,65 @@ func TestRunTracedFatalError(t *testing.T) {
 	}
 }
 
+// TestRunTracedOrphanToolResult verifies the engine's orphan tool-result
+// paths (malformed tool-call arguments) produce a single-shot failed tool
+// span instead of killing the turn: the session survives and the final
+// assistant text renders.
+func TestRunTracedOrphanToolResult(t *testing.T) {
+	f, srv := newFakePFServer(t)
+
+	cfg := minimalConfig()
+	cfg.Tools = []config.ToolEntry{{
+		Name:        "echo_tool",
+		Description: "Echoes.",
+		Command:     []string{"echo", "hi"},
+	}}
+
+	var stdout syncBuffer
+	o := chat.Options{Stdout: &stdout}
+	// The model calls the tool with malformed JSON arguments, then
+	// recovers with plain text.
+	newTracedTestOptions(cfg, &o, srv, "run tool\nexit\n",
+		llm.Response{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "c1", Type: "function", FunctionName: "echo_tool", FunctionArgs: `{not json`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "recovered"), FinishReason: llm.FinishStop},
+	)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil (orphan result must not kill the turn)", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "recovered") {
+		t.Errorf("stdout = %q, want the recovered reply", out)
+	}
+
+	// A single-shot tool span records the failed result. It is created
+	// already failed and never finished separately.
+	creates := f.spanCreates()
+	var orphanStatus string
+	for _, c := range creates {
+		if spanSchema(c) == "blorb:tool:echo_tool" {
+			orphanStatus, _ = pfDetail(c)["status"].(string)
+		}
+	}
+	if orphanStatus == "" {
+		t.Fatal("no tool span recorded for the orphan result")
+	}
+	if orphanStatus != "failed" {
+		t.Errorf("orphan tool span status = %q, want failed", orphanStatus)
+	}
+	// creates: turn, user_message, llm, tool(orphan), llm, assistant_message
+	if len(creates) != 6 {
+		t.Errorf("span creates = %d, want 6", len(creates))
+	}
+}
+
 // TestRunTracingDisabledNoSpans verifies tracing off does not record spans.
 func TestRunTracingDisabledNoSpans(t *testing.T) {
 	f, srv := newFakePFServer(t)

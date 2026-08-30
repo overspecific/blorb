@@ -20,6 +20,12 @@ Wire facts (from docs.prefactor.ai, cross-checked against the official SDKs' pay
 - [x] Commit 4: tracer — session as instance, turns/messages as spans
 - [x] Commit 5: wire tracer into chat
 - [x] Commit 6: docs and example
+- [x] Commit 7: tolerate orphan tool results
+- [ ] Commit 8: fix streaming detection through clientHolder
+- [ ] Commit 9: record final assistant text on the turn span
+- [ ] Commit 10: record the model on llm spans
+- [ ] Commit 11: idempotency keys and client cleanups
+- [ ] Commit 12: finish the instance on a background context
 
 ---
 
@@ -127,5 +133,55 @@ Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, exce
 - README.md: add a "Prefactor tracing" section under the existing config documentation — the `prefactor` block reference table (all fields, defaults, which are required), the span model (what maps to what: session → instance, turn/message/llm/tool → spans), the environment variables needed (`PREFACTOR_API_TOKEN` or the configured `api_token_env`), a note that tracing is a hard dependency (a Prefactor failure fails the run rather than continuing untraced), and the terminate behaviour (stopping a run from the Prefactor web app ends the blorb session).
 - examples/: check the existing example structure; if examples carry a blorb.json, add a commented-out `prefactor` block (JSON has no comments, so document it in the example's README or a sibling file) showing a minimal enabled configuration with only `api_token_env` set.
 - Review pass: read the diff end to end — check every tracer error is handled or propagated (never silently dropped), check the terminate path end to end (control response → ErrTerminated → session exit), check that no span is recorded when tracing is disabled, and run the full `bin/qc`.
+
+Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 7: tolerate orphan tool results
+
+A post-build review of Commits 1-6 found six defects, fixed in Commits 7-12. This one: the engine emits `EventToolResult` without a preceding `EventToolCall` on two paths — malformed tool-call arguments (engine.go, the `DecodedArgs` error branch) and "no tools are configured". `traceEvent` (internal/chat/tracewrap.go) errors on these, turning a recoverable model failure into a dead turn.
+
+Fix: when an `EventToolResult` arrives with no pending span, record a single-shot completed tool span (status complete/failed per `ev.Failed`) instead of erroring; the turn proceeds as it did before tracing. Test: traced session where the model emits a tool call with malformed JSON args — assert the turn survives to completion and a tool span records the failure result.
+
+Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 8: fix streaming detection through clientHolder
+
+The `clientHolder` (internal/chat/tracewrap.go) implements `ChatStream` unconditionally, so the engine's `llm.StreamingClient` type assertion always succeeds even when the inner client cannot stream; the engine then suppresses whole-message events and the assistant reply is never rendered.
+
+Fix: in `chat.Run`, set the engine's `Stream` flag from `opts.Stream && inner client implements llm.StreamingClient` (evaluate against the real client, not the holder), or otherwise ensure the holder only advertises streaming when the inner client can. Test: traced + `Stream: true` session with a non-streaming fake client — assert the assistant text renders to stdout and an `assistant_message` span is recorded. Also fix `TestRunTracedPlainTurn`, which currently asserts the buggy behaviour (its "no assistant_message because whole-message events never fire in streaming mode" comment rationalizes the symptom); the streamed case legitimately produces no whole-message events with a streaming client, so keep a distinct test with a genuinely non-streaming client.
+
+Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 9: record final assistant text on the turn span
+
+`runTurn` (internal/chat/chat.go) ignores `RunTurn`'s return value and always calls `turn.Complete("")`, so the `blorb:agent_turn` result payload's `assistant_text` is empty and the span summary (template `{{assistant_text}}`) renders blank.
+
+Fix: capture the final text and pass it to `turn.Complete`. Test: traced session, one plain turn — assert the turn span finish carries the assistant's final text in `result_payload.assistant_text`.
+
+Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 10: record the model on llm spans
+
+The engine never populates `llm.Request.Model` (the provider client injects its configured model at the wire layer), so every `blorb:llm` payload records `model: ""` (internal/prefactor/tracer.go, internal/chat/tracewrap.go).
+
+Fix: pass the configured model (from `config.Provider.Model`) through the chat layer into the tracing client, and use it in the `blorb:llm` payload when the request's model is empty. Test: traced session — assert the `blorb:llm` span create payload carries the configured model name.
+
+Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 11: idempotency keys and client cleanups
+
+Transport-level retries can duplicate a span create when the first request succeeded but the response was lost. The API's `idempotency_key` exists for this and the request types already carry the field; the tracer never sets it.
+
+Fix: the tracer generates a unique idempotency key per create/finish/register/start call (a counter or random value; any client-side scheme works, keys just need uniqueness within the session) and sets it on every mutating request (internal/prefactor/tracer.go). Test: assert all recorded mutating requests against the fake server carry a non-empty, unique `idempotency_key`.
+
+Also tidy the smaller client findings in the same commit: `SpanDetailsForCreate.SensitiveEncoding` is typed `string` but the API field is a bool — fix the type (it is never set today, so this is a footgun fix, not a behaviour change); the doubled `chat: prefactor: prefactor:` prefix in errors from chat.go (keep one); and drop the dead code — `finishSpan`'s unused `what` parameter, `observeControl`'s unused `what` parameter, the `errorsAs` wrapper in client.go, and the `retry_after_ms` header read (the docs put `retry_after_ms` in the response body, not headers; parse it from the body on rate-limited responses or drop it in favour of the `Retry-After` header alone).
+
+Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 12: finish the instance on a background context
+
+Span finishes deliberately use `context.Background()` so they survive turn cancellation, but `FinishSession` (internal/chat/chat.go) uses the session ctx; when the session exits via root-ctx cancellation the final call fails instantly and a clean exit becomes an error.
+
+Fix: `FinishSession` uses `context.Background()` like the span finishes. Test: session exited via a cancelled root context — assert the instance still finishes complete.
 
 Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
