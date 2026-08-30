@@ -87,12 +87,24 @@ func Run(ctx context.Context, opts Options) error {
 	// engine changes; the engine sees a stable llm.Client.
 	holder := &clientHolder{inner: client}
 
+	// The engine suppresses whole-message events when it streams; only
+	// claim streaming when the real (inner) client can stream — the
+	// holder implements ChatStream unconditionally, so asserting on it
+	// would always succeed and silently swallow replies from
+	// non-streaming clients. The per-turn tracing wrapper preserves the
+	// inner capability (its ChatStream falls back to Chat), so checking
+	// once here is enough.
+	streaming := false
+	if _, ok := client.(llm.StreamingClient); ok {
+		streaming = true
+	}
+
 	eng := engine.New(engine.EngineConfig{
 		Client:       holder,
 		Tools:        registry,
 		SystemPrompt: opts.Config.SystemPrompt,
 		MaxTurns:     opts.Config.MaxTurnsOrDefault(),
-		Stream:       opts.Stream,
+		Stream:       opts.Stream && streaming,
 	})
 
 	// Session-level tracing: register and start the Prefactor instance

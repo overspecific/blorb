@@ -201,24 +201,34 @@ func spanSchema(c pfCall) string {
 }
 
 // TestRunTracedPlainTurn verifies one trace-configured session with one
-// streamed turn produces a correct span chain against a fake server.
+// streaming turn produces a correct span chain against a fake server. The
+// streaming fake client produces delta events only, so no
+// blorb:assistant_message span is recorded (that span comes from
+// whole-message events; see TestRunTracedNonStreamingTurn).
 func TestRunTracedPlainTurn(t *testing.T) {
 	f, srv := newFakePFServer(t)
 
 	var stdout syncBuffer
-	o := chat.Options{Stream: true, Stdout: &stdout}
+	o := chat.Options{Stdout: &stdout}
 	cfg := minimalConfig()
 	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 	)
+	o.Stream = true
+	o.NewClient = func(config.Config) (llm.Client, error) {
+		return &streamingFakeClient{
+			responses: []llm.Response{
+				{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+			},
+		}, nil
+	}
 
 	if err := chat.Run(context.Background(), o); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 
-	// Span creates: turn, user_message, llm (one streamed round = one llm
-	// span, no assistant_message because whole-message events never fire
-	// in streaming mode).
+	// Span creates: turn, user_message, llm (the streamed round is one
+	// llm span; no assistant_message because only delta events fire).
 	creates := f.spanCreates()
 	var schemas []string
 	for _, c := range creates {
@@ -234,11 +244,6 @@ func TestRunTracedPlainTurn(t *testing.T) {
 		}
 	}
 
-	// All span parents chain to the turn span.
-	turnSpanDetail := pfDetail(creates[0])
-	turnID, _ := turnSpanDetail["id"].(string)
-	_ = turnID // id comes from the response, not the create body
-
 	// Instance finished complete.
 	var instanceFinish map[string]any
 	for _, c := range f.finishCalls() {
@@ -248,6 +253,68 @@ func TestRunTracedPlainTurn(t *testing.T) {
 	}
 	if instanceFinish == nil || instanceFinish["status"] != "complete" {
 		t.Errorf("instance finish = %v, want status complete", instanceFinish)
+	}
+}
+
+// TestRunTracedNonStreamingTurn verifies that with Stream: true requested
+// but a non-streaming client, the engine falls back to the whole-message
+// path: the assistant text renders and an assistant_message span is
+// recorded. This pins the clientHolder streaming-detection fix.
+func TestRunTracedNonStreamingTurn(t *testing.T) {
+	f, srv := newFakePFServer(t)
+
+	var stdout syncBuffer
+	o := chat.Options{Stream: true, Stdout: &stdout}
+	cfg := minimalConfig()
+	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	// The whole-message path ran: the reply renders.
+	if out := stdout.String(); !strings.Contains(out, ">>> Assistant:\nhi!") {
+		t.Errorf("stdout = %q, want the reply under a heading", out)
+	}
+
+	// Span creates include the assistant_message span.
+	creates := f.spanCreates()
+	var schemas []string
+	for _, c := range creates {
+		schemas = append(schemas, spanSchema(c))
+	}
+	want := []string{"blorb:agent_turn", "blorb:user_message", "blorb:llm", "blorb:assistant_message"}
+	if len(schemas) != len(want) {
+		t.Fatalf("span schemas = %v, want %v", schemas, want)
+	}
+	for i, s := range want {
+		if schemas[i] != s {
+			t.Errorf("span %d schema = %q, want %q", i, schemas[i], s)
+		}
+	}
+}
+
+// TestRunNonStreamingClientRendersWithStreamRequested is the untraced
+// sibling: Stream: true with a non-streaming client must still render.
+func TestRunNonStreamingClientRendersWithStreamRequested(t *testing.T) {
+	var stdout syncBuffer
+	o := chat.Options{Stream: true, Stdout: &stdout}
+	o.Config = minimalConfig()
+	o.Version = "test"
+	o.Stdin = strings.NewReader("hello\nexit\n")
+	o.NewClient = func(config.Config) (llm.Client, error) {
+		return &fakeClient{responses: []llm.Response{
+			{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+		}}, nil
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if out := stdout.String(); !strings.Contains(out, ">>> Assistant:\nhi!") {
+		t.Errorf("stdout = %q, want the reply under a heading", out)
 	}
 }
 
