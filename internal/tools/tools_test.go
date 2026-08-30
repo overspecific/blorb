@@ -30,7 +30,12 @@ func requireExecTools(t *testing.T) {
 }
 
 func entry(name, description string, command ...string) config.ToolEntry {
-	return config.ToolEntry{Name: name, Description: description, Command: command}
+	return config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        name,
+		Description: description,
+		Command:     command,
+	}
 }
 
 func TestNewRegistry(t *testing.T) {
@@ -103,7 +108,7 @@ func TestDefinitions(t *testing.T) {
 	t.Parallel()
 
 	r, err := tools.NewRegistry([]config.ToolEntry{
-		{Name: "a_tool", Description: "With schema.", Command: []string{"echo"}, ArgsSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"number"}}}`)},
+		{Type: config.ToolTypeCommand, Name: "a_tool", Description: "With schema.", Command: []string{"echo"}, ArgsSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"number"}}}`)},
 		entry("b_tool", "Without schema.", "echo"),
 	})
 	if err != nil {

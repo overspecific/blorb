@@ -9,9 +9,8 @@
   "max_turns": 5,
   "tools": [
     {
-      "type": "command",
       "name": "t",
-      "command": ["echo"]
+      "description": "No type."
     }
   ]
 }

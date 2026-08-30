@@ -12,6 +12,7 @@
   },
   "tools": [
     {
+      "type": "command",
       "name": "echo",
       "description": "Echoes back whatever text you pass in, prefixed with 'echo: '. Use it whenever the user asks you to repeat something.",
       "command": ["jq", "-r", "\"echo: \" + .message"],
@@ -27,6 +28,7 @@
       }
     },
     {
+      "type": "command",
       "name": "current_time",
       "description": "Returns the current date and time.",
       "command": ["date"]

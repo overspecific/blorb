@@ -115,6 +115,7 @@ func TestValidateRejectsBadArgsSchema(t *testing.T) {
 		},
 		MaxTurns: 5,
 		Tools: []config.ToolEntry{{
+			Type:        config.ToolTypeCommand,
 			Name:        "t",
 			Description: "Broken schema.",
 			Command:     []string{"echo"},
@@ -206,6 +207,52 @@ func TestPrefactorDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateBuiltinTypePlaceholder(t *testing.T) {
+	// Builtin entries carry only the shared name/description checks until
+	// the builtin field and its settings are wired up.
+	base := config.Config{
+		Name:         "helper",
+		SystemPrompt: "You are helpful.",
+		Provider: config.Provider{
+			Type:    config.ProviderTypeOpenAI,
+			Model:   "m",
+			BaseURL: "http://localhost:1",
+		},
+		MaxTurns: 1,
+		Tools: []config.ToolEntry{{
+			Type:        config.ToolTypeBuiltin,
+			Name:        "t",
+			Description: "A builtin tool.",
+		}},
+	}
+	if err := base.Validate(); err != nil {
+		t.Errorf("Validate error = %v, want nil for a minimal builtin entry", err)
+	}
+
+	case_ := base
+	case_.Tools = append([]config.ToolEntry(nil), base.Tools...)
+
+	noName := case_
+	noName.Tools[0].Name = ""
+	if err := noName.Validate(); err == nil || !contains(err.Error(), "name is required") {
+		t.Errorf("Validate error = %v, want a name error", err)
+	}
+
+	case_ = base
+	case_.Tools = append([]config.ToolEntry(nil), base.Tools...)
+	case_.Tools[0].Name = "bad name.dotted"
+	if err := case_.Validate(); err == nil || !contains(err.Error(), "must match") {
+		t.Errorf("Validate error = %v, want a name pattern error", err)
+	}
+
+	case_ = base
+	case_.Tools = append([]config.ToolEntry(nil), base.Tools...)
+	case_.Tools[0].Description = ""
+	if err := case_.Validate(); err == nil || !contains(err.Error(), "description is required") {
+		t.Errorf("Validate error = %v, want a description error", err)
+	}
+}
+
 func TestLoadRejects(t *testing.T) {
 	t.Parallel()
 
@@ -221,6 +268,8 @@ func TestLoadRejects(t *testing.T) {
 		{"bad_base_url_scheme.json", []string{"ftp", "http or https"}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
+		{"tool_missing_type.json", []string{"type is required"}},
+		{"tool_unknown_type.json", []string{"unknown tool type"}},
 		{"tool_missing_command.json", []string{"command is required"}},
 		{"tool_bad_name.json", []string{"must match"}},
 		{"duplicate_tool_names.json", []string{"duplicate tool name"}},

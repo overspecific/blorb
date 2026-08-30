@@ -94,8 +94,8 @@ func toolRegistry(t *testing.T) *tools.Registry {
 	t.Helper()
 
 	r, err := tools.NewRegistry([]config.ToolEntry{
-		{Name: "echo", Description: "Echo stdin.", Command: []string{"sh", "-c", `printf '%s' "$(cat)"`}},
-		{Name: "recorder", Description: "Records invocations.", Command: []string{"true"}},
+		{Type: config.ToolTypeCommand, Name: "echo", Description: "Echo stdin.", Command: []string{"sh", "-c", `printf '%s' "$(cat)"`}},
+		{Type: config.ToolTypeCommand, Name: "recorder", Description: "Records invocations.", Command: []string{"true"}},
 	}, tools.WithTimeout(5_000_000_000))
 	if err != nil {
 		t.Fatalf("NewRegistry error = %v, want nil", err)

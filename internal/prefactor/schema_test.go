@@ -26,12 +26,14 @@ func testRegistry(t *testing.T, entries []config.ToolEntry) *tools.Registry {
 func TestDefaultAgentSchemaVersionSpanTypes(t *testing.T) {
 	reg := testRegistry(t, []config.ToolEntry{
 		{
+			Type:        config.ToolTypeCommand,
 			Name:        "list_files",
 			Description: "List files.",
 			Command:     []string{"ls"},
 			ArgsSchema:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
 		},
 		{
+			Type:        config.ToolTypeCommand,
 			Name:        "get_time",
 			Description: "Get the time.",
 			Command:     []string{"date"},
@@ -68,6 +70,7 @@ func TestToolSpanParamsMatchArgsSchema(t *testing.T) {
 	argsSchema := `{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`
 	reg := testRegistry(t, []config.ToolEntry{
 		{
+			Type:        config.ToolTypeCommand,
 			Name:        "list_files",
 			Description: "List files.",
 			Command:     []string{"ls"},
@@ -102,7 +105,7 @@ func TestToolSpanParamsMatchArgsSchema(t *testing.T) {
 
 func TestToolSpanParamsFallbackOpenObject(t *testing.T) {
 	reg := testRegistry(t, []config.ToolEntry{
-		{Name: "no_schema", Description: "No schema.", Command: []string{"date"}},
+		{Type: config.ToolTypeCommand, Name: "no_schema", Description: "No schema.", Command: []string{"date"}},
 	})
 
 	schema := prefactor.DefaultAgentSchemaVersion("helper", reg)
@@ -124,6 +127,7 @@ func TestToolSpanParamsFallbackOpenObject(t *testing.T) {
 func TestSchemaGoldenMarshal(t *testing.T) {
 	reg := testRegistry(t, []config.ToolEntry{
 		{
+			Type:        config.ToolTypeCommand,
 			Name:        "list_files",
 			Description: "List files.",
 			Command:     []string{"ls"},
@@ -154,7 +158,7 @@ func TestSchemaGoldenMarshal(t *testing.T) {
 func TestSchemaIdentifierStable(t *testing.T) {
 	newSchema := func() prefactor.AgentSchemaVersion {
 		reg := testRegistry(t, []config.ToolEntry{
-			{Name: "t", Description: "A tool.", Command: []string{"echo"}},
+			{Type: config.ToolTypeCommand, Name: "t", Description: "A tool.", Command: []string{"echo"}},
 		})
 		return prefactor.DefaultAgentSchemaVersion("helper", reg)
 	}
@@ -174,10 +178,10 @@ func TestSchemaIdentifierStable(t *testing.T) {
 
 func TestSchemaIdentifierChangesWhenToolSchemaChanges(t *testing.T) {
 	reg1 := testRegistry(t, []config.ToolEntry{
-		{Name: "t", Description: "A tool.", Command: []string{"echo"}, ArgsSchema: json.RawMessage(`{"type":"object"}`)},
+		{Type: config.ToolTypeCommand, Name: "t", Description: "A tool.", Command: []string{"echo"}, ArgsSchema: json.RawMessage(`{"type":"object"}`)},
 	})
 	reg2 := testRegistry(t, []config.ToolEntry{
-		{Name: "t", Description: "A tool.", Command: []string{"echo"}, ArgsSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`)},
+		{Type: config.ToolTypeCommand, Name: "t", Description: "A tool.", Command: []string{"echo"}, ArgsSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`)},
 	})
 
 	id1 := prefactor.DefaultAgentSchemaVersion("helper", reg1).ExternalIdentifier
@@ -189,11 +193,11 @@ func TestSchemaIdentifierChangesWhenToolSchemaChanges(t *testing.T) {
 
 func TestSchemaIdentifierChangesWhenToolsChange(t *testing.T) {
 	reg1 := testRegistry(t, []config.ToolEntry{
-		{Name: "a", Description: "Tool a.", Command: []string{"echo"}},
+		{Type: config.ToolTypeCommand, Name: "a", Description: "Tool a.", Command: []string{"echo"}},
 	})
 	reg2 := testRegistry(t, []config.ToolEntry{
-		{Name: "a", Description: "Tool a.", Command: []string{"echo"}},
-		{Name: "b", Description: "Tool b.", Command: []string{"echo"}},
+		{Type: config.ToolTypeCommand, Name: "a", Description: "Tool a.", Command: []string{"echo"}},
+		{Type: config.ToolTypeCommand, Name: "b", Description: "Tool b.", Command: []string{"echo"}},
 	})
 
 	id1 := prefactor.DefaultAgentSchemaVersion("helper", reg1).ExternalIdentifier

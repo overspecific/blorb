@@ -9,9 +9,9 @@
   "max_turns": 5,
   "tools": [
     {
-      "type": "command",
+      "type": "webhook",
       "name": "t",
-      "command": ["echo"]
+      "description": "Unknown type."
     }
   ]
 }

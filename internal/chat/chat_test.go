@@ -227,6 +227,7 @@ func TestRunStreamedSameToolTwiceInOneRound(t *testing.T) {
 
 	cfg := minimalConfig()
 	cfg.Tools = []config.ToolEntry{{
+		Type:        config.ToolTypeCommand,
 		Name:        "touch1",
 		Description: "Creates a marker file.",
 		// Both calls echo their marker argument; the command never runs
@@ -270,6 +271,7 @@ func TestRunStreamedToolCallDeltas(t *testing.T) {
 
 	cfg := minimalConfig()
 	cfg.Tools = []config.ToolEntry{{
+		Type:        config.ToolTypeCommand,
 		Name:        "touch",
 		Description: "Creates a marker file.",
 		Command:     []string{"touch", marker},
@@ -331,6 +333,7 @@ func TestRunStreamedToolRoundsRenderPerRoundHeadings(t *testing.T) {
 
 	cfg := minimalConfig()
 	cfg.Tools = []config.ToolEntry{{
+		Type:        config.ToolTypeCommand,
 		Name:        "touch",
 		Description: "Creates a marker file.",
 		Command:     []string{"touch", marker},
@@ -471,6 +474,7 @@ func TestRunToolEventsOnStdout(t *testing.T) {
 
 	cfg := minimalConfig()
 	cfg.Tools = []config.ToolEntry{{
+		Type:        config.ToolTypeCommand,
 		Name:        "write_marker",
 		Description: "Creates a marker file.",
 		Command:     []string{"touch", File},
@@ -529,6 +533,7 @@ func TestRunStartupErrors(t *testing.T) {
 
 		cfg := minimalConfig()
 		cfg.Tools = []config.ToolEntry{{
+			Type: config.ToolTypeCommand,
 			Name: "bad", Description: "Bad tool.", Command: []string{},
 		}}
 
@@ -922,6 +927,7 @@ func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
 			"base_url": "placeholder",
 		},
 		"tools": []map[string]any{{
+			"type":        "command",
 			"name":        "echo",
 			"description": "Echo stdin back.",
 			"command":     []string{"sh", "-c", `printf '%s' "$(cat)" && echo`},

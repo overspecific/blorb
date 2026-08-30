@@ -443,6 +443,7 @@ func TestRunTracedToolTurn(t *testing.T) {
 
 	cfg := minimalConfig()
 	cfg.Tools = []config.ToolEntry{{
+		Type:        config.ToolTypeCommand,
 		Name:        "echo_tool",
 		Description: "Echoes.",
 		Command:     []string{"echo", "hi"},
@@ -740,6 +741,7 @@ func TestRunTracedOrphanToolResult(t *testing.T) {
 
 	cfg := minimalConfig()
 	cfg.Tools = []config.ToolEntry{{
+		Type:        config.ToolTypeCommand,
 		Name:        "echo_tool",
 		Description: "Echoes.",
 		Command:     []string{"echo", "hi"},

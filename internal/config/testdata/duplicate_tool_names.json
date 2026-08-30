@@ -9,11 +9,13 @@
   "max_turns": 5,
   "tools": [
     {
+      "type": "command",
       "name": "t",
       "description": "Duplicate.",
       "command": ["echo"]
     },
     {
+      "type": "command",
       "name": "t",
       "description": "Duplicate.",
       "command": ["echo"]

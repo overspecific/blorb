@@ -11,7 +11,19 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
+
+// ToolType selects the kind of a tool entry; the discriminator determines
+// which other fields on ToolEntry are recognized.
+type ToolType string
+
+// ToolTypeCommand selects a subprocess tool invoked via its command.
+const ToolTypeCommand ToolType = "command"
+
+// ToolTypeBuiltin selects a tool implemented inside blorb itself, chosen by
+// the builtin field.
+const ToolTypeBuiltin ToolType = "builtin"
 
 // ToolNamePattern is the strict pattern tool names must match so they are
 // valid function names for the API and safe to exec.
@@ -164,12 +176,19 @@ func (p *Provider) APIKeyEnvOrDefault() string {
 	return *p.APIKeyEnv
 }
 
-// ToolEntry is a tool declaration in blorb.json.
+// ToolEntry is a tool declaration in blorb.json. The Type discriminator
+// determines which other fields are recognized; per-type parsing and
+// validation lives here rather than being flattened onto Config so future
+// tool types can add their own fields.
 type ToolEntry struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Command     []string        `json:"command"`
-	ArgsSchema  json.RawMessage `json:"args_schema,omitempty"`
+	Type ToolType `json:"type"`
+
+	Name        string `json:"name"`
+	Description string `json:"description"`
+
+	// Fields for type "command".
+	Command    []string        `json:"command,omitempty"`
+	ArgsSchema json.RawMessage `json:"args_schema,omitempty"`
 }
 
 // Load reads and parses the blorb.json file at path, then validates it.
@@ -278,7 +297,16 @@ func (p *Provider) validate() error {
 	return nil
 }
 
+// SupportedToolTypes lists the tool types this build recognizes, sorted
+// alphabetically.
+func SupportedToolTypes() []string {
+	return []string{string(ToolTypeBuiltin), string(ToolTypeCommand)}
+}
+
 func (t *ToolEntry) validate() error {
+	if t.Type == "" {
+		return fmt.Errorf("type is required (one of: %s)", strings.Join(SupportedToolTypes(), ", "))
+	}
 	if t.Name == "" {
 		return fmt.Errorf("name is required")
 	}
@@ -288,16 +316,25 @@ func (t *ToolEntry) validate() error {
 	if t.Description == "" {
 		return fmt.Errorf("description is required")
 	}
-	if len(t.Command) == 0 {
-		return fmt.Errorf("command is required")
-	}
-	for _, cmd := range t.Command {
-		if cmd == "" {
-			return fmt.Errorf("command must not contain empty strings")
+	switch t.Type {
+	case ToolTypeCommand:
+		if len(t.Command) == 0 {
+			return fmt.Errorf("command is required")
 		}
-	}
-	if len(t.ArgsSchema) > 0 && !json.Valid(t.ArgsSchema) {
-		return fmt.Errorf("args_schema must be valid JSON")
+		for _, cmd := range t.Command {
+			if cmd == "" {
+				return fmt.Errorf("command must not contain empty strings")
+			}
+		}
+		if len(t.ArgsSchema) > 0 && !json.Valid(t.ArgsSchema) {
+			return fmt.Errorf("args_schema must be valid JSON")
+		}
+	case ToolTypeBuiltin:
+		// Per-type validation (the builtin field and its settings) is
+		// wired up in a later stage; for now builtin entries carry only
+		// the shared name/description checks above.
+	default:
+		return fmt.Errorf("unknown tool type %q (supported: %s)", t.Type, strings.Join(SupportedToolTypes(), ", "))
 	}
 	return nil
 }

@@ -9,6 +9,7 @@
   "max_turns": 5,
   "tools": [
     {
+      "type": "command",
       "name": "bad name.dotted",
       "description": "Name contains characters outside the allowed set.",
       "command": ["echo"]
