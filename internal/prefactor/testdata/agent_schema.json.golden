@@ -1,0 +1,153 @@
+{
+  "external_identifier": "blorb-schema-b7ff72f8",
+  "span_type_schemas": [
+    {
+      "name": "blorb:agent_turn",
+      "params_schema": {
+        "additionalProperties": true,
+        "properties": {
+          "user_message": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "result_schema": {
+        "additionalProperties": true,
+        "properties": {
+          "assistant_text": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "template": "{{assistant_text}}"
+    },
+    {
+      "name": "blorb:user_message",
+      "params_schema": {
+        "additionalProperties": true,
+        "properties": {
+          "content": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "name": "blorb:assistant_message",
+      "params_schema": {
+        "additionalProperties": true,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "result_schema": {
+        "additionalProperties": true,
+        "properties": {
+          "content": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "name": "blorb:llm",
+      "params_schema": {
+        "additionalProperties": true,
+        "properties": {
+          "messages": {
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "result_schema": {
+        "additionalProperties": true,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "finish_reason": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "type": "array"
+          },
+          "usage": {
+            "additionalProperties": true,
+            "properties": {
+              "completion_tokens": {
+                "type": "integer"
+              },
+              "prompt_tokens": {
+                "type": "integer"
+              },
+              "total_tokens": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "name": "blorb:tool:list_files",
+      "params_schema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "result_schema": {
+        "additionalProperties": true,
+        "properties": {
+          "failed": {
+            "type": "boolean"
+          },
+          "output": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "template": "{{output}}"
+    }
+  ]
+}

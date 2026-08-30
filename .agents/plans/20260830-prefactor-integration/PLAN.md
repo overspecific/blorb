@@ -16,7 +16,7 @@ Wire facts (from docs.prefactor.ai, cross-checked against the official SDKs' pay
 
 - [x] Commit 1: prefactor config schema
 - [x] Commit 2: prefactor HTTP client
-- [ ] Commit 3: activity schemas for blorb spans
+- [x] Commit 3: activity schemas for blorb spans
 - [ ] Commit 4: tracer — session as instance, turns/messages as spans
 - [ ] Commit 5: wire tracer into chat
 - [ ] Commit 6: docs and example
