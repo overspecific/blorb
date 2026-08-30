@@ -1,0 +1,13 @@
+{
+  "name": "helper",
+  "system_prompt": "You are helpful.",
+  "provider": {"type": "openai", "model": "gpt-4o-mini", "base_url": "https://api.example.com/v1"},
+  "max_turns": 5,
+  "tools": [
+    {
+      "type": "builtin",
+      "name": "t",
+      "description": "No builtin field."
+    }
+  ]
+}

@@ -207,9 +207,10 @@ func TestPrefactorDefaults(t *testing.T) {
 	}
 }
 
-func TestValidateBuiltinTypePlaceholder(t *testing.T) {
-	// Builtin entries carry only the shared name/description checks until
-	// the builtin field and its settings are wired up.
+func TestValidateBuiltinEntry(t *testing.T) {
+	// Builtin entries carry the shared name and description checks, plus
+	// per-type validation of the builtin field, its settings object, and
+	// the command-only fields they must not carry.
 	base := config.Config{
 		Name:         "helper",
 		SystemPrompt: "You are helpful.",
@@ -223,6 +224,8 @@ func TestValidateBuiltinTypePlaceholder(t *testing.T) {
 			Type:        config.ToolTypeBuiltin,
 			Name:        "t",
 			Description: "A builtin tool.",
+			Builtin:     "read",
+			Config:      json.RawMessage(`{"base_dir":"."}`),
 		}},
 	}
 	if err := base.Validate(); err != nil {
@@ -272,6 +275,15 @@ func TestLoadRejects(t *testing.T) {
 		{"tool_unknown_type.json", []string{"unknown tool type"}},
 		{"tool_missing_command.json", []string{"command is required"}},
 		{"tool_bad_name.json", []string{"must match"}},
+		{"tool_builtin_unknown.json", []string{"unknown builtin", "nope"}},
+		{"tool_builtin_missing_builtin.json", []string{"builtin is required"}},
+		{"tool_builtin_missing_config.json", []string{"base_dir is required"}},
+		{"tool_builtin_bad_config.json", []string{"base_dir"}},
+		{"tool_builtin_unknown_config_field.json", []string{"extra"}},
+		{"tool_builtin_with_command.json", []string{"command is not valid for builtin tools"}},
+		{"tool_builtin_with_args_schema.json", []string{"args_schema is not valid for builtin tools"}},
+		{"tool_command_with_builtin.json", []string{"builtin is not valid for command tools"}},
+		{"tool_command_with_config.json", []string{"config is not valid for command tools"}},
 		{"duplicate_tool_names.json", []string{"duplicate tool name"}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
 		{"negative_max_turns.json", []string{"max_turns"}},
@@ -295,6 +307,29 @@ func TestLoadRejects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadBuiltinValid(t *testing.T) {
+	cfg, err := loadTestdata(t, "tool_builtin_valid.json")
+	if err != nil {
+		t.Fatalf("Load(tool_builtin_valid.json) error = %v, want nil", err)
+	}
+	if len(cfg.Tools) != 1 {
+		t.Fatalf("len(Tools) = %d, want 1", len(cfg.Tools))
+	}
+	tool := cfg.Tools[0]
+	if tool.Type != config.ToolTypeBuiltin {
+		t.Errorf("Type = %q, want builtin", tool.Type)
+	}
+	if tool.Builtin != "read" {
+		t.Errorf("Builtin = %q, want read", tool.Builtin)
+	}
+	if len(tool.Config) == 0 || !json.Valid(tool.Config) {
+		t.Errorf("Config = %s, want the raw config object", tool.Config)
+	}
+	if len(tool.Command) != 0 {
+		t.Errorf("Command = %v, want empty for a builtin entry", tool.Command)
 	}
 }
 

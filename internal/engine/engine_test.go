@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -215,6 +217,72 @@ func TestRunTurnSingleToolCall(t *testing.T) {
 	}
 	// The tool response carries no content, so the sequence is tool call,
 	// tool result, then the final assistant text.
+	want := []engine.EventKind{engine.EventToolCall, engine.EventToolResult, engine.EventAssistantText}
+	if len(kinds) != len(want) {
+		t.Fatalf("event kinds = %v, want %v", kinds, want)
+	}
+	for i := range want {
+		if kinds[i] != want[i] {
+			t.Errorf("event kind[%d] = %v, want %v", i, kinds[i], want[i])
+		}
+	}
+}
+
+func TestRunTurnBuiltinToolCall(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	if err := os.WriteFile(filepath.Join(base, "note.txt"), []byte("engine builtin content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := tools.NewRegistry([]config.ToolEntry{{
+		Type:        config.ToolTypeBuiltin,
+		Name:        "read",
+		Description: "Read a file.",
+		Builtin:     "read",
+		Config:      json.RawMessage(`{"base_dir":"` + base + `"}`),
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	fc := &fakeClient{responses: []llm.Response{
+		toolCallResp(call("call_1", "read", `{"path":"note.txt"}`)),
+		textResp("done"),
+	}}
+	e := engine.New(engine.EngineConfig{Client: fc, Tools: r})
+
+	var events []engine.Event
+	final, err := e.RunTurn(context.Background(), "read the note", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if final != "done" {
+		t.Errorf("final = %q, want %q", final, "done")
+	}
+
+	if len(fc.requests) != 2 {
+		t.Fatalf("API calls = %d, want 2", len(fc.requests))
+	}
+	second := fc.requests[1].Messages
+	if len(second) != 3 {
+		t.Fatalf("second request messages = %d, want 3", len(second))
+	}
+	toolMsg := second[2]
+	if toolMsg.Role != llm.RoleTool || toolMsg.ToolCallID != "call_1" {
+		t.Errorf("tool result message = %+v, want role tool with tool_call_id call_1", toolMsg)
+	}
+	if toolMsg.Content != "engine builtin content" {
+		t.Errorf("tool result content = %q, want %q (read through the builtin)", toolMsg.Content, "engine builtin content")
+	}
+
+	kinds := []engine.EventKind{}
+	for _, ev := range events {
+		kinds = append(kinds, ev.Kind)
+	}
 	want := []engine.EventKind{engine.EventToolCall, engine.EventToolResult, engine.EventAssistantText}
 	if len(kinds) != len(want) {
 		t.Fatalf("event kinds = %v, want %v", kinds, want)

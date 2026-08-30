@@ -93,7 +93,7 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 		case config.ToolTypeCommand:
 			t, err = newCommandTool(e)
 		case config.ToolTypeBuiltin:
-			return nil, fmt.Errorf("tool %q: builtin tools are not yet supported", e.Name)
+			t, err = newBuiltinTool(e)
 		default:
 			err = fmt.Errorf("tool %q: unknown tool type %q (supported: %s)",
 				e.Name, e.Type, strings.Join(config.SupportedToolTypes(), ", "))

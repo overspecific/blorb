@@ -11,7 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/overspecific/blorb/internal/tools/builtin"
 )
 
 // ToolType selects the kind of a tool entry; the discriminator determines
@@ -189,6 +192,15 @@ type ToolEntry struct {
 	// Fields for type "command".
 	Command    []string        `json:"command,omitempty"`
 	ArgsSchema json.RawMessage `json:"args_schema,omitempty"`
+
+	// Fields for type "builtin". Builtin selects the implementation from
+	// the builtin package; Config is the opaque settings object whose
+	// shape the selected builtin alone defines and validates. Config is a
+	// RawMessage so it bypasses top-level unknown-field rejection:
+	// per-builtin unknown-field checks happen inside each builtin's
+	// parser.
+	Builtin string          `json:"builtin,omitempty"`
+	Config  json.RawMessage `json:"config,omitempty"`
 }
 
 // Load reads and parses the blorb.json file at path, then validates it.
@@ -329,10 +341,28 @@ func (t *ToolEntry) validate() error {
 		if len(t.ArgsSchema) > 0 && !json.Valid(t.ArgsSchema) {
 			return fmt.Errorf("args_schema must be valid JSON")
 		}
+		if t.Builtin != "" {
+			return fmt.Errorf("builtin is not valid for command tools")
+		}
+		if len(t.Config) > 0 {
+			return fmt.Errorf("config is not valid for command tools")
+		}
 	case ToolTypeBuiltin:
-		// Per-type validation (the builtin field and its settings) is
-		// wired up in a later stage; for now builtin entries carry only
-		// the shared name/description checks above.
+		if t.Builtin == "" {
+			return fmt.Errorf("builtin is required (one of: %s)", strings.Join(builtin.Supported(), ", "))
+		}
+		if !slices.Contains(builtin.Supported(), t.Builtin) {
+			return fmt.Errorf("unknown builtin %q (supported: %s)", t.Builtin, strings.Join(builtin.Supported(), ", "))
+		}
+		if len(t.Command) > 0 {
+			return fmt.Errorf("command is not valid for builtin tools")
+		}
+		if len(t.ArgsSchema) > 0 {
+			return fmt.Errorf("args_schema is not valid for builtin tools")
+		}
+		if _, err := builtin.ParseConfig(t.Builtin, t.Config); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown tool type %q (supported: %s)", t.Type, strings.Join(SupportedToolTypes(), ", "))
 	}
