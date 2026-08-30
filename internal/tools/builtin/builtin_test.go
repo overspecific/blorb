@@ -16,7 +16,7 @@ import (
 
 // opts parses config settings for the named builtin and prepares them
 // (opening the file builtins' sandbox root), failing the test on error.
-// The caller is not required to Clean up: the roots close with the process,
+// The caller is not required to clean up: the roots close with the process,
 // and t.TempDir cleanup does not depend on them.
 func opts(t *testing.T, name, raw string) builtin.Options {
 	t.Helper()

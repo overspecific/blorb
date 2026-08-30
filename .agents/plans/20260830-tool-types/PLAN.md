@@ -12,7 +12,7 @@ Tools in blorb.json currently must all be local commands. This plan introduces a
 - [x] Commit 6: hold the `os.Root` for the tool's lifetime (security)
 - [x] Commit 7: normalize trailing-slash grep paths
 - [x] Commit 8: make builtins honor the per-call context/timeout
-- [ ] Commit 9: minor nits (fixture typo, dead test variable, oversized-read message)
+- [x] Commit 9: minor nits (fixture typo, dead test variable, oversized-read message)
 
 ---
 
