@@ -13,12 +13,16 @@ import (
 // Living in package prefactor keeps it out of the shipped binaries while
 // still running under bin/qc.
 func TestExampleConfigValid(t *testing.T) {
-	path := filepath.Join("..", "..", "examples", "simple", "blorb.json")
-	if _, err := os.Stat(path); err != nil {
+	exampleDir := filepath.Join("..", "..", "examples", "simple")
+	if _, err := os.Stat(exampleDir); err != nil {
 		t.Skipf("example not present: %v", err)
 	}
 
-	cfg, err := config.Load(path)
+	// The example config resolves its tools' base_dir against the working
+	// directory; the example README documents running from the repo root.
+	t.Chdir(filepath.Join("..", ".."))
+
+	cfg, err := config.Load(filepath.Join("examples", "simple", "blorb.json"))
 	if err != nil {
 		t.Fatalf("Load(examples/simple/blorb.json) error = %v, want nil", err)
 	}

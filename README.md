@@ -243,7 +243,7 @@ blorb chat
 
 ## Example
 
-See [examples/simple](examples/simple) for a minimal agent with `echo` and `current_time` command tools and `read`/`grep` builtins, including notes on pointing the provider at different OpenAI-compatible servers.
+See [examples/simple](examples/simple) for a minimal agent with `echo` and `current_time` command tools and `read`/`grep` builtins (pointed at the example's `knowledgebase/` directory), including notes on pointing the provider at different OpenAI-compatible servers.
 
 
 

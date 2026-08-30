@@ -1,6 +1,6 @@
 # Simple example agent
 
-A minimal agent with two tools: `echo` (echoes text back) and `current_time` (returns the current date and time).
+A minimal agent with four tools: `echo` (echoes text back), `current_time` (returns the current date and time), and the `read` and `grep` builtins (sandboxed to the `knowledgebase/` directory, which contains a short field guide to biscuits of the world).
 
 ## Setup
 
@@ -20,6 +20,8 @@ Then try prompts like:
 ```
 tell me the time
 echo "blorb is fun"
+what's a jammie dodger?
+which biscuits survive a long dunking?
 ```
 
 Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C while idle exits.
