@@ -248,7 +248,10 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
 		printedHeading   bool
 		printedThinking  bool
 		streamedToolCall bool
-		toolHeadings     = map[string]bool{}
+		// toolHeadings tracks which tool calls (by delta index) already
+		// printed a heading, so two calls to the same tool in one round
+		// each get their own heading block.
+		toolHeadings = map[int]bool{}
 		// partialLine tracks whether a streamed fragment left the output
 		// mid-line, so the next block can terminate the line first and
 		// keep blank-line separators consistent.
@@ -274,14 +277,16 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
 		fmt.Fprintf(out, "\n%s\n", text)
 	}
 
-	// startRound resets per-round heading state: streamed fragments print
-	// their heading once per assistant round, and a tool result ends the
+	// startRound resets per-round heading state: a tool result ends the
 	// current round, so the next response's blocks start fresh.
+	// streamedToolCall is deliberately not reset: a streamed round already
+	// rendered every subsequent whole-message tool call inline, so
+	// suppressing whole-message tool blocks stays correct for the rest of
+	// the turn.
 	startRound := func() {
 		printedHeading = false
 		printedThinking = false
-		streamedToolCall = false
-		toolHeadings = map[string]bool{}
+		toolHeadings = map[int]bool{}
 	}
 
 	onEvent := func(ev engine.Event) error {
@@ -305,8 +310,8 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
 			}
 			writeDelta(ev.Text)
 		case engine.EventToolCallDelta:
-			if ev.Name != "" && !toolHeadings[ev.Name] {
-				toolHeadings[ev.Name] = true
+			if ev.Name != "" && !toolHeadings[ev.Index] {
+				toolHeadings[ev.Index] = true
 				streamedToolCall = true
 				heading(">>> Tool: " + ev.Name)
 			}

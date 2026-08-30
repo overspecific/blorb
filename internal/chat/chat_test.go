@@ -215,6 +215,46 @@ func TestRunStreamedThinkingOnStdout(t *testing.T) {
 	}
 }
 
+func TestRunStreamedSameToolTwiceInOneRound(t *testing.T) {
+	t.Parallel()
+
+	cfg := minimalConfig()
+	cfg.Tools = []config.ToolEntry{{
+		Name:        "touch1",
+		Description: "Creates a marker file.",
+		// Both calls echo their marker argument; the command never runs
+		// the real touch tool, it just needs to succeed.
+		Command: []string{"true"},
+	}}
+
+	// Both tool calls use the same tool name; only the index differs.
+	sameName := func(args string) llm.ToolCall {
+		return llm.ToolCall{ID: "call_" + args, Type: "function", FunctionName: "touch1", FunctionArgs: args}
+	}
+	toolCallResp := llm.Response{
+		Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{sameName("{}"), sameName(`{"two":true}`)},
+		},
+		FinishReason: llm.FinishToolCalls,
+	}
+	o, stdout := newStreamingTestOptions(cfg, "run it\nexit\n",
+		toolCallResp,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "done"), FinishReason: llm.FinishStop},
+	)
+	o.Stream = true
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	// Each call to the same tool in one round gets its own heading.
+	if got := strings.Count(out, ">>> Tool: touch1"); got != 2 {
+		t.Errorf("stdout = %q, want two >>> Tool: touch1 headings (one per tool call), got %d", out, got)
+	}
+}
+
 func TestRunStreamedToolCallDeltas(t *testing.T) {
 	t.Parallel()
 

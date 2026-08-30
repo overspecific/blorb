@@ -53,12 +53,17 @@ const (
 
 // Event is emitted as a turn progresses. Text is set for
 // EventAssistantText and EventAssistantThinking; Name and Args for
-// EventToolCall; Name, Output and Failed for EventToolResult.
+// EventToolCall; Name, Output and Failed for EventToolResult. The delta
+// kinds carry fragments: EventAssistantTextDelta and
+// EventAssistantThinkingDelta set Text, and EventToolCallDelta sets Name,
+// Args, and Index (the 0-based index of the tool call the fragment belongs
+// to, from llm.ToolCallDelta.Index).
 type Event struct {
 	Kind   EventKind
 	Text   string
 	Name   string
 	Args   string
+	Index  int
 	Output string
 	Failed bool
 }
@@ -238,7 +243,7 @@ func (e *Engine) streamCall(ctx context.Context, sc llm.StreamingClient, req llm
 			}
 		}
 		if d.ToolCall != nil {
-			if err := onEvent(Event{Kind: EventToolCallDelta, Name: d.ToolCall.Name, Args: d.ToolCall.Arguments}); err != nil {
+			if err := onEvent(Event{Kind: EventToolCallDelta, Name: d.ToolCall.Name, Args: d.ToolCall.Arguments, Index: d.ToolCall.Index}); err != nil {
 				return err
 			}
 		}

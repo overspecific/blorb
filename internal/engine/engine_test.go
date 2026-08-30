@@ -486,6 +486,45 @@ func TestRunTurnStreamToolCallDeltas(t *testing.T) {
 	}
 }
 
+func TestRunTurnStreamMultiToolCallDeltaIndexes(t *testing.T) {
+	t.Parallel()
+
+	r := toolRegistry(t)
+	fc := &streamingClient{responses: []llm.Response{
+		toolCallResp(
+			call("call_1", "echo", `{"msg":"one"}`),
+			call("call_2", "recorder", `{"msg":"two"}`),
+		),
+		textResp("done"),
+	}}
+	e := engine.New(engine.EngineConfig{Client: fc, Tools: r, Stream: true})
+
+	var deltaCalls []engine.Event
+	_, err := e.RunTurn(context.Background(), "run it", func(ev engine.Event) error {
+		if ev.Kind == engine.EventToolCallDelta {
+			deltaCalls = append(deltaCalls, ev)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+
+	if len(deltaCalls) != 2 {
+		t.Fatalf("tool call delta events = %+v, want 2", deltaCalls)
+	}
+	want := []struct {
+		index int
+		name  string
+	}{{0, "echo"}, {1, "recorder"}}
+	for i, w := range want {
+		if deltaCalls[i].Index != w.index || deltaCalls[i].Name != w.name {
+			t.Errorf("delta %d = index %d name %q, want index %d name %q",
+				i, deltaCalls[i].Index, deltaCalls[i].Name, w.index, w.name)
+		}
+	}
+}
+
 func TestRunTurnStreamInterleavingAcrossRounds(t *testing.T) {
 	t.Parallel()
 
