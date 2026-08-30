@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -148,5 +149,36 @@ func TestChatCommandHasNoNewFlags(t *testing.T) {
 		if f.Names()[0] == "logging" {
 			t.Error("chat has a logging flag; logging must be configured via blorb.json only")
 		}
+	}
+}
+
+func TestChatPrefactorMissingEnvVarExits(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blorb.json")
+	cfgJSON := `{
+		"name": "helper",
+		"system_prompt": "You are helpful.",
+		"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+		"max_turns": 1,
+		"prefactor": {"api_token_env": "BLORB_TEST_PF_TOKEN"}
+	}`
+	if err := os.WriteFile(path, []byte(cfgJSON), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Ensure the env var is unset (empty).
+	t.Setenv("BLORB_TEST_PF_TOKEN", "")
+
+	errOut := &bytes.Buffer{}
+	cmd := rootCommand()
+	cmd.ErrWriter = errOut
+	cmd.ExitErrHandler = capturingExitHandler(errOut)
+
+	err := cmd.Run(context.Background(), []string{"blorb", "chat", "-c", path})
+	if err == nil {
+		t.Error("chat with a prefactor block but a missing token env var succeeded, want an error")
+	}
+	if got := errOut.String(); !strings.Contains(got, "prefactor") || !strings.Contains(got, "BLORB_TEST_PF_TOKEN") {
+		t.Errorf("error output %q missing the prefactor env-var mention", got)
 	}
 }

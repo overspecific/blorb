@@ -28,21 +28,24 @@ const (
 
 // ErrTerminated is returned by tracer calls after the platform sent
 // control.terminate: someone stopped the run from the Prefactor web app.
-// The wrapped reason is in the error text; check with errors.Is.
+// The platform's reason is wrapped inside a *TerminatedError; check with
+// errors.Is.
 var ErrTerminated = errors.New("prefactor: terminated by platform")
 
-// terminatedError carries the platform's termination reason and compares
-// equal to ErrTerminated under errors.Is.
-type terminatedError struct{ reason string }
-
-func (e *terminatedError) Error() string {
-	if e.reason == "" {
-		return ErrTerminated.Error()
-	}
-	return fmt.Sprintf("%s: %s", ErrTerminated.Error(), e.reason)
+// TerminatedError is the error wrapping ErrTerminated, carrying the
+// platform's termination reason.
+type TerminatedError struct {
+	Reason string
 }
 
-func (e *terminatedError) Is(target error) bool {
+func (e *TerminatedError) Error() string {
+	if e.Reason == "" {
+		return ErrTerminated.Error()
+	}
+	return fmt.Sprintf("%s: %s", ErrTerminated.Error(), e.Reason)
+}
+
+func (e *TerminatedError) Is(target error) bool {
 	return target == ErrTerminated
 }
 
@@ -175,7 +178,7 @@ func (t *Tracer) observeControl(c Control, what string) error {
 	t.terminated = true
 	t.mu.Unlock()
 	_ = what // context for debugging; reason text is carried by the error
-	return &terminatedError{reason: c.Reason}
+	return &TerminatedError{Reason: c.Reason}
 }
 
 // Turn is the handle for one blorb:agent_turn span. Its methods create and
@@ -384,9 +387,10 @@ func usagePayload(u llm.Usage) map[string]any {
 }
 
 // ToolCall starts an active blorb:tool:<name> child span. args is the raw
-// JSON arguments string from the tool call event.
+// JSON arguments string from the tool call event, embedded as JSON when it
+// parses.
 func (tn *Turn) ToolCall(ctx context.Context, name string, args string) (*ToolSpan, error) {
-	payload := map[string]any{"args": jsonString(args)}
+	payload := map[string]any{"args": toolArgsValue(args)}
 	spanID, err := tn.startChild(ctx, ToolSchemaName(name), payload, fmt.Sprintf("start tool %q span", name))
 	if err != nil {
 		return nil, err
@@ -408,9 +412,9 @@ func (ts *ToolSpan) complete(result map[string]any, err error) error {
 	return ts.turn.finishSpan(ts.spanID, ts.name, result, err, "finish tool span")
 }
 
-// jsonString embeds a JSON string arg, decoding to raw JSON when valid so
-// tool args appear as JSON objects in the payload rather than nested strings.
-func jsonString(args string) any {
+// toolArgsValue embeds a JSON string arg, decoding to raw JSON when valid
+// so tool args appear as JSON objects in the payload rather than strings.
+func toolArgsValue(args string) any {
 	if args == "" {
 		return map[string]any{}
 	}

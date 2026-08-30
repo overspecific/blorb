@@ -9,6 +9,7 @@ import (
 
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/prefactor"
 )
 
 // version is set at build time via -ldflags "-X main.version=..." (see bin/build).
@@ -63,6 +64,14 @@ func chatCommand() *cli.Command {
 				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
 			}
 
+			var tracer *prefactor.Tracer
+			if cfg.PrefactorEnabled() {
+				tracer, err = buildPrefactorTracer(ctx, cfg)
+				if err != nil {
+					return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
+				}
+			}
+
 			err = chat.Run(ctx, chat.Options{
 				Config:     cfg,
 				Version:    cmd.Root().Version,
@@ -70,6 +79,7 @@ func chatCommand() *cli.Command {
 				Stdout:     os.Stdout,
 				Stream:     !cmd.Bool("no-stream"),
 				ConfigPath: cmd.String("config"),
+				Tracer:     tracer,
 			})
 			if err != nil {
 				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
@@ -77,6 +87,28 @@ func chatCommand() *cli.Command {
 			return nil
 		},
 	}
+}
+
+// buildPrefactorTracer constructs the Prefactor tracer for a chat session:
+// the API token is resolved from the configured environment variable, which
+// must be set and non-empty.
+func buildPrefactorTracer(ctx context.Context, cfg config.Config) (*prefactor.Tracer, error) {
+	pf := cfg.Prefactor
+	envName := pf.APITokenEnvOrDefault()
+	token := os.Getenv(envName)
+	if token == "" {
+		return nil, fmt.Errorf("prefactor: api_token_env %q is set but the environment variable is empty", envName)
+	}
+	client := prefactor.New(prefactor.Config{
+		BaseURL: pf.APIURLOrDefault(),
+		Token:   token,
+	})
+	return prefactor.NewTracer(prefactor.TracerConfig{
+		Client:        client,
+		AgentID:       pf.AgentID,
+		EnvironmentID: pf.EnvironmentID,
+		AgentName:     cfg.Name,
+	}), nil
 }
 
 func printlnVersion(cmd *cli.Command) error {

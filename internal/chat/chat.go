@@ -18,6 +18,7 @@ import (
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/llm/openai"
 	"github.com/overspecific/blorb/internal/logging"
+	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/tools"
 )
 
@@ -41,7 +42,26 @@ type Options struct {
 	// is enabled in the config, the session writes wire logs into the
 	// resolved log directory next to the config file.
 	ConfigPath string
+	// Tracer, when non-nil, records every turn to Prefactor. Tracing is a
+	// hard dependency: a tracer error fails the turn or the session. Nil
+	// disables tracing.
+	Tracer *prefactor.Tracer
 }
+
+// sessionResult tells Run how the REPL loop ended, so the tracer can
+// finish the instance with the matching terminal state.
+type sessionResult int
+
+const (
+	// sessionGraceful: exit/quit/EOF or ctx done with no failure.
+	sessionGraceful sessionResult = iota
+	// sessionCompleteInterrupted: a signal landed as a turn finished.
+	sessionGracefulInterrupted
+	// sessionFailed: a fatal error ended the session.
+	sessionFailure
+	// sessionTerminated: the platform requested termination.
+	sessionTerminate
+)
 
 // Run drives one interactive chat session. It returns nil on graceful exit
 // (exit/quit, EOF, or SIGINT when no turn is in flight) and an error on
@@ -63,18 +83,36 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("build tools: %w", err)
 	}
 
+	// The holder lets per-turn tracing wrappers come and go without
+	// engine changes; the engine sees a stable llm.Client.
+	holder := &clientHolder{inner: client}
+
 	eng := engine.New(engine.EngineConfig{
-		Client:       client,
+		Client:       holder,
 		Tools:        registry,
 		SystemPrompt: opts.Config.SystemPrompt,
 		MaxTurns:     opts.Config.MaxTurnsOrDefault(),
 		Stream:       opts.Stream,
 	})
 
+	// Session-level tracing: register and start the Prefactor instance
+	// before the REPL loop. A terminate at startup exits immediately.
+	if opts.Tracer != nil {
+		schema := prefactor.DefaultAgentSchemaVersion(opts.Config.Name, registry)
+		if err := opts.Tracer.StartSession(ctx, schema); err != nil {
+			if isTerminated(err) {
+				fmt.Fprintf(opts.Stdout, "stopped by platform: %v\n", terminationReason(err))
+				return nil
+			}
+			return fmt.Errorf("chat: prefactor: %w", err)
+		}
+	}
+
 	var (
 		mu          sync.Mutex
 		cancelTurn  context.CancelFunc
 		interrupted bool
+		sigExit     bool
 	)
 	setTurn := func(cancel context.CancelFunc) {
 		mu.Lock()
@@ -93,7 +131,12 @@ func Run(ctx context.Context, opts Options) error {
 
 	exit := make(chan struct{})
 	var once sync.Once
-	requestExit := func() { once.Do(func() { close(exit) }) }
+	requestExit := func() {
+		mu.Lock()
+		sigExit = true
+		mu.Unlock()
+		once.Do(func() { close(exit) })
+	}
 
 	// done is closed when Run returns, so the forwarding and reader
 	// goroutines below stop instead of leaking.
@@ -154,62 +197,174 @@ func Run(ctx context.Context, opts Options) error {
 	input := make(chan inputResult, 1)
 	go readLines(opts.Stdin, input, done)
 
-	needHeading := true
-	for {
-		if needHeading {
-			fmt.Fprint(opts.Stdout, "\n>>> User:\n")
-			needHeading = false
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-exit:
-			return nil
-		case r, ok := <-input:
-			if !ok {
-				return nil
+	result, runErr := func() (sessionResult, error) {
+		needHeading := true
+		for {
+			if needHeading {
+				fmt.Fprint(opts.Stdout, "\n>>> User:\n")
+				needHeading = false
 			}
-			if r.err != nil {
-				return fmt.Errorf("read input: %w", r.err)
-			}
-			if r.line == "" {
-				needHeading = true
-				continue
-			}
-			switch strings.ToLower(r.line) {
-			case "exit", "quit":
-				return nil
-			}
-			if ctx.Err() != nil {
-				return nil
-			}
-
-			turnCtx, cancel := context.WithCancel(ctx)
-			setTurn(cancel)
-
-			onEvent, flush := chatEvents(opts.Stdout)
-			_, runErr := eng.RunTurn(turnCtx, r.line, onEvent)
-			flush()
-
-			setTurn(nil)
-			cancel()
-			needHeading = true
-			interrupted := takeInterrupted()
-
-			if runErr == nil {
-				// A signal landed just as the turn finished: exit cleanly.
-				if interrupted {
-					return nil
+			select {
+			case <-ctx.Done():
+				return sessionGraceful, nil
+			case <-exit:
+				mu.Lock()
+				wasSig := sigExit
+				mu.Unlock()
+				if wasSig {
+					return sessionGracefulInterrupted, nil
 				}
-				continue
+				return sessionGraceful, nil
+			case r, ok := <-input:
+				if !ok {
+					return sessionGraceful, nil
+				}
+				if r.err != nil {
+					return sessionFailure, fmt.Errorf("read input: %w", r.err)
+				}
+				if r.line == "" {
+					needHeading = true
+					continue
+				}
+				switch strings.ToLower(r.line) {
+				case "exit", "quit":
+					return sessionGraceful, nil
+				}
+				if ctx.Err() != nil {
+					return sessionGraceful, nil
+				}
+
+				res, err := runTurn(ctx, opts, eng, holder, takeInterrupted, setTurn, r.line)
+				needHeading = true
+				if res == sessionTerminate || res == sessionFailure {
+					return res, err
+				}
+				if res == sessionGracefulInterrupted {
+					// A signal landed just as the turn finished: exit
+					// cleanly, as before tracing existed.
+					return sessionGracefulInterrupted, nil
+				}
+				// Recoverable turn outcome (err already printed).
 			}
-			if interrupted && turnCtx.Err() != nil {
-				fmt.Fprintln(opts.Stdout, "(interrupted)")
-				continue
+		}
+	}()
+
+	// Finish the Prefactor instance to match the session outcome. On
+	// platform termination the instance is already marked server-side and
+	// a second finish would 409, so it is skipped.
+	if opts.Tracer != nil {
+		if result == sessionTerminate {
+			fmt.Fprintf(opts.Stdout, "stopped by platform: %v\n", terminationReason(runErr))
+			return nil
+		}
+		status := prefactor.InstanceComplete
+		switch result {
+		case sessionGracefulInterrupted:
+			status = prefactor.InstanceCancelled
+		case sessionFailure:
+			status = prefactor.InstanceFailed
+		}
+		if err := opts.Tracer.FinishSession(ctx, status); err != nil {
+			if runErr != nil {
+				return runErr
 			}
-			fmt.Fprintf(opts.Stdout, "error: %v\n", runErr)
+			return fmt.Errorf("chat: prefactor: %w", err)
 		}
 	}
+	return runErr
+}
+
+// runTurn executes one user turn, driving the tracer when configured.
+// Returns the session outcome: sessionGraceful keeps the loop alive
+// (recoverable turn errors are printed here); fatal outcomes abort.
+func runTurn(
+	ctx context.Context,
+	opts Options,
+	eng *engine.Engine,
+	holder *clientHolder,
+	takeInterrupted func() bool,
+	setTurn func(context.CancelFunc),
+	line string,
+) (sessionResult, error) {
+	turnCtx, cancel := context.WithCancel(ctx)
+	setTurn(cancel)
+	defer func() {
+		setTurn(nil)
+		cancel()
+	}()
+
+	printEvent, flush := chatEvents(opts.Stdout)
+
+	if opts.Tracer == nil {
+		_, runErr := eng.RunTurn(turnCtx, line, printEvent)
+		flush()
+		return classifyTurnOutcome(runErr, turnCtx, takeInterrupted(), opts.Stdout)
+	}
+
+	turn, err := opts.Tracer.StartTurn(turnCtx, line)
+	if err != nil {
+		return tracerFailure(err)
+	}
+
+	holder.inner = newTracingClient(holder.inner, turn)
+	defer func() { holder.inner = unwrapTracingClient(holder.inner) }()
+
+	_, runErr := eng.RunTurn(turnCtx, line, traceEvent(turn, printEvent))
+	flush()
+
+	interrupted := takeInterrupted()
+
+	// Finish the turn span to match the outcome. Termination wins;
+	// a cancelled turn context (SIGINT) cancels; other errors fail.
+	switch {
+	case runErr != nil && isTerminated(runErr):
+		if err := turn.Fail(runErr); err != nil && !isTerminated(err) {
+			// The terminate signal still wins.
+			_ = err
+		}
+		return sessionTerminate, runErr
+	case interrupted || turnCtx.Err() != nil:
+		if err := turn.Cancel(); err != nil {
+			return tracerFailure(err)
+		}
+	case runErr != nil:
+		if err := turn.Fail(runErr); err != nil {
+			return tracerFailure(err)
+		}
+	default:
+		if err := turn.Complete(""); err != nil {
+			return tracerFailure(err)
+		}
+	}
+
+	return classifyTurnOutcome(runErr, turnCtx, interrupted, opts.Stdout)
+}
+
+// tracerFailure maps a tracer error to the session outcome: terminate wins,
+// everything else ends the session as failed.
+func tracerFailure(err error) (sessionResult, error) {
+	if isTerminated(err) {
+		return sessionTerminate, err
+	}
+	return sessionFailure, fmt.Errorf("chat: prefactor: %w", err)
+}
+
+// classifyTurnOutcome maps a turn error (already reflected in the tracer)
+// to the session outcome, printing recoverable turn errors.
+func classifyTurnOutcome(runErr error, turnCtx context.Context, interrupted bool, out io.Writer) (sessionResult, error) {
+	if runErr == nil {
+		// A signal landed just as the turn finished: exit cleanly.
+		if interrupted {
+			return sessionGracefulInterrupted, nil
+		}
+		return sessionGraceful, nil
+	}
+	if interrupted && turnCtx.Err() != nil {
+		fmt.Fprintln(out, "(interrupted)")
+		return sessionGraceful, nil
+	}
+	fmt.Fprintf(out, "error: %v\n", runErr)
+	return sessionGraceful, nil
 }
 
 type inputResult struct {
