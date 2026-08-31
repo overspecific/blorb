@@ -22,8 +22,14 @@ func TestPrefactorTracingExampleConfigValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(examples/prefactor-tracing/blorb.json) error = %v, want nil", err)
 	}
-	if cfg.Name != "prefactor-tracing" {
-		t.Errorf("Name = %q, want prefactor-tracing", cfg.Name)
+	if len(cfg.Agents) != 1 {
+		t.Fatalf("len(Agents) = %d, want 1 (single-agent example)", len(cfg.Agents))
+	}
+	if cfg.Agents[0].Name != "prefactor-tracing" {
+		t.Errorf("Agents[0].Name = %q, want prefactor-tracing", cfg.Agents[0].Name)
+	}
+	if cfg.DefaultAgent != "prefactor-tracing" {
+		t.Errorf("DefaultAgent = %q, want prefactor-tracing", cfg.DefaultAgent)
 	}
 	if !cfg.PrefactorEnabled() {
 		t.Error("PrefactorEnabled() = false, want true — the example documents a prefactor block")
@@ -48,8 +54,14 @@ func TestSimpleExampleTracingDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(examples/simple/blorb.json) error = %v, want nil", err)
 	}
-	if cfg.Name != "simple" {
-		t.Errorf("Name = %q, want simple", cfg.Name)
+	if len(cfg.Agents) != 1 {
+		t.Fatalf("len(Agents) = %d, want 1 (single-agent example)", len(cfg.Agents))
+	}
+	if cfg.Agents[0].Name != "simple" {
+		t.Errorf("Agents[0].Name = %q, want simple", cfg.Agents[0].Name)
+	}
+	if cfg.DefaultAgent != "simple" {
+		t.Errorf("DefaultAgent = %q, want simple", cfg.DefaultAgent)
 	}
 	if cfg.PrefactorEnabled() {
 		t.Error("PrefactorEnabled() = true, want false — the simple example should not require a tracing token")

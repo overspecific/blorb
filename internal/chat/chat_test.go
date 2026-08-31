@@ -43,10 +43,11 @@ func newTestOptions(cfg config.Config, input string, responses ...llm.Response) 
 	var stdout syncBuffer
 	o := chat.Options{
 		Config:  cfg,
+		Agent:   cfg.Agents[0],
 		Version: "test",
 		Stdin:   strings.NewReader(input),
 		Stdout:  &stdout,
-		NewClient: func(config.Config) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &fakeClient{responses: responses}, nil
 		},
 	}
@@ -57,10 +58,11 @@ func newStreamingTestOptions(cfg config.Config, input string, responses ...llm.R
 	var stdout syncBuffer
 	o := chat.Options{
 		Config:  cfg,
+		Agent:   cfg.Agents[0],
 		Version: "test",
 		Stdin:   strings.NewReader(input),
 		Stdout:  &stdout,
-		NewClient: func(config.Config) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &streamingFakeClient{responses: responses}, nil
 		},
 	}
@@ -105,8 +107,10 @@ func (f *streamingFakeClient) ChatStream(_ context.Context, req llm.Request, onD
 	return &resp, nil
 }
 
-func minimalConfig() config.Config {
-	return config.Config{
+// testAgent returns the canonical agent definition used by tests: an
+// OpenAI-provider agent named tester with no tools.
+func testAgent() config.Agent {
+	return config.Agent{
 		Name:         "tester",
 		SystemPrompt: "You are helpful.",
 		Provider: config.Provider{
@@ -117,10 +121,21 @@ func minimalConfig() config.Config {
 	}
 }
 
+// testConfig wraps agent in a config carrying the given top-level tool
+// declarations and grants the agent all of them.
+func testConfig(agent config.Agent, tools ...config.ToolEntry) config.Config {
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	agent.Tools = names
+	return config.Config{Agents: []config.Agent{agent}, Tools: tools}
+}
+
 func TestRunPlainReplySession(t *testing.T) {
 	t.Parallel()
 
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	o, stdout := newTestOptions(cfg, "hello there\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 	)
@@ -154,7 +169,7 @@ func TestRunThinkingDisplayedOnStdout(t *testing.T) {
 		},
 		FinishReason: llm.FinishStop,
 	}
-	o, stdout := newTestOptions(minimalConfig(), "why?\nexit\n", thinkingResp)
+	o, stdout := newTestOptions(testConfig(testAgent()), "why?\nexit\n", thinkingResp)
 
 	if err := chat.Run(context.Background(), o); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
@@ -172,7 +187,7 @@ func TestRunThinkingDisplayedOnStdout(t *testing.T) {
 func TestRunStreamedAssistantTextOnStdout(t *testing.T) {
 	t.Parallel()
 
-	o, stdout := newStreamingTestOptions(minimalConfig(), "hello\nexit\n",
+	o, stdout := newStreamingTestOptions(testConfig(testAgent()), "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "streamed!"), FinishReason: llm.FinishStop},
 	)
 	o.Stream = true
@@ -203,7 +218,7 @@ func TestRunStreamedThinkingOnStdout(t *testing.T) {
 		},
 		FinishReason: llm.FinishStop,
 	}
-	o, stdout := newStreamingTestOptions(minimalConfig(), "why?\nexit\n", thinkingResp)
+	o, stdout := newStreamingTestOptions(testConfig(testAgent()), "why?\nexit\n", thinkingResp)
 	o.Stream = true
 
 	if err := chat.Run(context.Background(), o); err != nil {
@@ -225,15 +240,14 @@ func TestRunStreamedThinkingOnStdout(t *testing.T) {
 func TestRunStreamedSameToolTwiceInOneRound(t *testing.T) {
 	t.Parallel()
 
-	cfg := minimalConfig()
-	cfg.Tools = []config.ToolEntry{{
+	cfg := testConfig(testAgent(), config.ToolEntry{
 		Type:        config.ToolTypeCommand,
 		Name:        "touch1",
 		Description: "Creates a marker file.",
 		// Both calls echo their marker argument; the command never runs
 		// the real touch tool, it just needs to succeed.
 		Command: []string{"true"},
-	}}
+	})
 
 	// Both tool calls use the same tool name; only the index differs.
 	sameName := func(args string) llm.ToolCall {
@@ -269,13 +283,12 @@ func TestRunStreamedToolCallDeltas(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "marker.txt")
 
-	cfg := minimalConfig()
-	cfg.Tools = []config.ToolEntry{{
+	cfg := testConfig(testAgent(), config.ToolEntry{
 		Type:        config.ToolTypeCommand,
 		Name:        "touch",
 		Description: "Creates a marker file.",
 		Command:     []string{"touch", marker},
-	}}
+	})
 
 	toolCallResp := llm.Response{
 		Message: llm.Message{
@@ -331,13 +344,12 @@ func TestRunStreamedToolRoundsRenderPerRoundHeadings(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "marker.txt")
 
-	cfg := minimalConfig()
-	cfg.Tools = []config.ToolEntry{{
+	cfg := testConfig(testAgent(), config.ToolEntry{
 		Type:        config.ToolTypeCommand,
 		Name:        "touch",
 		Description: "Creates a marker file.",
 		Command:     []string{"touch", marker},
-	}}
+	})
 
 	toolCallResp := llm.Response{
 		Message: llm.Message{
@@ -388,7 +400,7 @@ func TestRunStreamedToolRoundsRenderPerRoundHeadings(t *testing.T) {
 func TestRunStreamOffUsesWholeMessagePath(t *testing.T) {
 	t.Parallel()
 
-	o, stdout := newStreamingTestOptions(minimalConfig(), "hello\nexit\n",
+	o, stdout := newStreamingTestOptions(testConfig(testAgent()), "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "whole"), FinishReason: llm.FinishStop},
 	)
 	o.Stream = false
@@ -407,7 +419,7 @@ func TestRunStreamedTurnErrorStillFlushes(t *testing.T) {
 
 	// A turn that fails after streaming some text must still flush the
 	// trailing newline, and the error lands on stdout.
-	o, stdout := newStreamingTestOptions(minimalConfig(), "hello\nexit\n")
+	o, stdout := newStreamingTestOptions(testConfig(testAgent()), "hello\nexit\n")
 	o.Stream = true
 
 	if err := chat.Run(context.Background(), o); err != nil {
@@ -429,7 +441,7 @@ func TestRunStreamedTurnErrorStillFlushes(t *testing.T) {
 func TestRunExitCommand(t *testing.T) {
 	t.Parallel()
 
-	o, stdout := newTestOptions(minimalConfig(), "hi\nquit\n",
+	o, stdout := newTestOptions(testConfig(testAgent()), "hi\nquit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "reply"), FinishReason: llm.FinishStop},
 	)
 
@@ -444,7 +456,7 @@ func TestRunExitCommand(t *testing.T) {
 func TestRunEOF(t *testing.T) {
 	t.Parallel()
 
-	o, _ := newTestOptions(minimalConfig(), "")
+	o, _ := newTestOptions(testConfig(testAgent()), "")
 
 	if err := chat.Run(context.Background(), o); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
@@ -456,7 +468,7 @@ func TestRunEmptyLinesIgnored(t *testing.T) {
 
 	// Whitespace lines produce no API calls; the fake has no responses, so
 	// any turn would fail the run.
-	o, _ := newTestOptions(minimalConfig(), "   \n\t\nexit\n")
+	o, _ := newTestOptions(testConfig(testAgent()), "   \n\t\nexit\n")
 
 	if err := chat.Run(context.Background(), o); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
@@ -472,13 +484,12 @@ func TestRunToolEventsOnStdout(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	cfg := minimalConfig()
-	cfg.Tools = []config.ToolEntry{{
+	cfg := testConfig(testAgent(), config.ToolEntry{
 		Type:        config.ToolTypeCommand,
 		Name:        "write_marker",
 		Description: "Creates a marker file.",
 		Command:     []string{"touch", File},
-	}}
+	})
 
 	toolCallResp := llm.Response{
 		Message: llm.Message{
@@ -517,8 +528,8 @@ func TestRunStartupErrors(t *testing.T) {
 	t.Run("client construction failure", func(t *testing.T) {
 		t.Parallel()
 
-		o, _ := newTestOptions(minimalConfig(), "hello\n")
-		o.NewClient = func(config.Config) (llm.Client, error) {
+		o, _ := newTestOptions(testConfig(testAgent()), "hello\n")
+		o.NewClient = func(config.Config, config.Agent) (llm.Client, error) {
 			return nil, errors.New("no provider available")
 		}
 
@@ -531,11 +542,10 @@ func TestRunStartupErrors(t *testing.T) {
 	t.Run("tool registry failure", func(t *testing.T) {
 		t.Parallel()
 
-		cfg := minimalConfig()
-		cfg.Tools = []config.ToolEntry{{
+		cfg := testConfig(testAgent(), config.ToolEntry{
 			Type: config.ToolTypeCommand,
 			Name: "bad", Description: "Bad tool.", Command: []string{},
-		}}
+		})
 
 		o, _ := newTestOptions(cfg, "hello\n")
 
@@ -550,7 +560,7 @@ func TestRunTurnErrorKeepsSessionAlive(t *testing.T) {
 	t.Parallel()
 
 	// The fake has no responses: the first turn fails, the next exits.
-	o, stdout := newTestOptions(minimalConfig(), "hello\nexit\n")
+	o, stdout := newTestOptions(testConfig(testAgent()), "hello\nexit\n")
 
 	err := chat.Run(context.Background(), o)
 	if err != nil {
@@ -569,7 +579,7 @@ func TestRunSigintDuringTurnInterruptsTurnOnly(t *testing.T) {
 	t.Parallel()
 
 	sigs := make(chan os.Signal, 1)
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 
 	// A client that blocks until its context is cancelled, i.e. an
 	// in-flight request cut short by the interrupt.
@@ -577,10 +587,11 @@ func TestRunSigintDuringTurnInterruptsTurnOnly(t *testing.T) {
 	var stdout strings.Builder
 	o := chat.Options{
 		Config:  cfg,
+		Agent:   cfg.Agents[0],
 		Version: "test",
 		Stdin:   strings.NewReader("start a long turn\nexit\n"),
 		Stdout:  &stdout,
-		NewClient: func(config.Config) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return client, nil
 		},
 		SigintChan: sigs,
@@ -613,7 +624,7 @@ func TestRunSigintWhileIdleExits(t *testing.T) {
 	t.Parallel()
 
 	sigs := make(chan os.Signal, 1)
-	o, stdout := newTestOptions(minimalConfig(), "")
+	o, stdout := newTestOptions(testConfig(testAgent()), "")
 	o.SigintChan = sigs
 
 	runErr := make(chan error, 1)
@@ -675,17 +686,18 @@ func TestRunInterruptedTurnThenSuccessKeepsSession(t *testing.T) {
 	t.Parallel()
 
 	sigs := make(chan os.Signal, 1)
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 
 	// First turn blocks until interrupted; second turn succeeds.
 	client := &blockingClient{started: make(chan struct{})}
 	var stdout strings.Builder
 	o := chat.Options{
 		Config:  cfg,
+		Agent:   cfg.Agents[0],
 		Version: "test",
 		Stdin:   strings.NewReader("start a long turn\ntry again\nexit\n"),
 		Stdout:  &stdout,
-		NewClient: func(config.Config) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &sequencedClient{first: client, rest: &fakeClient{
 				responses: []llm.Response{
 					{Message: llm.NewTextMessage(llm.RoleAssistant, "second try worked"), FinishReason: llm.FinishStop},
@@ -779,30 +791,30 @@ func TestNewClient(t *testing.T) {
 	t.Run("openai with key env set", func(t *testing.T) {
 		t.Setenv("BLORB_TEST_KEY", "key-value")
 
-		cfg := minimalConfig()
-		cfg.Provider.APIKeyEnv = ptr("BLORB_TEST_KEY")
+		agent := testAgent()
+		agent.Provider.APIKeyEnv = ptr("BLORB_TEST_KEY")
 
-		client, err := chat.NewClient(cfg)
+		client, err := chat.NewClient(testConfig(agent), agent)
 		if err != nil || client == nil {
 			t.Fatalf("NewClient error = %v, want a client", err)
 		}
 	})
 
 	t.Run("openai with missing key env", func(t *testing.T) {
-		cfg := minimalConfig()
-		cfg.Provider.APIKeyEnv = ptr("BLORB_TEST_MISSING_KEY")
+		agent := testAgent()
+		agent.Provider.APIKeyEnv = ptr("BLORB_TEST_MISSING_KEY")
 
-		_, err := chat.NewClient(cfg)
+		_, err := chat.NewClient(testConfig(agent), agent)
 		if err == nil || !strings.Contains(err.Error(), "BLORB_TEST_MISSING_KEY") {
 			t.Errorf("error = %v, want a missing-env error naming the variable", err)
 		}
 	})
 
 	t.Run("unknown provider type", func(t *testing.T) {
-		cfg := minimalConfig()
-		cfg.Provider.Type = "telepathy"
+		agent := testAgent()
+		agent.Provider.Type = "telepathy"
 
-		_, err := chat.NewClient(cfg)
+		_, err := chat.NewClient(testConfig(agent), agent)
 		if err == nil || !strings.Contains(err.Error(), "telepathy") {
 			t.Errorf("error = %v, want an unsupported-type error", err)
 		}
@@ -818,14 +830,16 @@ func ptr(s string) *string {
 func TestRunUsesInjectedGetenv(t *testing.T) {
 	t.Parallel()
 
-	cfg := minimalConfig()
-	cfg.Provider.APIKeyEnv = ptr("INJECTED_MISSING_VAR")
+	agent := testAgent()
+	agent.Provider.APIKeyEnv = ptr("INJECTED_MISSING_VAR")
+	cfg := testConfig(agent)
 
 	// No NewClient override and an injected Getenv that resolves nothing:
 	// Run must fail startup with the missing-env error, proving the
 	// injected lookup was consulted.
 	o := chat.Options{
 		Config:  cfg,
+		Agent:   cfg.Agents[0],
 		Version: "test",
 		Stdin:   strings.NewReader("hi\n"),
 		Stdout:  &strings.Builder{},
@@ -846,12 +860,14 @@ func TestRunInjectedGetenvResolvesKey(t *testing.T) {
 
 	// The test base URL points at a dead port, so a client that gets past
 	// env resolution fails on connect; the env error must not appear.
-	cfg := minimalConfig()
-	cfg.Provider.APIKeyEnv = ptr("INJECTED_ENV_VAR")
+	agent := testAgent()
+	agent.Provider.APIKeyEnv = ptr("INJECTED_ENV_VAR")
+	cfg := testConfig(agent)
 
 	var stdout strings.Builder
 	o := chat.Options{
 		Config:  cfg,
+		Agent:   cfg.Agents[0],
 		Version: "test",
 		Stdin:   strings.NewReader("hi\nexit\n"),
 		Stdout:  &stdout,
@@ -882,7 +898,7 @@ func TestRunLongLineDeliveredAsOneTurn(t *testing.T) {
 	t.Parallel()
 
 	long := strings.Repeat("x", 200_000)
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 
 	fc := &fakeClient{responses: []llm.Response{
 		{Message: llm.NewTextMessage(llm.RoleAssistant, "ok"), FinishReason: llm.FinishStop},
@@ -890,10 +906,11 @@ func TestRunLongLineDeliveredAsOneTurn(t *testing.T) {
 	var stdout strings.Builder
 	o := chat.Options{
 		Config:  cfg,
+		Agent:   cfg.Agents[0],
 		Version: "test",
 		Stdin:   strings.NewReader(long + "\nexit\n"),
 		Stdout:  &stdout,
-		NewClient: func(config.Config) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return fc, nil
 		},
 	}
@@ -913,11 +930,13 @@ func TestRunLongLineDeliveredAsOneTurn(t *testing.T) {
 }
 
 // writeBlorbConfig writes a minimal valid config with the given raw JSON
-// merged at the top level (as a raw map) and returns its path.
+// merged at the top level (as a raw map) and returns its path. The
+// provider override is special-cased: it applies to the agent's provider,
+// since provider settings live inside each agent definition.
 func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
 	t.Helper()
 
-	base := map[string]any{
+	agent := map[string]any{
 		"name":          "logger",
 		"system_prompt": "You are helpful.",
 		"max_turns":     5,
@@ -926,6 +945,11 @@ func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
 			"model":    "gpt-test",
 			"base_url": "placeholder",
 		},
+		"tools": []string{"echo"},
+	}
+	base := map[string]any{
+		"default_agent": "logger",
+		"agents":        []map[string]any{agent},
 		"tools": []map[string]any{{
 			"type":        "command",
 			"name":        "echo",
@@ -934,6 +958,10 @@ func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
 		}},
 	}
 	for k, v := range extra {
+		if k == "provider" {
+			agent["provider"] = v
+			continue
+		}
 		base[k] = v
 	}
 
@@ -1022,6 +1050,7 @@ func optionsFromConfigPath(t *testing.T, cfgPath, stdin string, stdout io.Writer
 	}
 	return chat.Options{
 		Config:     cfg,
+		Agent:      cfg.Agents[0],
 		Version:    "test",
 		Stdin:      strings.NewReader(stdin),
 		Stdout:     stdout,
@@ -1226,10 +1255,10 @@ func TestRunSequentialSessionsGetDistinctLogDirs(t *testing.T) {
 func TestNewClientWithGetenvNilSink(t *testing.T) {
 	t.Setenv("BLORB_TEST_KEY", "key-value")
 
-	cfg := minimalConfig()
-	cfg.Provider.APIKeyEnv = ptr("BLORB_TEST_KEY")
+	agent := testAgent()
+	agent.Provider.APIKeyEnv = ptr("BLORB_TEST_KEY")
 
-	client, err := chat.NewClientWithGetenv(cfg, os.Getenv, nil)
+	client, err := chat.NewClientWithGetenv(testConfig(agent), agent, os.Getenv, nil)
 	if err != nil || client == nil {
 		t.Fatalf("NewClientWithGetenv error = %v, want a client (nil sink = logging off)", err)
 	}

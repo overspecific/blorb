@@ -23,12 +23,17 @@ import (
 )
 
 // Options configure a chat session.
+// Options configure a chat session.
 type Options struct {
-	Config     config.Config
+	Config config.Config
+	// Agent is the resolved agent definition the session runs: its
+	// system prompt, provider, and max turns drive the engine and client,
+	// and its name names the banner and the Prefactor agent.
+	Agent      config.Agent
 	Version    string
 	Stdin      io.Reader
 	Stdout     io.Writer
-	NewClient  func(cfg config.Config) (llm.Client, error)
+	NewClient  func(cfg config.Config, agent config.Agent) (llm.Client, error)
 	SigintChan <-chan os.Signal
 	// Getenv overrides the environment lookup used to resolve
 	// provider.api_key_env; os.Getenv when nil. Tests only.
@@ -106,15 +111,15 @@ func Run(ctx context.Context, opts Options) error {
 	eng := engine.New(engine.EngineConfig{
 		Client:       holder,
 		Tools:        registry,
-		SystemPrompt: opts.Config.SystemPrompt,
-		MaxTurns:     opts.Config.MaxTurnsOrDefault(),
+		SystemPrompt: opts.Agent.SystemPrompt,
+		MaxTurns:     opts.Agent.MaxTurnsOrDefault(),
 		Stream:       opts.Stream && streaming,
 	})
 
 	// Session-level tracing: register and start the Prefactor instance
 	// before the REPL loop. A terminate at startup exits immediately.
 	if opts.Tracer != nil {
-		schema := prefactor.DefaultAgentSchemaVersion(opts.Config.Name, registry)
+		schema := prefactor.DefaultAgentSchemaVersion(opts.Agent.Name, registry)
 		if err := opts.Tracer.StartSession(ctx, schema); err != nil {
 			if isTerminated(err) {
 				fmt.Fprintf(opts.Stdout, "stopped by platform: %v\n", terminationReason(err))
@@ -208,7 +213,7 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
-	fmt.Fprintf(opts.Stdout, "blorb %s (%s, %s)\n", opts.Version, opts.Config.Name, opts.Config.Provider.Model)
+	fmt.Fprintf(opts.Stdout, "blorb %s (%s, %s)\n", opts.Version, opts.Agent.Name, opts.Agent.Provider.Model)
 
 	input := make(chan inputResult, 1)
 	go readLines(opts.Stdin, input, done)
@@ -324,7 +329,7 @@ func runTurn(
 		return tracerFailure(err)
 	}
 
-	holder.inner = newTracingClient(holder.inner, turn, opts.Config.Provider.Model)
+	holder.inner = newTracingClient(holder.inner, turn, opts.Agent.Provider.Model)
 	defer func() { holder.inner = unwrapTracingClient(holder.inner) }()
 
 	finalText, runErr := eng.RunTurn(turnCtx, line, traceEvent(turn, printEvent))
@@ -550,43 +555,45 @@ func resolveSink(opts Options) (logging.Sink, error) {
 	return sink, nil
 }
 
-// NewClient builds the LLM client described by a config, switching on
-// provider.type. When a second provider lands this graduates to a registry
-// map. getenv is the environment lookup, injectable for tests; pass
-// os.Getenv in production. sink receives LLM wire logs; nil disables them.
-func NewClientWithGetenv(cfg config.Config, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
-	switch cfg.Provider.Type {
+// NewClient builds the LLM client described by an agent's provider,
+// switching on provider.type. When a second provider lands this graduates
+// to a registry map. getenv is the environment lookup, injectable for
+// tests; pass os.Getenv in production. sink receives LLM wire logs; nil
+// disables them.
+func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+	switch agent.Provider.Type {
 	case config.ProviderTypeOpenAI:
 		apiKey := ""
-		if envName := cfg.Provider.APIKeyEnvOrDefault(); envName != "" {
+		if envName := agent.Provider.APIKeyEnvOrDefault(); envName != "" {
 			apiKey = getenv(envName)
 			if apiKey == "" {
 				return nil, fmt.Errorf("api_key_env %q is set but the environment variable is empty", envName)
 			}
 		}
 		return openai.New(openai.Config{
-			BaseURL: cfg.Provider.BaseURL,
-			Model:   cfg.Provider.Model,
+			BaseURL: agent.Provider.BaseURL,
+			Model:   agent.Provider.Model,
 			APIKey:  apiKey,
 			Sink:    sink,
 		})
 	default:
-		return nil, fmt.Errorf("provider type %q is not supported (supported: %v)", cfg.Provider.Type, config.SupportedProviderTypes())
+		return nil, fmt.Errorf("provider type %q is not supported (supported: %v)", agent.Provider.Type, config.SupportedProviderTypes())
 	}
 }
 
-// NewClient builds the LLM client described by a config using os.Getenv.
-func NewClient(cfg config.Config) (llm.Client, error) {
-	return NewClientWithGetenv(cfg, os.Getenv, logging.NewNop())
+// NewClient builds the LLM client described by an agent's provider using
+// os.Getenv.
+func NewClient(cfg config.Config, agent config.Agent) (llm.Client, error) {
+	return NewClientWithGetenv(cfg, agent, os.Getenv, logging.NewNop())
 }
 
 func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
 	if o.NewClient != nil {
-		return o.NewClient(o.Config)
+		return o.NewClient(o.Config, o.Agent)
 	}
 	getenv := o.Getenv
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	return NewClientWithGetenv(o.Config, getenv, sink)
+	return NewClientWithGetenv(o.Config, o.Agent, getenv, sink)
 }

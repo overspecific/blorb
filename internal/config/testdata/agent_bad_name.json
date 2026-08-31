@@ -1,7 +1,7 @@
 {
   "agents": [
     {
-      "name": "helper",
+      "name": "has space",
       "system_prompt": "You are helpful.",
       "provider": {
         "type": "openai",
@@ -9,13 +9,6 @@
         "base_url": "https://api.example.com/v1"
       },
       "max_turns": 1
-    }
-  ],
-  "tools": [
-    {
-      "type": "webhook",
-      "name": "t",
-      "description": "Unknown type."
     }
   ]
 }

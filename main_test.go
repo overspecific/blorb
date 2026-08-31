@@ -156,10 +156,15 @@ func TestChatPrefactorMissingEnvVarExits(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "blorb.json")
 	cfgJSON := `{
-		"name": "helper",
-		"system_prompt": "You are helpful.",
-		"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
-		"max_turns": 1,
+		"default_agent": "helper",
+		"agents": [
+			{
+				"name": "helper",
+				"system_prompt": "You are helpful.",
+				"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+				"max_turns": 1
+			}
+		],
 		"prefactor": {"api_token_env": "BLORB_TEST_PF_TOKEN"}
 	}`
 	if err := os.WriteFile(path, []byte(cfgJSON), 0o600); err != nil {

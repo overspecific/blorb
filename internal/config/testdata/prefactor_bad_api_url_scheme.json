@@ -1,12 +1,16 @@
 {
-  "name": "helper",
-  "system_prompt": "You are helpful.",
-  "provider": {
-    "type": "openai",
-    "model": "gpt-4o-mini",
-    "base_url": "https://api.example.com/v1"
-  },
-  "max_turns": 5,
+  "agents": [
+    {
+      "name": "helper",
+      "system_prompt": "You are helpful.",
+      "provider": {
+        "type": "openai",
+        "model": "gpt-4o-mini",
+        "base_url": "https://api.example.com/v1"
+      },
+      "max_turns": 1
+    }
+  ],
   "prefactor": {
     "api_url": "ftp://prefactor.example.com"
   }

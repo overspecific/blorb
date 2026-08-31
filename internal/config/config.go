@@ -28,9 +28,9 @@ const ToolTypeCommand ToolType = "command"
 // the builtin field.
 const ToolTypeBuiltin ToolType = "builtin"
 
-// ToolNamePattern is the strict pattern tool names must match so they are
-// valid function names for the API and safe to exec.
-var ToolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+// NamePattern is the strict pattern agent and tool names must match so
+// they are valid function names for the API and safe to exec.
+var NamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 const (
 	// DefaultPath is used when no config path flag is given.
@@ -55,21 +55,49 @@ const (
 	DefaultPrefactorTokenEnv = "PREFACTOR_API_TOKEN"
 )
 
-// Config is the top-level blorb.json schema.
+// Config is the top-level blorb.json schema. It declares the shared tool
+// vocabulary once and a set of named agents that reference those tools.
 type Config struct {
-	Name         string           `json:"name"`
-	SystemPrompt string           `json:"system_prompt"`
-	Provider     Provider         `json:"provider"`
-	MaxTurns     int              `json:"max_turns,omitempty"`
-	Tools        []ToolEntry      `json:"tools,omitempty"`
-	Logging      LogConfig        `json:"logging"`
-	Prefactor    *PrefactorConfig `json:"prefactor,omitempty"`
+	// Agents is the required, non-empty list of agent definitions. Agent
+	// names carry identity: commands resolve an agent by name, the chat
+	// banner and Prefactor registrations use it.
+	Agents []Agent `json:"agents"`
+	// DefaultAgent optionally names the agent commands use when none is
+	// given. When set it must name a defined agent.
+	DefaultAgent string `json:"default_agent,omitempty"`
+	// Tools is the shared tool vocabulary. Agents grant themselves tools
+	// by name; the declarations live here, once.
+	Tools     []ToolEntry      `json:"tools,omitempty"`
+	Logging   LogConfig        `json:"logging"`
+	Prefactor *PrefactorConfig `json:"prefactor,omitempty"`
 
 	// dir is the directory of the loaded config file, the anchor for all
 	// config-relative paths (logging.path, builtin base_dir). Empty for a
 	// programmatically-built Config that never went through Load, which
 	// makes relative paths resolve against the process working directory.
 	dir string
+}
+
+// Agent is one named agent definition inside a config. It owns the
+// agent-scoped settings and lists, by name, the top-level tools it may
+// use; tool definitions themselves live once at the top level and are
+// shared.
+type Agent struct {
+	// Name identifies the agent within the config. It feeds the chat
+	// banner, the chat command's agent argument, and Prefactor's agent
+	// name, and must match NamePattern.
+	Name string `json:"name"`
+	// SystemPrompt is the agent's system prompt.
+	SystemPrompt string `json:"system_prompt"`
+	// Provider describes the LLM backend for this agent.
+	Provider Provider `json:"provider"`
+	// MaxTurns bounds the agent's per-turn tool round trips; 0 means
+	// DefaultMaxTurns (see MaxTurnsOrDefault).
+	MaxTurns int `json:"max_turns,omitempty"`
+	// Tools lists the names of the top-level tools this agent may use.
+	// Absent or empty means the agent has no tools. Every name must
+	// exist in the top-level tools; listing order is the agent's.
+	Tools []string `json:"tools,omitempty"`
 }
 
 // Dir returns the directory of the file this Config was loaded from, or
@@ -245,26 +273,20 @@ func SupportedProviderTypes() []string {
 }
 
 // MaxTurnsOrDefault returns MaxTurns, or DefaultMaxTurns when unset (zero).
-func (c *Config) MaxTurnsOrDefault() int {
-	if c.MaxTurns == 0 {
+func (a Agent) MaxTurnsOrDefault() int {
+	if a.MaxTurns == 0 {
 		return DefaultMaxTurns
 	}
-	return c.MaxTurns
+	return a.MaxTurns
 }
 
 // Validate checks all required fields and value constraints.
 func (c *Config) Validate() error {
-	if c.Name == "" {
-		return fmt.Errorf("name is required")
+	if c.Agents == nil {
+		return fmt.Errorf("agents is required")
 	}
-	if c.SystemPrompt == "" {
-		return fmt.Errorf("system_prompt is required")
-	}
-	if err := c.Provider.validate(); err != nil {
-		return fmt.Errorf("provider: %w", err)
-	}
-	if c.MaxTurns < 1 {
-		return fmt.Errorf("max_turns must be at least 1 (got %d)", c.MaxTurns)
+	if len(c.Agents) == 0 {
+		return fmt.Errorf("agents must not be empty")
 	}
 	for _, t := range c.Tools {
 		if err := t.validate(c.dir); err != nil {
@@ -274,12 +296,58 @@ func (c *Config) Validate() error {
 	if err := validateUniqueToolNames(c.Tools); err != nil {
 		return err
 	}
+	seen := make(map[string]struct{}, len(c.Agents))
+	for _, a := range c.Agents {
+		if err := a.validate(c.Tools); err != nil {
+			return err
+		}
+		if _, ok := seen[a.Name]; ok {
+			return fmt.Errorf("duplicate agent name %q", a.Name)
+		}
+		seen[a.Name] = struct{}{}
+	}
 	if err := c.Logging.validate(); err != nil {
 		return fmt.Errorf("logging: %w", err)
 	}
 	if c.Prefactor != nil {
 		if err := c.Prefactor.validate(); err != nil {
 			return fmt.Errorf("prefactor: %w", err)
+		}
+	}
+	// Last so a per-agent error surfaces first.
+	if c.DefaultAgent != "" && !slices.ContainsFunc(c.Agents, func(a Agent) bool { return a.Name == c.DefaultAgent }) {
+		return fmt.Errorf("default_agent %q is not a defined agent", c.DefaultAgent)
+	}
+	return nil
+}
+
+// validate checks one agent definition: its name, settings, and that every
+// tool it lists exists in the config's top-level tool declarations. tools
+// are the already-validated top-level entries the agent references by name.
+func (a *Agent) validate(tools []ToolEntry) error {
+	if a.Name == "" {
+		return fmt.Errorf("agent name is required")
+	}
+	if !NamePattern.MatchString(a.Name) {
+		return fmt.Errorf("agent name %q must match %s", a.Name, NamePattern)
+	}
+	if a.SystemPrompt == "" {
+		return fmt.Errorf("agent %q: system_prompt is required", a.Name)
+	}
+	if err := a.Provider.validate(); err != nil {
+		return fmt.Errorf("agent %q: provider: %w", a.Name, err)
+	}
+	if a.MaxTurns < 1 {
+		return fmt.Errorf("agent %q: max_turns must be at least 1 (got %d)", a.Name, a.MaxTurns)
+	}
+	seen := make(map[string]struct{}, len(a.Tools))
+	for _, name := range a.Tools {
+		if _, ok := seen[name]; ok {
+			return fmt.Errorf("agent %q: duplicate tool %q", a.Name, name)
+		}
+		seen[name] = struct{}{}
+		if !slices.ContainsFunc(tools, func(t ToolEntry) bool { return t.Name == name }) {
+			return fmt.Errorf("agent %q: unknown tool %q", a.Name, name)
 		}
 	}
 	return nil
@@ -336,8 +404,8 @@ func (t *ToolEntry) validate(dir string) error {
 	if t.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if !ToolNamePattern.MatchString(t.Name) {
-		return fmt.Errorf("name %q must match %s", t.Name, ToolNamePattern)
+	if !NamePattern.MatchString(t.Name) {
+		return fmt.Errorf("name %q must match %s", t.Name, NamePattern)
 	}
 	if t.Description == "" {
 		return fmt.Errorf("description is required")

@@ -1,12 +1,18 @@
 {
-  "name": "simple",
+  "default_agent": "simple",
+  "agents": [
+    {
+      "name": "simple",
       "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short. You love using your echo tool. You are also an enthusiastic biscuit scholar; you have access to a knowledgebase of biscuits of the world using the `read` and `grep` tools.",
-  "provider": {
-    "type": "openai",
-    "model": "Gemma-4-E4B-it-GGUF",
-    "base_url": "http://localhost:13305/v1"
-  },
-  "max_turns": 10,
+      "provider": {
+        "type": "openai",
+        "model": "Gemma-4-E4B-it-GGUF",
+        "base_url": "http://localhost:13305/v1"
+      },
+      "max_turns": 10,
+      "tools": ["echo", "current_time", "read", "grep"]
+    }
+  ],
   "tools": [
     {
       "type": "command",

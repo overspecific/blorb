@@ -170,19 +170,20 @@ func writeJSONPF(w http.ResponseWriter, status int, body any) {
 // set Stdin (and NewClient overrides) themselves.
 func newTracedTestOptions(cfg config.Config, o *chat.Options, srv *httptest.Server, input string, responses ...llm.Response) *chat.Options {
 	o.Config = cfg
+	o.Agent = cfg.Agents[0]
 	o.Version = "test"
 	if o.Stdin == nil {
 		o.Stdin = strings.NewReader(input)
 	}
 	if o.NewClient == nil {
-		o.NewClient = func(config.Config) (llm.Client, error) {
+		o.NewClient = func(config.Config, config.Agent) (llm.Client, error) {
 			return &fakeClient{responses: responses}, nil
 		}
 	}
 	client := prefactor.New(prefactor.Config{BaseURL: srv.URL, Token: "t"})
 	o.Tracer = prefactor.NewTracer(prefactor.TracerConfig{
 		Client:    client,
-		AgentName: cfg.Name,
+		AgentName: o.Agent.Name,
 	})
 	return o
 }
@@ -210,12 +211,12 @@ func TestRunTracedPlainTurn(t *testing.T) {
 
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout}
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 	)
 	o.Stream = true
-	o.NewClient = func(config.Config) (llm.Client, error) {
+	o.NewClient = func(config.Config, config.Agent) (llm.Client, error) {
 		return &streamingFakeClient{
 			responses: []llm.Response{
 				{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
@@ -265,7 +266,7 @@ func TestRunTracedNonStreamingTurn(t *testing.T) {
 
 	var stdout syncBuffer
 	o := chat.Options{Stream: true, Stdout: &stdout}
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 	)
@@ -306,7 +307,7 @@ func TestRunTracedTurnSpanCarriesFinalText(t *testing.T) {
 
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout}
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "the final words"), FinishReason: llm.FinishStop},
 	)
@@ -345,7 +346,7 @@ func TestRunTracedLLMSpanRecordsConfiguredModel(t *testing.T) {
 
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout}
-	cfg := minimalConfig() // Provider.Model = "gpt-test"
+	cfg := testConfig(testAgent()) // Provider.Model = "gpt-test"
 	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 	)
@@ -377,7 +378,7 @@ func TestRunTracedFinishSessionOnCancelledRootCtx(t *testing.T) {
 
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout}
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 	)
@@ -419,10 +420,10 @@ func TestRunTracedFinishSessionOnCancelledRootCtx(t *testing.T) {
 func TestRunNonStreamingClientRendersWithStreamRequested(t *testing.T) {
 	var stdout syncBuffer
 	o := chat.Options{Stream: true, Stdout: &stdout}
-	o.Config = minimalConfig()
+	o.Config = testConfig(testAgent())
 	o.Version = "test"
 	o.Stdin = strings.NewReader("hello\nexit\n")
-	o.NewClient = func(config.Config) (llm.Client, error) {
+	o.NewClient = func(config.Config, config.Agent) (llm.Client, error) {
 		return &fakeClient{responses: []llm.Response{
 			{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 		}}, nil
@@ -441,13 +442,12 @@ func TestRunNonStreamingClientRendersWithStreamRequested(t *testing.T) {
 func TestRunTracedToolTurn(t *testing.T) {
 	f, srv := newFakePFServer(t)
 
-	cfg := minimalConfig()
-	cfg.Tools = []config.ToolEntry{{
+	cfg := testConfig(testAgent(), config.ToolEntry{
 		Type:        config.ToolTypeCommand,
 		Name:        "echo_tool",
 		Description: "Echoes.",
 		Command:     []string{"echo", "hi"},
-	}}
+	})
 
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout}
@@ -523,11 +523,11 @@ func TestRunTracedInterruptedTurn(t *testing.T) {
 	// A client that blocks until the turn's context is cancelled, so the
 	// interrupt lands mid-turn.
 	slow := &blockingClient{started: make(chan struct{})}
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout, SigintChan: sigint}
 	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n")
-	o.NewClient = func(config.Config) (llm.Client, error) { return slow, nil }
+	o.NewClient = func(config.Config, config.Agent) (llm.Client, error) { return slow, nil }
 
 	done := make(chan error, 1)
 	go func() { done <- chat.Run(context.Background(), o) }()
@@ -574,7 +574,7 @@ func TestRunTracedSigintWhileIdle(t *testing.T) {
 
 	sigint := make(chan os.Signal, 1)
 
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout, SigintChan: sigint}
 	// Keep stdin open so the session idles until the SIGINT arrives.
@@ -634,11 +634,11 @@ func TestRunTracedInterruptLandsAsTurnFinishes(t *testing.T) {
 	sigint := make(chan os.Signal, 1)
 
 	client := &interruptedButSuccessClient{started: make(chan struct{})}
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout, SigintChan: sigint}
 	newTracedTestOptions(cfg, &o, srv, "hello\n")
-	o.NewClient = func(config.Config) (llm.Client, error) { return client, nil }
+	o.NewClient = func(config.Config, config.Agent) (llm.Client, error) { return client, nil }
 
 	done := make(chan error, 1)
 	go func() { done <- chat.Run(context.Background(), o) }()
@@ -679,7 +679,7 @@ func TestRunTracedInterruptLandsAsTurnFinishes(t *testing.T) {
 func TestRunTracedTerminateMidTurn(t *testing.T) {
 	f, srv := newFakePFServer(t)
 
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	// Terminate on the turn-span create (first span of the turn).
 	f.setSpanTerminate("operator stopped")
 
@@ -713,7 +713,7 @@ func TestRunTracedTerminateMidTurn(t *testing.T) {
 func TestRunTracedFatalError(t *testing.T) {
 	f, srv := newFakePFServer(t)
 
-	cfg := minimalConfig()
+	cfg := testConfig(testAgent())
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout}
 	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
@@ -739,13 +739,12 @@ func TestRunTracedFatalError(t *testing.T) {
 func TestRunTracedOrphanToolResult(t *testing.T) {
 	f, srv := newFakePFServer(t)
 
-	cfg := minimalConfig()
-	cfg.Tools = []config.ToolEntry{{
+	cfg := testConfig(testAgent(), config.ToolEntry{
 		Type:        config.ToolTypeCommand,
 		Name:        "echo_tool",
 		Description: "Echoes.",
 		Command:     []string{"echo", "hi"},
-	}}
+	})
 
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout}
@@ -802,7 +801,7 @@ func TestRunTracingDisabledNoSpans(t *testing.T) {
 	_ = f
 	_ = srv
 
-	o, stdout := newTestOptions(minimalConfig(), "hello\nexit\n",
+	o, stdout := newTestOptions(testConfig(testAgent()), "hello\nexit\n",
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 	)
 	if err := chat.Run(context.Background(), o); err != nil {

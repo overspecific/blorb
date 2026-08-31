@@ -8,14 +8,10 @@
         "model": "gpt-4o-mini",
         "base_url": "https://api.example.com/v1"
       },
-      "max_turns": 1
-    }
-  ],
-  "tools": [
-    {
-      "type": "webhook",
-      "name": "t",
-      "description": "Unknown type."
+      "max_turns": 1,
+      "tools": [
+        "nope"
+      ]
     }
   ]
 }

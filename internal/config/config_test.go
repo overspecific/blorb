@@ -23,26 +23,38 @@ func TestLoadValid(t *testing.T) {
 		t.Fatalf("Load(valid.json) error = %v, want nil", err)
 	}
 
-	if cfg.Name != "helper" {
-		t.Errorf("Name = %q, want %q", cfg.Name, "helper")
+	if len(cfg.Agents) != 1 {
+		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
 	}
-	if cfg.SystemPrompt != "You are helpful." {
-		t.Errorf("SystemPrompt = %q, want %q", cfg.SystemPrompt, "You are helpful.")
+	agent := cfg.Agents[0]
+	if agent.Name != "helper" {
+		t.Errorf("Agents[0].Name = %q, want %q", agent.Name, "helper")
 	}
-	if cfg.Provider.Type != config.ProviderTypeOpenAI {
-		t.Errorf("Provider.Type = %q, want %q", cfg.Provider.Type, config.ProviderTypeOpenAI)
+	if agent.SystemPrompt != "You are helpful." {
+		t.Errorf("Agents[0].SystemPrompt = %q, want %q", agent.SystemPrompt, "You are helpful.")
 	}
-	if cfg.Provider.Model != "gpt-4o-mini" {
-		t.Errorf("Provider.Model = %q, want %q", cfg.Provider.Model, "gpt-4o-mini")
+	if agent.Provider.Type != config.ProviderTypeOpenAI {
+		t.Errorf("Agents[0].Provider.Type = %q, want %q", agent.Provider.Type, config.ProviderTypeOpenAI)
 	}
-	if cfg.Provider.BaseURL != "https://api.example.com/v1" {
-		t.Errorf("Provider.BaseURL = %q, want %q", cfg.Provider.BaseURL, "https://api.example.com/v1")
+	if agent.Provider.Model != "gpt-4o-mini" {
+		t.Errorf("Agents[0].Provider.Model = %q, want %q", agent.Provider.Model, "gpt-4o-mini")
 	}
-	if cfg.MaxTurns != 5 {
-		t.Errorf("MaxTurns = %d, want 5", cfg.MaxTurns)
+	if agent.Provider.BaseURL != "https://api.example.com/v1" {
+		t.Errorf("Agents[0].Provider.BaseURL = %q, want %q", agent.Provider.BaseURL, "https://api.example.com/v1")
 	}
-	if got, want := cfg.MaxTurnsOrDefault(), 5; got != want {
-		t.Errorf("MaxTurnsOrDefault() = %d, want %d", got, want)
+	if agent.MaxTurns != 5 {
+		t.Errorf("Agents[0].MaxTurns = %d, want 5", agent.MaxTurns)
+	}
+	if got, want := agent.MaxTurnsOrDefault(), 5; got != want {
+		t.Errorf("Agents[0].MaxTurnsOrDefault() = %d, want %d", got, want)
+	}
+	if got, want := agent.Tools, []string{"list_files", "greet", "read_fixture"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("Agents[0].Tools = %v, want %v", got, want)
+	}
+	// No default_agent in the fixture: the field is optional and Load
+	// succeeds with it empty.
+	if cfg.DefaultAgent != "" {
+		t.Errorf("DefaultAgent = %q, want empty when unset", cfg.DefaultAgent)
 	}
 	if len(cfg.Tools) != 3 {
 		t.Fatalf("len(Tools) = %d, want 3", len(cfg.Tools))
@@ -73,30 +85,81 @@ func TestLoadValid(t *testing.T) {
 	}
 }
 
+func TestLoadAgentsMulti(t *testing.T) {
+	// The canonical multi-agent fixture: two agents sharing one tool, only
+	// one of which also uses a second tool, and one with an empty tools
+	// list. Pins the parsed shape and per-agent defaults.
+	cfg, err := loadTestdata(t, "agents_multi_valid.json")
+	if err != nil {
+		t.Fatalf("Load(agents_multi_valid.json) error = %v, want nil", err)
+	}
+
+	if len(cfg.Agents) != 2 {
+		t.Fatalf("len(Agents) = %d, want 2", len(cfg.Agents))
+	}
+	main := cfg.Agents[0]
+	if main.Name != "main" {
+		t.Errorf("Agents[0].Name = %q, want %q", main.Name, "main")
+	}
+	if main.SystemPrompt != "You are helpful." {
+		t.Errorf("Agents[0].SystemPrompt = %q, want %q", main.SystemPrompt, "You are helpful.")
+	}
+	if main.MaxTurns != 3 {
+		t.Errorf("Agents[0].MaxTurns = %d, want 3", main.MaxTurns)
+	}
+	if got, want := main.MaxTurnsOrDefault(), 3; got != want {
+		t.Errorf("main MaxTurnsOrDefault() = %d, want %d", got, want)
+	}
+	if got, want := main.Tools, []string{"echo", "read_fixture"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("main Tools = %v, want %v", got, want)
+	}
+
+	quiet := cfg.Agents[1]
+	if quiet.Name != "quiet" {
+		t.Errorf("Agents[1].Name = %q, want %q", quiet.Name, "quiet")
+	}
+	if len(quiet.Tools) != 0 {
+		t.Errorf("quiet Tools = %v, want empty", quiet.Tools)
+	}
+	// Configs require max_turns >= 1, so a loaded agent always carries an
+	// explicit value; zero-value defaulting is covered programmatically
+	// in TestMaxTurnsOrDefaultProgrammatic.
+	if got, want := quiet.MaxTurnsOrDefault(), 1; got != want {
+		t.Errorf("quiet MaxTurnsOrDefault() = %d, want %d", got, want)
+	}
+	if cfg.DefaultAgent != "main" {
+		t.Errorf("DefaultAgent = %q, want %q", cfg.DefaultAgent, "main")
+	}
+	if len(cfg.Tools) != 2 {
+		t.Fatalf("len(Tools) = %d, want 2", len(cfg.Tools))
+	}
+}
+
 func TestLoadMaxTurnsDefault(t *testing.T) {
 	cfg, err := loadTestdata(t, "with_api_key_env.json")
 	if err != nil {
 		t.Fatalf("Load error = %v, want nil", err)
 	}
-	if cfg.Provider.APIKeyEnvOrDefault() != "MY_API_KEY" {
-		t.Errorf("APIKeyEnv = %q, want %q", cfg.Provider.APIKeyEnvOrDefault(), "MY_API_KEY")
+	agent := cfg.Agents[0]
+	if agent.Provider.APIKeyEnvOrDefault() != "MY_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", agent.Provider.APIKeyEnvOrDefault(), "MY_API_KEY")
 	}
-	if cfg.MaxTurns != 5 {
-		t.Errorf("MaxTurns = %d, want 5", cfg.MaxTurns)
+	if agent.MaxTurns != 5 {
+		t.Errorf("MaxTurns = %d, want 5", agent.MaxTurns)
 	}
-	if got, want := cfg.MaxTurnsOrDefault(), 5; got != want {
+	if got, want := agent.MaxTurnsOrDefault(), 5; got != want {
 		t.Errorf("MaxTurnsOrDefault() = %d, want %d", got, want)
 	}
 }
 
 func TestMaxTurnsOrDefaultProgrammatic(t *testing.T) {
-	cfg := config.Config{}
-	if got := cfg.MaxTurnsOrDefault(); got != config.DefaultMaxTurns {
+	agent := config.Agent{}
+	if got := agent.MaxTurnsOrDefault(); got != config.DefaultMaxTurns {
 		t.Errorf("MaxTurnsOrDefault() = %d, want %d for zero value", got, config.DefaultMaxTurns)
 	}
 
-	cfg.MaxTurns = 7
-	if got := cfg.MaxTurnsOrDefault(); got != 7 {
+	agent.MaxTurns = 7
+	if got := agent.MaxTurnsOrDefault(); got != 7 {
 		t.Errorf("MaxTurnsOrDefault() = %d, want 7", got)
 	}
 }
@@ -106,14 +169,7 @@ func TestMaxTurnsOrDefaultProgrammatic(t *testing.T) {
 // already valid JSON, so invalid schema JSON fails the outer parse first.
 func TestValidateRejectsBadArgsSchema(t *testing.T) {
 	cfg := config.Config{
-		Name:         "helper",
-		SystemPrompt: "You are helpful.",
-		Provider: config.Provider{
-			Type:    config.ProviderTypeOpenAI,
-			Model:   "m",
-			BaseURL: "http://localhost:1",
-		},
-		MaxTurns: 5,
+		Agents: []config.Agent{validAgent()},
 		Tools: []config.ToolEntry{{
 			Type:        config.ToolTypeCommand,
 			Name:        "t",
@@ -130,7 +186,16 @@ func TestValidateRejectsBadArgsSchema(t *testing.T) {
 }
 
 func TestValidateAcceptsMissingAPIKeyEnv(t *testing.T) {
-	cfg := config.Config{
+	cfg := config.Config{Agents: []config.Agent{validAgent()}}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate error = %v, want nil when api_key_env is absent", err)
+	}
+}
+
+// validAgent returns the canonical single valid agent for programmatic
+// configs.
+func validAgent() config.Agent {
+	return config.Agent{
 		Name:         "helper",
 		SystemPrompt: "You are helpful.",
 		Provider: config.Provider{
@@ -138,10 +203,7 @@ func TestValidateAcceptsMissingAPIKeyEnv(t *testing.T) {
 			Model:   "m",
 			BaseURL: "http://localhost:1",
 		},
-		MaxTurns: 5,
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate error = %v, want nil when api_key_env is absent", err)
+		MaxTurns: 1,
 	}
 }
 
@@ -183,14 +245,7 @@ func TestPrefactorAbsent(t *testing.T) {
 
 func TestPrefactorDefaults(t *testing.T) {
 	cfg := config.Config{
-		Name:         "helper",
-		SystemPrompt: "You are helpful.",
-		Provider: config.Provider{
-			Type:    config.ProviderTypeOpenAI,
-			Model:   "m",
-			BaseURL: "http://localhost:1",
-		},
-		MaxTurns:  1,
+		Agents:    []config.Agent{validAgent()},
 		Prefactor: &config.PrefactorConfig{},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -212,14 +267,7 @@ func TestValidateBuiltinEntry(t *testing.T) {
 	// per-type validation of the builtin field, its settings object, and
 	// the command-only fields they must not carry.
 	base := config.Config{
-		Name:         "helper",
-		SystemPrompt: "You are helpful.",
-		Provider: config.Provider{
-			Type:    config.ProviderTypeOpenAI,
-			Model:   "m",
-			BaseURL: "http://localhost:1",
-		},
-		MaxTurns: 1,
+		Agents: []config.Agent{validAgent()},
 		Tools: []config.ToolEntry{{
 			Type:        config.ToolTypeBuiltin,
 			Name:        "t",
@@ -263,11 +311,21 @@ func TestLoadRejects(t *testing.T) {
 		file     string
 		errParts []string
 	}{
-		{"missing_name.json", []string{"name is required"}},
-		{"missing_system_prompt.json", []string{"system_prompt is required"}},
+		{"agents_missing.json", []string{"agents is required"}},
+		{"agents_empty.json", []string{"agents must not be empty"}},
+		{"agent_missing_name.json", []string{"agent name is required"}},
+		{"agent_bad_name.json", []string{`agent name "has space" must match`}},
+		{"duplicate_agent_names.json", []string{"duplicate agent name"}},
+		{"agent_missing_system_prompt.json", []string{`agent "helper": system_prompt is required`}},
+		{"agent_invalid_provider.json", []string{"unknown type", "anthropic", "openai"}},
+		{"agent_bad_max_turns.json", []string{`agent "helper": max_turns must be at least 1 (got 0)`}},
+		{"agent_unknown_tool.json", []string{`agent "helper": unknown tool "nope"`}},
+		{"agent_duplicate_tool.json", []string{`agent "helper": duplicate tool "echo"`}},
+		{"agent_empty_tool.json", []string{`agent "helper": unknown tool ""`}},
+		{"agent_unknown_field.json", []string{"no_such_field"}},
+		{"default_agent_unknown.json", []string{`default_agent "ghost" is not a defined agent`}},
 		{"missing_provider_model.json", []string{"model is required"}},
 		{"missing_provider_base_url.json", []string{"base_url"}},
-		{"unknown_provider_type.json", []string{"unknown type", "anthropic", "openai"}},
 		{"bad_base_url_scheme.json", []string{"ftp", "http or https"}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
@@ -286,8 +344,6 @@ func TestLoadRejects(t *testing.T) {
 		{"tool_command_with_config.json", []string{"config is not valid for command tools"}},
 		{"duplicate_tool_names.json", []string{"duplicate tool name"}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
-		{"negative_max_turns.json", []string{"max_turns"}},
-		{"zero_max_turns.json", []string{"max_turns must be at least 1 (got 0)"}},
 		{"empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
 		{"prefactor_unknown_field.json", []string{"no_such_field"}},
 		{"prefactor_empty_token_env.json", []string{"api_token_env must not be empty when set"}},
@@ -331,7 +387,7 @@ func TestLoadBuiltinValid(t *testing.T) {
 	if len(tool.Command) != 0 {
 		t.Errorf("Command = %v, want empty for a builtin entry", tool.Command)
 	}
-	// base_dir "." resolves relative to the config file, so valid.json's
+	// base_dir "." resolves relative to the config file, so the fixture's
 	// builtin read with base_dir "." anchors at testdata/ — proven by the
 	// fixture loading at all (the parse stats the directory).
 }
@@ -347,7 +403,7 @@ func TestConfigDir(t *testing.T) {
 
 	// A programmatically-built Config has no directory: config-relative
 	// paths fall back to the process working directory.
-	prog := config.Config{Name: "x", SystemPrompt: "s", MaxTurns: 1}
+	prog := config.Config{Agents: []config.Agent{validAgent()}}
 	if got := prog.Dir(); got != "" {
 		t.Errorf("Dir() = %q, want empty for a built Config", got)
 	}
@@ -367,10 +423,12 @@ func TestLoadBuiltinBaseDirRelativeToConfig(t *testing.T) {
 		}
 		path := filepath.Join(cfgDir, "blorb.json")
 		if err := os.WriteFile(path, []byte(`{
-			"name": "helper",
-			"system_prompt": "s",
-			"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
-			"max_turns": 1,
+			"agents": [{
+				"name": "helper",
+				"system_prompt": "s",
+				"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+				"max_turns": 1
+			}],
 			"tools": [{
 				"type": "builtin",
 				"name": "read",
@@ -394,10 +452,12 @@ func TestLoadBuiltinBaseDirRelativeToConfig(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "blorb.json")
 		if err := os.WriteFile(path, []byte(`{
-			"name": "helper",
-			"system_prompt": "s",
-			"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
-			"max_turns": 1,
+			"agents": [{
+				"name": "helper",
+				"system_prompt": "s",
+				"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+				"max_turns": 1
+			}],
 			"tools": [{
 				"type": "builtin",
 				"name": "read",
@@ -433,7 +493,7 @@ func TestLoadErrors(t *testing.T) {
 
 	t.Run("trailing values", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "extra.json")
-		if err := os.WriteFile(path, []byte(`{"name":"x"} {}`), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(`{"agents":[]} {}`), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 
@@ -445,7 +505,7 @@ func TestLoadErrors(t *testing.T) {
 
 	t.Run("trailing garbage", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "garbage.json")
-		if err := os.WriteFile(path, []byte(`{"provider":{"type":"openai","model":"m","base_url":"http://x"}} xyz`), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(`{"agents":[{"name":"x","system_prompt":"s","provider":{"type":"openai","model":"m","base_url":"http://x"}}]} xyz`), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 
@@ -481,18 +541,26 @@ func loggingConfig(t *testing.T, logging json.RawMessage) (config.Config, error)
 	var full string
 	if len(logging) > 0 {
 		full = fmt.Sprintf(`{
-			"name": "helper",
-			"system_prompt": "You are helpful.",
-			"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
-			"max_turns": 1,
+			"agents": [
+				{
+					"name": "helper",
+					"system_prompt": "You are helpful.",
+					"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+					"max_turns": 1
+				}
+			],
 			"logging": %s
 		}`, logging)
 	} else {
 		full = `{
-			"name": "helper",
-			"system_prompt": "You are helpful.",
-			"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
-			"max_turns": 1
+			"agents": [
+				{
+					"name": "helper",
+					"system_prompt": "You are helpful.",
+					"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+					"max_turns": 1
+				}
+			]
 		}`
 	}
 

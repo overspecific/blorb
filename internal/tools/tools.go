@@ -91,8 +91,8 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 		if e.Name == "" {
 			return nil, fmt.Errorf("tool with empty name")
 		}
-		if !config.ToolNamePattern.MatchString(e.Name) {
-			return nil, fmt.Errorf("tool name %q must match %s", e.Name, config.ToolNamePattern)
+		if !config.NamePattern.MatchString(e.Name) {
+			return nil, fmt.Errorf("tool name %q must match %s", e.Name, config.NamePattern)
 		}
 		if e.Description == "" {
 			return nil, fmt.Errorf("tool %q: description is required", e.Name)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/urfave/cli/v3"
 
@@ -64,9 +66,14 @@ func chatCommand() *cli.Command {
 				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
 			}
 
+			agent, err := resolveAgent(cfg, "")
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
+			}
+
 			var tracer *prefactor.Tracer
 			if cfg.PrefactorEnabled() {
-				tracer, err = buildPrefactorTracer(ctx, cfg)
+				tracer, err = buildPrefactorTracer(ctx, cfg, agent)
 				if err != nil {
 					return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
 				}
@@ -74,6 +81,7 @@ func chatCommand() *cli.Command {
 
 			err = chat.Run(ctx, chat.Options{
 				Config:     cfg,
+				Agent:      agent,
 				Version:    cmd.Root().Version,
 				Stdin:      os.Stdin,
 				Stdout:     os.Stdout,
@@ -89,10 +97,39 @@ func chatCommand() *cli.Command {
 	}
 }
 
+// resolveAgent picks the agent a chat session runs: the given name when
+// non-empty, else the config's default_agent. It fails with the available
+// agent names when nothing is chosen and with a not-defined error when the
+// chosen name is not in the config.
+func resolveAgent(cfg config.Config, name string) (config.Agent, error) {
+	if name == "" {
+		if cfg.DefaultAgent == "" {
+			return config.Agent{}, fmt.Errorf("no agent given and no default_agent configured (available: %s)", strings.Join(sortedAgentNames(cfg), ", "))
+		}
+		name = cfg.DefaultAgent
+	}
+	for _, a := range cfg.Agents {
+		if a.Name == name {
+			return a, nil
+		}
+	}
+	return config.Agent{}, fmt.Errorf("agent %q is not defined in the config", name)
+}
+
+// sortedAgentNames lists the config's agent names sorted alphabetically.
+func sortedAgentNames(cfg config.Config) []string {
+	names := make([]string, 0, len(cfg.Agents))
+	for _, a := range cfg.Agents {
+		names = append(names, a.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // buildPrefactorTracer constructs the Prefactor tracer for a chat session:
 // the API token is resolved from the configured environment variable, which
 // must be set and non-empty.
-func buildPrefactorTracer(ctx context.Context, cfg config.Config) (*prefactor.Tracer, error) {
+func buildPrefactorTracer(ctx context.Context, cfg config.Config, agent config.Agent) (*prefactor.Tracer, error) {
 	pf := cfg.Prefactor
 	envName := pf.APITokenEnvOrDefault()
 	token := os.Getenv(envName)
@@ -107,7 +144,7 @@ func buildPrefactorTracer(ctx context.Context, cfg config.Config) (*prefactor.Tr
 		Client:        client,
 		AgentID:       pf.AgentID,
 		EnvironmentID: pf.EnvironmentID,
-		AgentName:     cfg.Name,
+		AgentName:     agent.Name,
 	}), nil
 }
 
