@@ -4,7 +4,7 @@ Today a blorb.json describes exactly one agent: `system_prompt`, `provider`, and
 
 ## Todo
 
-- [ ] Commit 1: config schema — `agents`, `default_agent`, per-agent tool lists
+- [x] Commit 1: config schema — `agents`, `default_agent`, per-agent tool lists
 - [ ] Commit 2: per-agent tool access — `AgentTools` resolution and helper API
 - [ ] Commit 3: chat `agent` positional argument
 - [ ] Commit 4: README, examples, and fixture polish
