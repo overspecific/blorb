@@ -8,7 +8,7 @@ A new `blorb run` subcommand executes exactly one agent turn and exits — the s
 - [x] Commit 2: internal/run engine chain and one-turn execution
 - [x] Commit 3: `blorb run` subcommand wiring
 - [x] Commit 4: Prefactor tracing for run
-- [ ] Commit 5: docs
+- [x] Commit 5: docs
 
 ---
 
