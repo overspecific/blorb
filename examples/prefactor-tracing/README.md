@@ -1,6 +1,6 @@
 # Prefactor tracing example agent
 
-A simplified version of the [simple](../simple) example focused on Prefactor tracing: just the `read` and `grep` builtins, pointed at that example's `knowledgebase/` directory (a field guide to biscuits of the world), with the same `prefactor` block.
+A simplified version of the [simple](../simple) example focused on Prefactor tracing: a single named agent (`tracey`, the config's `default_agent`) with just the `read` and `grep` builtins, pointed at that example's `knowledgebase/` directory (a field guide to biscuits of the world), with a `prefactor` block.
 
 ## Setup
 
@@ -30,7 +30,6 @@ From the repo root:
 bin/build
 ./blorb chat --config examples/prefactor-tracing/blorb.json
 ```
-
 Then try prompts like:
 
 ```

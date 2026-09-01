@@ -1,8 +1,8 @@
 {
-  "default_agent": "prefactor-tracing",
+  "default_agent": "tracey",
   "agents": [
     {
-      "name": "prefactor-tracing",
+      "name": "tracey",
       "system_prompt": "You are Tracey, a demo agent for Prefactor tracing. Keep your answers short. You are a biscuit scholar; you have access to a knowledgebase of biscuits of the world using the `read` and `grep` tools. Use them to answer questions about biscuits.",
       "provider": {
         "type": "openai",
@@ -10,7 +10,10 @@
         "base_url": "http://localhost:13305/v1"
       },
       "max_turns": 10,
-      "tools": ["read", "grep"]
+      "tools": [
+        "read",
+        "grep"
+      ]
     }
   ],
   "prefactor": {
@@ -22,14 +25,18 @@
       "name": "read",
       "description": "Read a file at the given path and return its contents.",
       "builtin": "read",
-      "config": {"base_dir": "../simple/knowledgebase"}
+      "config": {
+        "base_dir": "../simple/knowledgebase"
+      }
     },
     {
       "type": "builtin",
       "name": "grep",
       "description": "Search the knowledgebase files for lines matching a regular expression pattern, returning matches as path:line:text.",
       "builtin": "grep",
-      "config": {"base_dir": "../simple/knowledgebase"}
+      "config": {
+        "base_dir": "../simple/knowledgebase"
+      }
     }
   ]
 }

@@ -11,6 +11,17 @@
       },
       "max_turns": 10,
       "tools": ["echo", "current_time", "read", "grep"]
+    },
+    {
+      "name": "scholar",
+      "system_prompt": "You are an enthusiastic biscuit scholar. You have access to a knowledgebase of biscuits of the world using the `read` and `grep` tools. Use them to answer questions about biscuits, and never take no for an answer: look it up.",
+      "max_turns": 10,
+      "tools": ["read", "grep"],
+      "provider": {
+        "type": "openai",
+        "model": "Gemma-4-E4B-it-GGUF",
+        "base_url": "http://localhost:13305/v1"
+      }
     }
   ],
   "tools": [

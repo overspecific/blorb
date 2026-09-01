@@ -6,14 +6,14 @@
 
 A single-binary tool for making AI agents.
 
-Blorb lets you define an agent in a `blorb.json` file and chat with it. It's built for experimentation: try different system prompts and tool setups with minimal ceremony, using a plain JSON config.
+Blorb lets you define agents in a `blorb.json` file and chat with any of them. It's built for experimentation: try different system prompts and tool setups with minimal ceremony, using a plain JSON config — a single config can hold several named agents sharing one tool set, and you pick which one to run per invocation.
 
 Tools are plain executables declared in the config, or built-ins implemented inside Blorb. When the model calls a tool, Blorb runs it, pipes the JSON arguments to its stdin (for command tools), and returns the output to the model. Anything that can read stdin and write stdout can be a tool.
 
 ## Features
 
-- Agent definition via a single `blorb.json` file
-- Interactive chat REPL with multi-turn tool calling
+- One `blorb.json` defines any number of named agents, each with its own system prompt, provider, and tool grants
+- Interactive chat REPL with multi-turn tool calling, running a chosen agent per invocation
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
 - Full wire logging: every LLM request/response and tool call/result is written to a timestamped file per session, so a plain sort of the filenames replays a turn in order (see [Logging](#logging))
 - Tools as local subprocesses or built-ins (`read`, `grep`), with JSON Schema argument declarations
@@ -66,12 +66,20 @@ Commands:
 ### Chat
 
 ```sh
-# uses ./blorb.json by default
+# chat with the config's default agent (./blorb.json by default)
 ./blorb chat
+
+# or chat with an explicitly named agent
+./blorb chat alpha
 
 # or point at an explicit config
 ./blorb chat --config examples/simple/blorb.json
+
+# the agent name can follow the flags
+./blorb chat --config examples/simple/blorb.json simple
 ```
+
+The agent is resolved in order: the positional `agent` argument when given, else the config's `default_agent`; with neither, the command fails and lists the defined agents. Naming an agent that is not in the config is an error.
 
 Flags: `-c | --config <path>`, `--no-stream` (disable streamed responses), `-h | --help`. Version: `blorb --version` or `blorb version`.
 
@@ -79,19 +87,35 @@ Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C
 
 ## Configuration
 
-Agents are defined in a `blorb.json` file:
+A `blorb.json` defines the agents and their shared tool vocabulary:
 
 ```json
 {
-  "name": "simple",
-  "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short.",
-  "provider": {
-    "type": "openai",
-    "model": "Gemma-4-E4B-it-GGUF",
-    "base_url": "http://localhost:13305/v1",
-    "api_key_env": "MY_API_KEY"
-  },
-  "max_turns": 10,
+  "default_agent": "simple",
+  "agents": [
+    {
+      "name": "simple",
+      "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short.",
+      "provider": {
+        "type": "openai",
+        "model": "Gemma-4-E4B-it-GGUF",
+        "base_url": "http://localhost:13305/v1",
+        "api_key_env": "MY_API_KEY"
+      },
+      "max_turns": 10,
+      "tools": ["echo", "read"]
+    },
+    {
+      "name": "quiet",
+      "system_prompt": "You answer in one short sentence.",
+      "provider": {
+        "type": "openai",
+        "model": "Gemma-4-E4B-it-GGUF",
+        "base_url": "http://localhost:13305/v1"
+      },
+      "tools": ["echo"]
+    }
+  ],
   "tools": [
     {
       "type": "command",
@@ -117,17 +141,33 @@ Agents are defined in a `blorb.json` file:
 }
 ```
 
+With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb chat quiet` runs the quiet one, and `./blorb chat nope` fails naming the defined agents. Both agents share the `echo` tool; only `simple` also uses the `read` builtin.
+
 ### Top-level fields
 
-| Field           | Required | Description                                    |
-| --------------- | -------- | ---------------------------------------------- |
-| `name`          | yes      | Agent name, shown in the chat banner.          |
-| `system_prompt` | yes      | The system prompt for the agent.               |
-| `provider`      | yes      | LLM backend config (see below).                |
-| `max_turns`     | no       | Max model turns per user message (default 10). |
-| `tools`         | no       | List of tool declarations (see below).         |
-| `logging`       | no       | Wire logging config (see below).               |
-| `prefactor`     | no       | Prefactor tracing config (see below).          |
+| Field           | Required | Description                                                                        |
+| --------------- | -------- | ------------------------------------------------------------------------------------ |
+| `agents`        | yes      | The agent definitions (see below).                                                   |
+| `default_agent` | no       | Name of the agent commands use when none is given; must name a defined agent.        |
+| `tools`         | no       | Top-level tool declarations, shared across agents (see below).                       |
+| `logging`       | no       | Wire logging config (see below).                                                     |
+| `prefactor`     | no       | Prefactor tracing config (see below).                                                |
+
+### Agents
+
+Each agent definition carries its own settings and the names of the top-level tools it may use:
+
+| Field           | Required | Description                                                                                    |
+| --------------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `name`          | yes      | Unique within the config; must match `^[a-zA-Z0-9_-]+$`. Shown in the chat banner, registered with Prefactor, and what `blorb chat [agent]` takes. |
+| `system_prompt` | yes      | The agent's system prompt.                                                                       |
+| `provider`      | yes      | LLM backend config (see below).                                                                  |
+| `max_turns`     | yes      | Max model turns per user message; must be at least 1.                                            |
+| `tools`         | no       | The *names* of the top-level tools this agent may use. Absent or empty means no tools.           |
+
+Tools are shared vocabulary: they are declared once at the top level, and each agent lists, by name, the ones it may use. An agent listing an unknown tool is a config error, and listing the same tool twice within one agent is an error too. The listed order is the agent's — that is the order the tools are presented to the model. Agent names must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
+
+`default_agent` is optional; when set it must name a defined agent, and when absent `blorb chat` requires an explicit agent argument.
 
 ### Provider
 
@@ -241,9 +281,9 @@ blorb chat
 
 ## Examples
 
-See [examples/simple](examples/simple) for a minimal agent with `echo` and `current_time` command tools and `read`/`grep` builtins (pointed at the example's `knowledgebase/` directory), including notes on pointing the provider at different OpenAI-compatible servers.
+See [examples/simple](examples/simple) for a two-agent config sharing one tool set: `echo` and `current_time` command tools and `read`/`grep` builtins (pointed at the example's `knowledgebase/` directory), with `scholar` granted only the knowledgebase builtins, including notes on pointing the provider at different OpenAI-compatible servers.
 
-See [examples/prefactor-tracing](examples/prefactor-tracing) for a stripped-down variant with just the `read`/`grep` builtins (sharing simple's `knowledgebase/`) and Prefactor tracing enabled.
+See [examples/prefactor-tracing](examples/prefactor-tracing) for a single-agent variant with just the `read`/`grep` builtins (sharing simple's `knowledgebase/`) and Prefactor tracing enabled.
 
 ## Development
 

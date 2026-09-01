@@ -18,80 +18,13 @@ func loadTestdata(t *testing.T, name string) (config.Config, error) {
 }
 
 func TestLoadValid(t *testing.T) {
+	// The canonical fixture: two named agents sharing one top-level tool,
+	// only one of which also uses a second tool, and one with an empty
+	// tools list. Pins the parsed shape, DefaultAgent, and per-agent
+	// defaults.
 	cfg, err := loadTestdata(t, "valid.json")
 	if err != nil {
 		t.Fatalf("Load(valid.json) error = %v, want nil", err)
-	}
-
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
-	}
-	agent := cfg.Agents[0]
-	if agent.Name != "helper" {
-		t.Errorf("Agents[0].Name = %q, want %q", agent.Name, "helper")
-	}
-	if agent.SystemPrompt != "You are helpful." {
-		t.Errorf("Agents[0].SystemPrompt = %q, want %q", agent.SystemPrompt, "You are helpful.")
-	}
-	if agent.Provider.Type != config.ProviderTypeOpenAI {
-		t.Errorf("Agents[0].Provider.Type = %q, want %q", agent.Provider.Type, config.ProviderTypeOpenAI)
-	}
-	if agent.Provider.Model != "gpt-4o-mini" {
-		t.Errorf("Agents[0].Provider.Model = %q, want %q", agent.Provider.Model, "gpt-4o-mini")
-	}
-	if agent.Provider.BaseURL != "https://api.example.com/v1" {
-		t.Errorf("Agents[0].Provider.BaseURL = %q, want %q", agent.Provider.BaseURL, "https://api.example.com/v1")
-	}
-	if agent.MaxTurns != 5 {
-		t.Errorf("Agents[0].MaxTurns = %d, want 5", agent.MaxTurns)
-	}
-	if got, want := agent.MaxTurnsOrDefault(), 5; got != want {
-		t.Errorf("Agents[0].MaxTurnsOrDefault() = %d, want %d", got, want)
-	}
-	if got, want := agent.Tools, []string{"list_files", "greet", "read_fixture"}; fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("Agents[0].Tools = %v, want %v", got, want)
-	}
-	// No default_agent in the fixture: the field is optional and Load
-	// succeeds with it empty.
-	if cfg.DefaultAgent != "" {
-		t.Errorf("DefaultAgent = %q, want empty when unset", cfg.DefaultAgent)
-	}
-	if len(cfg.Tools) != 3 {
-		t.Fatalf("len(Tools) = %d, want 3", len(cfg.Tools))
-	}
-
-	first := cfg.Tools[0]
-	if first.Name != "list_files" {
-		t.Errorf("Tools[0].Name = %q, want %q", first.Name, "list_files")
-	}
-	if first.Description != "List files in a directory." {
-		t.Errorf("Tools[0].Description = %q, want %q", first.Description, "List files in a directory.")
-	}
-	if len(first.Command) != 3 || first.Command[0] != "ls" || first.Command[1] != "-la" || first.Command[2] != "." {
-		t.Errorf("Tools[0].Command = %v, want [ls -la .]", first.Command)
-	}
-	if len(first.ArgsSchema) != 0 {
-		t.Errorf("Tools[0].ArgsSchema = %s, want empty", first.ArgsSchema)
-	}
-	if len(cfg.Tools[1].ArgsSchema) == 0 || !json.Valid(cfg.Tools[1].ArgsSchema) {
-		t.Fatalf("Tools[1].ArgsSchema = %s, want valid JSON", cfg.Tools[1].ArgsSchema)
-	}
-	var schema map[string]any
-	if err := json.Unmarshal(cfg.Tools[1].ArgsSchema, &schema); err != nil {
-		t.Fatalf("unmarshal ArgsSchema: %v", err)
-	}
-	if schema["type"] != "object" {
-		t.Errorf("Tools[1].ArgsSchema type = %v, want object", schema["type"])
-	}
-}
-
-func TestLoadAgentsMulti(t *testing.T) {
-	// The canonical multi-agent fixture: two agents sharing one tool, only
-	// one of which also uses a second tool, and one with an empty tools
-	// list. Pins the parsed shape and per-agent defaults.
-	cfg, err := loadTestdata(t, "agents_multi_valid.json")
-	if err != nil {
-		t.Fatalf("Load(agents_multi_valid.json) error = %v, want nil", err)
 	}
 
 	if len(cfg.Agents) != 2 {
@@ -104,6 +37,15 @@ func TestLoadAgentsMulti(t *testing.T) {
 	if main.SystemPrompt != "You are helpful." {
 		t.Errorf("Agents[0].SystemPrompt = %q, want %q", main.SystemPrompt, "You are helpful.")
 	}
+	if main.Provider.Type != config.ProviderTypeOpenAI {
+		t.Errorf("Agents[0].Provider.Type = %q, want %q", main.Provider.Type, config.ProviderTypeOpenAI)
+	}
+	if main.Provider.Model != "m2" {
+		t.Errorf("Agents[0].Provider.Model = %q, want %q", main.Provider.Model, "m2")
+	}
+	if main.Provider.BaseURL != "http://localhost:1" {
+		t.Errorf("Agents[0].Provider.BaseURL = %q, want %q", main.Provider.BaseURL, "http://localhost:1")
+	}
 	if main.MaxTurns != 3 {
 		t.Errorf("Agents[0].MaxTurns = %d, want 3", main.MaxTurns)
 	}
@@ -111,7 +53,7 @@ func TestLoadAgentsMulti(t *testing.T) {
 		t.Errorf("main MaxTurnsOrDefault() = %d, want %d", got, want)
 	}
 	if got, want := main.Tools, []string{"echo", "read_fixture"}; fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("main Tools = %v, want %v", got, want)
+		t.Errorf("main.Tools = %v, want %v", got, want)
 	}
 
 	quiet := cfg.Agents[1]
@@ -132,6 +74,30 @@ func TestLoadAgentsMulti(t *testing.T) {
 	}
 	if len(cfg.Tools) != 2 {
 		t.Fatalf("len(Tools) = %d, want 2", len(cfg.Tools))
+	}
+
+	echo := cfg.Tools[0]
+	if echo.Name != "echo" {
+		t.Errorf("Tools[0].Name = %q, want %q", echo.Name, "echo")
+	}
+	if echo.Description != "Return a greeting." {
+		t.Errorf("Tools[0].Description = %q, want %q", echo.Description, "Return a greeting.")
+	}
+	if len(echo.Command) != 2 || echo.Command[0] != "echo" || echo.Command[1] != "hello" {
+		t.Errorf("Tools[0].Command = %v, want [echo hello]", echo.Command)
+	}
+	if len(echo.ArgsSchema) == 0 || !json.Valid(echo.ArgsSchema) {
+		t.Fatalf("Tools[0].ArgsSchema = %s, want valid JSON", echo.ArgsSchema)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(echo.ArgsSchema, &schema); err != nil {
+		t.Fatalf("unmarshal ArgsSchema: %v", err)
+	}
+	if schema["type"] != "object" {
+		t.Errorf("Tools[0].ArgsSchema type = %v, want object", schema["type"])
+	}
+	if len(cfg.Tools[1].ArgsSchema) != 0 {
+		t.Errorf("Tools[1].ArgsSchema = %s, want empty (builtins define their own schema)", cfg.Tools[1].ArgsSchema)
 	}
 }
 
