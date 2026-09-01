@@ -80,13 +80,20 @@ func TestSimpleExampleTracingDisabled(t *testing.T) {
 			t.Errorf("agent simple tools = %v, want it to include %q", simple.Tools, name)
 		}
 	}
-	for _, name := range []string{"read", "grep", "current_time"} {
+	for _, name := range []string{"read", "grep", "current_time", "search"} {
 		if slices.Contains(simple.Tools, name) {
 			t.Errorf("agent simple tools = %v, want it to exclude %q (specialists own those domains)", simple.Tools, name)
 		}
 	}
-	if got, want := scholar.Tools, []string{"read", "grep"}; fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("scholar.Tools = %v, want %v (the scholar needs no echo or clock)", got, want)
+	if got, want := scholar.Tools, []string{"read", "search"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("scholar.Tools = %v, want %v (the scholar delegates its digging to the search agent)", got, want)
+	}
+	search, ok := cfg.Agent("search")
+	if !ok {
+		t.Fatalf("Agent(search) missing; agents = %v", cfg.Agents)
+	}
+	if got, want := search.Tools, []string{"read", "grep"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("search.Tools = %v, want %v (the search agent needs read and grep, nothing else)", got, want)
 	}
 	horologist, ok := cfg.Agent("horologist")
 	if !ok {
