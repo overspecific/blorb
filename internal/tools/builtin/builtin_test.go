@@ -353,6 +353,160 @@ func TestRead(t *testing.T) {
 		}
 	})
 
+	t.Run("offset and limit slice lines", func(t *testing.T) {
+		t.Parallel()
+		sliced := t.TempDir()
+		if err := os.WriteFile(filepath.Join(sliced, "f.txt"), []byte("l1\nl2\nl3\nl4\nl5\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		no := opts(t, "read", `{"base_dir":"`+sliced+`"}`)
+		b, _ := builtin.Lookup("read")
+
+		tests := []struct {
+			name string
+			args string
+			want string
+		}{
+			{"offset only", `{"path":"f.txt","offset":2}`, "l2\nl3\nl4\nl5"},
+			{"limit only", `{"path":"f.txt","limit":2}`, "l1\nl2"},
+			{"offset and limit", `{"path":"f.txt","offset":2,"limit":2}`, "l2\nl3"},
+			{"offset at end", `{"path":"f.txt","offset":5}`, "l5"},
+			{"offset past end", `{"path":"f.txt","offset":6}`, ""},
+			{"limit larger than file", `{"path":"f.txt","offset":2,"limit":99}`, "l2\nl3\nl4\nl5"},
+			{"limit zero means no limit", `{"path":"f.txt","offset":3,"limit":0}`, "l3\nl4\nl5"},
+		}
+		for _, tc := range tests {
+			res, err := b.Run(context.Background(), no, json.RawMessage(tc.args))
+			if err != nil || res.Err {
+				t.Fatalf("%s: Run = %+v, %v; want a clean slice", tc.name, res, err)
+			}
+			if res.Output != tc.want {
+				t.Errorf("%s: res.Output = %q, want %q", tc.name, res.Output, tc.want)
+			}
+		}
+	})
+
+	t.Run("offset and limit ignore trailing newline", func(t *testing.T) {
+		t.Parallel()
+		b, _ := builtin.Lookup("read")
+		res, err := b.Run(context.Background(), o, json.RawMessage(`{"path":"f.txt","limit":1}`))
+		if err != nil || res.Err {
+			t.Fatalf("Run = %+v, %v; want line1 only", res, err)
+		}
+		if res.Output != "line1" {
+			t.Errorf("res.Output = %q, want line1 — no phantom second line for the trailing newline", res.Output)
+		}
+	})
+
+	t.Run("offset and limit slice a directory listing", func(t *testing.T) {
+		t.Parallel()
+		tree := t.TempDir()
+		files := map[string]string{"a.txt": "x\n", "b.txt": "x\n", "c.txt": "x\n"}
+		for p, content := range files {
+			if err := os.WriteFile(filepath.Join(tree, p), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		no := opts(t, "read", `{"base_dir":"`+tree+`"}`)
+		b, _ := builtin.Lookup("read")
+		res, err := b.Run(context.Background(), no, json.RawMessage(`{"path":".","offset":2,"limit":1}`))
+		if err != nil || res.Err {
+			t.Fatalf("Run = %+v, %v; want a clean slice of the listing", res, err)
+		}
+		if res.Output != "b.txt" {
+			t.Errorf("res.Output = %q, want b.txt", res.Output)
+		}
+	})
+
+	t.Run("offset and limit apply to a big file over the read cap", func(t *testing.T) {
+		t.Parallel()
+		big := t.TempDir()
+		total := (1<<20)/5 + 40
+		if err := os.WriteFile(filepath.Join(big, "big.txt"), bytes.Repeat([]byte("line\n"), total), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		no := opts(t, "read", `{"base_dir":"`+big+`"}`)
+		b, _ := builtin.Lookup("read")
+
+		res, err := b.Run(context.Background(), no, json.RawMessage(`{"path":"big.txt","offset":1,"limit":10}`))
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if res.Err {
+			t.Errorf("res.Err = true, want false — limit must read big files by slices; output %q", res.Output)
+		}
+		if res.Output != strings.Repeat("line\n", 9)+"line" {
+			t.Errorf("res.Output = %q, want ten lines", res.Output)
+		}
+
+		// A slice from past the 1 MiB whole-file cap still reads: the
+		// scan skips earlier lines instead of buffering them.
+		deep := total - 5
+		res, err = b.Run(context.Background(), no, json.RawMessage(fmt.Sprintf(`{"path":"big.txt","offset":%d,"limit":3}`, deep)))
+		if err != nil || res.Err {
+			t.Fatalf("Run(deep offset) = %+v, %v; want a clean slice", res, err)
+		}
+		if res.Output != "line\nline\nline" {
+			t.Errorf("res.Output = %q, want three lines from the deep offset", res.Output)
+		}
+	})
+
+	t.Run("sliced read of a line over the read cap fails", func(t *testing.T) {
+		t.Parallel()
+		big := t.TempDir()
+		if err := os.WriteFile(filepath.Join(big, "long.txt"), []byte("line\n"+strings.Repeat("x", (1<<20)+10)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		no := opts(t, "read", `{"base_dir":"`+big+`"}`)
+		b, _ := builtin.Lookup("read")
+		res, err := b.Run(context.Background(), no, json.RawMessage(`{"path":"long.txt","offset":2,"limit":1}`))
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !res.Err {
+			t.Error("res.Err = false, want true for an over-cap line")
+		}
+		if !strings.Contains(res.Output, "line exceeds the 1048576 byte read cap") {
+			t.Errorf("res.Output = %q, want the line-cap mention", res.Output)
+		}
+	})
+
+	t.Run("offset zero is invalid", func(t *testing.T) {
+		t.Parallel()
+		b, _ := builtin.Lookup("read")
+		res, err := b.Run(context.Background(), o, json.RawMessage(`{"path":"f.txt","offset":0}`))
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !res.Err || res.Output != "error: offset must be a positive integer" {
+			t.Errorf("res = %+v, want an offset-must-be-positive failure", res)
+		}
+	})
+
+	t.Run("limit negative is invalid", func(t *testing.T) {
+		t.Parallel()
+		b, _ := builtin.Lookup("read")
+		res, err := b.Run(context.Background(), o, json.RawMessage(`{"path":"f.txt","limit":-1}`))
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !res.Err || res.Output != "error: limit must be a non-negative integer" {
+			t.Errorf("res = %+v, want a limit-must-be-non-negative failure", res)
+		}
+	})
+
+	t.Run("offset wrong type is invalid", func(t *testing.T) {
+		t.Parallel()
+		b, _ := builtin.Lookup("read")
+		res, err := b.Run(context.Background(), o, json.RawMessage(`{"path":"f.txt","offset":"2"}`))
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !res.Err || res.Output != "error: offset must be a positive integer" {
+			t.Errorf("res = %+v, want an offset-must-be-positive failure", res)
+		}
+	})
+
 	t.Run("oversized file", func(t *testing.T) {
 		t.Parallel()
 		big := t.TempDir()

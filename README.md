@@ -213,7 +213,7 @@ Both builtins are file tools sandboxed to a required `base_dir` directory:
 
 The two builtins:
 
-- `read` takes `{"path": ...}` and returns a file's contents.
+- `read` takes `{"path": ...}` and returns a file's contents (or, for a directory path, the recursive list of files in it). Two optional arguments slice the result by line, with the same 1-based line numbers grep reports: `offset` is the first line to return (default: 1) and `limit` is the maximum number of lines (default: no limit). With a `limit`, reads stream line by line, so slices of files larger than the 1 MiB whole-file cap still work.
 - `grep` takes `{"pattern": ...}` and an optional `{"path": ...}` (default: the base directory). It returns matches as `path:line:text`, skipping `.git` directories and binary files. Matching is case-insensitive by default; the model can pass `"case_sensitive": true` in the tool-call arguments for exact-case matching.
 
 **`subagent` tools** delegate to another agent defined in the same config:
