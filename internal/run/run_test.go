@@ -592,6 +592,33 @@ type runPFServer struct {
 	spanTerminate   bool
 	terminateReason string
 	terminated      bool
+	// terminateAfter, when non-negative, responds to the span create
+	// after that many successful span creates with control.terminate and
+	// terminateReason, letting a test fire the terminate mid-turn (after
+	// StartTurn's two span creates). Negative disables count-based
+	// termination.
+	terminateAfter  int
+	spanCreateCount int
+	// registerTerminate, when true, the instance register call responds
+	// with control.terminate and the given reason (firing the
+	// StartSession terminate branch).
+	registerTerminate bool
+	// spanFailStatus, when non-zero, is served for span creates.
+	spanFailStatus int
+	// registerFailStatus, when non-zero, is served for the instance
+	// register call.
+	registerFailStatus int
+	// finishFailPrefix, when non-empty, makes /finish requests to paths
+	// with this prefix fail with finishFailStatus.
+	finishFailPrefix string
+	finishFailStatus int
+	// spanFinishFailStatus, when non-zero, is served for span finishes
+	// whose result_payload carries spanFinishFailKey (empty key: all
+	// span finishes). This lets a test fail the turn-span finish (its
+	// payload carries assistant_text) while the llm-span finishes still
+	// succeed.
+	spanFinishFailStatus int
+	spanFinishFailKey    string
 }
 
 type runPFCall struct {
@@ -601,7 +628,7 @@ type runPFCall struct {
 
 func newRunPFServer(t *testing.T) (*runPFServer, *httptest.Server) {
 	t.Helper()
-	f := &runPFServer{next: 1}
+	f := &runPFServer{next: 1, terminateAfter: -1}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return f, srv
@@ -613,11 +640,72 @@ func (f *runPFServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.calls = append(f.calls, runPFCall{Path: r.URL.Path, Body: body})
 	terminate := f.spanTerminate && !f.terminated && r.URL.Path == "/agent_spans"
+	countTerminate := false
+	if f.terminateAfter >= 0 && r.URL.Path == "/agent_spans" {
+		f.spanCreateCount++
+		countTerminate = !f.terminated && f.spanCreateCount > f.terminateAfter
+		if countTerminate {
+			f.terminated = true
+		}
+	}
 	if terminate {
 		f.terminated = true
 	}
+	spanFail := f.spanFailStatus != 0 && r.URL.Path == "/agent_spans"
+	registerFail := f.registerFailStatus != 0 && r.URL.Path == "/agent_instance/register"
+	spanFinishFail := f.spanFinishFailStatus != 0 &&
+		strings.HasPrefix(r.URL.Path, "/agent_spans/") && strings.HasSuffix(r.URL.Path, "/finish") &&
+		(f.spanFinishFailKey == "" || spanFinishHasKey(body, f.spanFinishFailKey))
+	finishFail := f.finishFailPrefix != "" &&
+		strings.HasPrefix(r.URL.Path, f.finishFailPrefix) && strings.HasSuffix(r.URL.Path, "/finish")
 	f.mu.Unlock()
 
+	if registerFail {
+		writeRunJSON(w, f.registerFailStatus, map[string]any{
+			"error": map[string]any{"code": "boom", "message": "register refused"},
+		})
+		return
+	}
+	if countTerminate {
+		writeRunJSON(w, http.StatusOK, map[string]any{
+			"status":  "success",
+			"control": map[string]any{"terminate": true, "reason": f.terminateReason},
+			"details": map[string]any{"id": "span-term"},
+		})
+		return
+	}
+	if spanFinishFail {
+		writeRunJSON(w, f.spanFinishFailStatus, map[string]any{
+			"error": map[string]any{"code": "boom", "message": "span finish refused"},
+		})
+		return
+	}
+	if f.registerTerminate {
+		f.mu.Lock()
+		first := !f.terminated
+		f.terminated = true
+		f.mu.Unlock()
+		if first {
+			writeRunJSON(w, http.StatusOK, map[string]any{
+				"status":  "success",
+				"control": map[string]any{"terminate": true, "reason": f.terminateReason},
+				"details": map[string]any{"id": "inst-1"},
+			})
+			return
+		}
+	}
+	if spanFail {
+		writeRunJSON(w, f.spanFailStatus, map[string]any{
+			"error": map[string]any{"code": "boom", "message": "nope"},
+		})
+		return
+	}
+	if finishFail {
+		writeRunJSON(w, f.finishFailStatus, map[string]any{
+			"error": map[string]any{"code": "boom", "message": "finish refused"},
+		})
+		return
+	}
 	if terminate {
 		writeRunJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",
@@ -690,6 +778,70 @@ func (f *runPFServer) setSpanTerminate(reason string) {
 	defer f.mu.Unlock()
 	f.spanTerminate = true
 	f.terminateReason = reason
+}
+
+// setRegisterTerminate makes the instance register call respond with
+// control.terminate and the given reason.
+func (f *runPFServer) setRegisterTerminate(reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.registerTerminate = true
+	f.terminateReason = reason
+}
+
+// setTerminateAfterSpanCreates responds to the first span create after n
+// successful ones with control.terminate and the given reason (e.g. n = 2
+// fires it on the llm-span create, mid-turn).
+func (f *runPFServer) setTerminateAfterSpanCreates(n int, reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminateAfter = n
+	f.terminateReason = reason
+}
+
+// setSpanFail makes span creates fail with the given status.
+func (f *runPFServer) setSpanFail(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.spanFailStatus = status
+}
+
+// setRegisterFail makes the instance register call fail with the given
+// status.
+func (f *runPFServer) setRegisterFail(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.registerFailStatus = status
+}
+
+// setFinishFail makes /finish requests under pathPrefix (e.g.
+// "/agent_instance/") fail with the given status.
+func (f *runPFServer) setFinishFail(pathPrefix string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.finishFailPrefix = pathPrefix
+	f.finishFailStatus = status
+}
+
+// setSpanFinishFail makes span finishes fail with the given status. When
+// key is non-empty, only finishes whose result_payload carries key fail
+// (e.g. "assistant_text" for the turn-span finish); empty fails all.
+func (f *runPFServer) setSpanFinishFail(status int, key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.spanFinishFailStatus = status
+	f.spanFinishFailKey = key
+}
+
+// spanFinishHasKey reports whether a finish request's result_payload
+// carries the given key.
+func spanFinishHasKey(body map[string]any, key string) bool {
+	rp, ok := body["result_payload"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = rp[key]
+	return ok
 }
 
 // pfSpanSchema extracts a span's schema_name.
@@ -895,5 +1047,294 @@ func TestRunTracingDisabledNoSpans(t *testing.T) {
 	}
 	if got := len(f.spanCreates()) + len(f.finishCalls()); got != 0 {
 		t.Errorf("recorded %d tracer calls with tracing disabled, want 0", got)
+	}
+}
+
+// TestRunTracedStartTurnSpanFailure covers the StartTurn failure path: a
+// span-create 500 fails the run (hard dependency), the already-started
+// instance finishes failed, and the error carries the run: prefix.
+func TestRunTracedStartTurnSpanFailure(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setSpanFail(http.StatusInternalServerError)
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want the StartTurn span failure to surface")
+	}
+	if !strings.HasPrefix(err.Error(), "run: ") {
+		t.Errorf("error = %v, want the run: prefix", err)
+	}
+	if !strings.Contains(err.Error(), "prefactor") {
+		t.Errorf("error = %v, want it to mention prefactor", err)
+	}
+
+	// The session started (register + start succeeded), so the instance
+	// must finish failed.
+	var instanceFinish map[string]any
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			instanceFinish = c.Body
+		}
+	}
+	if instanceFinish == nil || instanceFinish["status"] != "failed" {
+		t.Errorf("instance finish = %v, want status failed", instanceFinish)
+	}
+}
+
+// TestRunTracedStartSessionFailure covers the StartSession failure path:
+// a register 500 fails the run before any turn runs, and no instance
+// finish is attempted (the instance was never started).
+func TestRunTracedStartSessionFailure(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setRegisterFail(http.StatusInternalServerError)
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want the StartSession failure to surface")
+	}
+	if !strings.HasPrefix(err.Error(), "run: ") {
+		t.Errorf("error = %v, want the run: prefix", err)
+	}
+	if !strings.Contains(err.Error(), "prefactor") {
+		t.Errorf("error = %v, want it to mention prefactor", err)
+	}
+
+	// No instance finish: the instance never started.
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			t.Errorf("unexpected instance finish %v after a failed StartSession", c.Body)
+		}
+	}
+}
+
+// TestRunTracedStartSessionTerminate covers the StartSession terminate
+// branch: a control.terminate on register exits cleanly with the reason
+// printed, no turn runs, and no instance finish is recorded.
+func TestRunTracedStartSessionTerminate(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setRegisterTerminate("operator stopped")
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	final, err := run.Run(context.Background(), opts, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (terminate exits cleanly)", err)
+	}
+	if final != "" {
+		t.Errorf("final = %q, want empty", final)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "stopped by platform") || !strings.Contains(out, "operator stopped") {
+		t.Errorf("stdout = %q, want the termination reason", out)
+	}
+
+	// No instance finish: the platform has already terminated it.
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			t.Errorf("unexpected instance finish %v after termination", c.Body)
+		}
+	}
+}
+
+// TestRunTracedFinishFailureOnSuccess covers the FinishSession error on an
+// otherwise-successful run: the finish error surfaces with the run:
+// prefix.
+func TestRunTracedFinishFailureOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setFinishFail("/agent_instance/", http.StatusInternalServerError)
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want the FinishSession failure to surface")
+	}
+	if !strings.HasPrefix(err.Error(), "run: ") {
+		t.Errorf("error = %v, want the run: prefix", err)
+	}
+	if !strings.Contains(err.Error(), "finish") {
+		t.Errorf("error = %v, want the finish failure", err)
+	}
+}
+
+// TestRunTracedFinishFailureOnFailedRun covers the error-priority rule:
+// when the run already failed, a FinishSession error loses to the original
+// run error.
+func TestRunTracedFinishFailureOnFailedRun(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setFinishFail("/agent_instance/", http.StatusInternalServerError)
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout) // no responses: the turn fails
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want the provider failure to surface")
+	}
+	// The original run error wins, not the finish error.
+	if !strings.Contains(err.Error(), "no more canned responses") {
+		t.Errorf("error = %v, want the original provider failure", err)
+	}
+	if strings.Contains(err.Error(), "finish instance") {
+		t.Errorf("error = %v, want the finish failure suppressed by the run error", err)
+	}
+}
+
+// TestRunTracedTurnCompleteFailure covers the turn.Complete error branch:
+// a 500 on the turn-span finish (its payload carries assistant_text, so
+// the llm-span finishes still succeed) fails an otherwise-successful run.
+func TestRunTracedTurnCompleteFailure(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setSpanFinishFail(http.StatusInternalServerError, "assistant_text")
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want the turn.Complete failure to surface")
+	}
+	if !strings.HasPrefix(err.Error(), "run: ") {
+		t.Errorf("error = %v, want the run: prefix", err)
+	}
+}
+
+// TestRunTracedTurnFailFailure covers the turn.Fail error branch: with all
+// span finishes failing, the llm-span failure surfaces from the Chat call
+// and the subsequent turn.Fail failure surfaces too.
+func TestRunTracedTurnFailFailure(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setSpanFinishFail(http.StatusInternalServerError, "")
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout) // no responses: the turn fails
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want an error")
+	}
+	// The turn failed and the span finish failed too: the tracer error
+	// surfaces with the run: prefix.
+	if !strings.HasPrefix(err.Error(), "run: ") {
+		t.Errorf("error = %v, want the run: prefix", err)
+	}
+}
+
+// TestRunTracedTerminateMidTurn covers the outcome-mapping terminate
+// branch: a control.terminate on the llm-span create (after StartTurn's
+// two span creates) fails the in-flight turn; the run exits cleanly with
+// the reason printed, and no instance finish is recorded.
+func TestRunTracedTerminateMidTurn(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	// StartTurn creates two spans (agent_turn + user_message); fire the
+	// terminate on the next create (the llm span).
+	f.setTerminateAfterSpanCreates(2, "operator stopped mid-turn")
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	final, err := run.Run(context.Background(), opts, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (terminate exits cleanly)", err)
+	}
+	if final != "" {
+		t.Errorf("final = %q, want empty", final)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "stopped by platform") || !strings.Contains(out, "operator stopped mid-turn") {
+		t.Errorf("stdout = %q, want the termination reason", out)
+	}
+
+	// No instance finish: the platform has already terminated it.
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			t.Errorf("unexpected instance finish %v after termination", c.Body)
+		}
+	}
+}
+
+// TestRunTracedTerminateMidTurnSpanFinishFailure pins the corner where the
+// terminate signal wins over a tracer failure: with the turn-span finish
+// also failing (all span finishes fail), the run still exits cleanly on
+// the terminate — the platform's request to stop cannot be overridden.
+func TestRunTracedTerminateMidTurnSpanFinishFailure(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setTerminateAfterSpanCreates(2, "operator stopped mid-turn")
+	f.setSpanFinishFail(http.StatusInternalServerError, "")
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	final, err := run.Run(context.Background(), opts, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (the terminate signal wins)", err)
+	}
+	if final != "" {
+		t.Errorf("final = %q, want empty", final)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "stopped by platform") || !strings.Contains(out, "operator stopped mid-turn") {
+		t.Errorf("stdout = %q, want the termination reason", out)
+	}
+}
+
+// TestResolveSinkMkdirFailure covers the ResolveSink error path: a config
+// path whose parent is a regular file makes the log-dir MkdirAll fail,
+// surfacing the create-log-dir error.
+func TestResolveSinkMkdirFailure(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// A regular file that will be used as a directory: MkdirAll under it
+	// fails with ENOTDIR.
+	notADir := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := config.Config{} // logging defaults to enabled
+	_, err := chat.ResolveSink(filepath.Join(notADir, "blorb.json"), cfg)
+	if err == nil || !strings.Contains(err.Error(), "create log dir") {
+		t.Errorf("error = %v, want a create-log-dir failure", err)
 	}
 }

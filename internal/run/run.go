@@ -165,7 +165,9 @@ func mapTurnOutcome(turn *prefactor.Turn, final string, runErr error, ctx contex
 	switch {
 	case runErr != nil && isTerminated(runErr):
 		if err := turn.Fail(runErr); err != nil && !isTerminated(err) {
-			return fmt.Errorf("run: %w", err)
+			// The terminate signal still wins; a span-finish failure
+			// cannot override the platform's request to stop.
+			_ = err
 		}
 		return errTerminated{reason: terminationReason(runErr)}
 	case runErr != nil:
