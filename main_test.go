@@ -178,29 +178,38 @@ func TestChatCommandHasNoNewFlags(t *testing.T) {
 	}
 }
 
+// cannedReplyJSON is the canned non-streaming chat completions reply.
+const cannedReplyJSON = `{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`
+
+// respondCanned replies to a chat-completions request with the canned
+// reply: an SSE stream when the request asks for one (stream:true), else
+// plain JSON.
+func respondCanned(w http.ResponseWriter, body []byte) {
+	var req struct {
+		Stream bool `json:"stream"`
+	}
+	_ = json.Unmarshal(body, &req)
+	if req.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseData(w,
+			`{"id":"r","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(cannedReplyJSON))
+}
+
 // newFakeProviderServer returns an OpenAI-compatible chat completions
-// server that always answers with a canned reply, so agent-selection
-// tests run real sessions cheaply and observe the banner. When the
-// request asks for streaming it answers with an equivalent SSE stream.
+// server that always answers with the canned reply, so agent-selection
+// tests run real sessions cheaply and observe the banner.
 func newFakeProviderServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		var req struct {
-			Stream bool `json:"stream"`
-		}
-		_ = json.Unmarshal(body, &req)
-		if req.Stream {
-			w.Header().Set("Content-Type", "text/event-stream")
-			sseData(w,
-				`{"id":"r","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
-				`{"id":"r","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}`,
-				`{"id":"r","choices":[{"delta":{},"finish_reason":"stop"}]}`,
-			)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+		respondCanned(w, body)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -430,28 +439,13 @@ func TestRunPromptFromStdinCommand(t *testing.T) {
 }
 
 // requestCapturingProvider returns a fake provider server that records the
-// last request body into *got. It answers with the canned reply, as SSE
-// when the request asks for streaming.
+// last request body into *got and answers with the canned reply.
 func requestCapturingProvider(t *testing.T, got *string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		*got = string(body)
-		var req struct {
-			Stream bool `json:"stream"`
-		}
-		_ = json.Unmarshal(body, &req)
-		if req.Stream {
-			w.Header().Set("Content-Type", "text/event-stream")
-			sseData(w,
-				`{"id":"r","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
-				`{"id":"r","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}`,
-				`{"id":"r","choices":[{"delta":{},"finish_reason":"stop"}]}`,
-			)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+		respondCanned(w, body)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -518,9 +512,12 @@ func TestRunMissingPromptFileCommand(t *testing.T) {
 	}
 }
 
-// TestRunNoStreamCommand verifies the --no-stream flag works end to end.
+// TestRunNoStreamCommand verifies the --no-stream flag reaches the
+// provider: the request body must not ask for streaming (the default path
+// sends "stream":true).
 func TestRunNoStreamCommand(t *testing.T) {
-	srv := newFakeProviderServer(t)
+	var gotContent string
+	srv := requestCapturingProvider(t, &gotContent)
 	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
 
 	out, err := runRunCommand(t, cfgPath, "", "--no-stream", "say hi")
@@ -530,21 +527,38 @@ func TestRunNoStreamCommand(t *testing.T) {
 	if !strings.Contains(out, ">>> Assistant:") || !strings.Contains(out, "hi") {
 		t.Errorf("stdout = %q, want the whole-message rendered reply", out)
 	}
+	var req map[string]any
+	if err := json.Unmarshal([]byte(gotContent), &req); err != nil {
+		t.Fatalf("unmarshal request: %v (body %q)", err, gotContent)
+	}
+	// The wire request omits "stream" when false; the default streamed
+	// path sends "stream":true (pinned by the request-asserting tests).
+	if _, ok := req["stream"]; ok {
+		t.Errorf("request stream = %v, want it omitted with --no-stream (body %q)", req["stream"], gotContent)
+	}
 }
 
-// TestRunAgentFlagCommand verifies --agent selects the agent for the run.
+// TestRunAgentFlagCommand verifies --agent selects the agent for the run:
+// writeAgentConfig gives each agent model-<name>, so the captured request
+// body proves alpha ran over the default beta.
 func TestRunAgentFlagCommand(t *testing.T) {
-	srv := newFakeProviderServer(t)
+	var gotContent string
+	srv := requestCapturingProvider(t, &gotContent)
 	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "beta", srv.URL)
 
-	out, err := runRunCommand(t, cfgPath, "", "--agent", "alpha", "hello")
+	out, err := runRunCommand(t, cfgPath, "", "--agent", "alpha", "--no-stream", "hello")
 	if err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
-	// The run prints no banner; select the agent by its model in requests
-	// is not observable here, so just confirm the run completed.
 	if !strings.Contains(out, ">>> Assistant:") {
 		t.Errorf("stdout = %q, want the rendered reply", out)
+	}
+	var req map[string]any
+	if err := json.Unmarshal([]byte(gotContent), &req); err != nil {
+		t.Fatalf("unmarshal request: %v (body %q)", err, gotContent)
+	}
+	if req["model"] != "model-alpha" {
+		t.Errorf("request model = %v, want model-alpha (--agent alpha over the default beta)", req["model"])
 	}
 }
 
