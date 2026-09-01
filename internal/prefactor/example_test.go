@@ -73,21 +73,27 @@ func TestSimpleExampleTracingDisabled(t *testing.T) {
 	if cfg.DefaultAgent != "simple" {
 		t.Errorf("DefaultAgent = %q, want simple — ./blorb chat must run exactly as before", cfg.DefaultAgent)
 	}
-	// simple gets the utilities and the subagent delegation to the scholar
-	// (no direct knowledgebase access); scholar only the knowledgebase
-	// builtins.
-	for _, name := range []string{"echo", "current_time", "ask_scholar"} {
+	// simple gets the utilities and the subagent delegations (no direct
+	// knowledgebase or clock access); the specialists own their domains.
+	for _, name := range []string{"echo", "ask_scholar", "ask_horologist"} {
 		if !slices.Contains(simple.Tools, name) {
 			t.Errorf("agent simple tools = %v, want it to include %q", simple.Tools, name)
 		}
 	}
-	for _, name := range []string{"read", "grep"} {
+	for _, name := range []string{"read", "grep", "current_time"} {
 		if slices.Contains(simple.Tools, name) {
-			t.Errorf("agent simple tools = %v, want it to exclude %q (the knowledgebase is the scholar's)", simple.Tools, name)
+			t.Errorf("agent simple tools = %v, want it to exclude %q (specialists own those domains)", simple.Tools, name)
 		}
 	}
 	if got, want := scholar.Tools, []string{"read", "grep"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("scholar.Tools = %v, want %v (the scholar needs no echo or clock)", got, want)
+	}
+	horologist, ok := cfg.Agent("horologist")
+	if !ok {
+		t.Fatalf("Agent(horologist) missing; agents = %v", cfg.Agents)
+	}
+	if got, want := horologist.Tools, []string{"current_time", "calendar", "days_until"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("horologist.Tools = %v, want %v (the horologist needs no echo or knowledgebase)", got, want)
 	}
 	if cfg.PrefactorEnabled() {
 		t.Error("PrefactorEnabled() = true, want false — the simple example should not require a tracing token")

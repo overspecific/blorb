@@ -3,20 +3,31 @@
   "agents": [
     {
       "name": "simple",
-      "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short. You love using your echo tool. You have no direct access to the biscuit knowledgebase: for any biscuit question, delegate to the biscuit scholar using the `ask_scholar` tool and relay its answer.",
+      "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short. You love using your echo tool. You have no direct access to the biscuit knowledgebase or the clock: delegate biscuit questions to the biscuit scholar using the `ask_scholar` tool, and any time, date, or calendar question to the horologist using the `ask_horologist` tool. Relay their answers.",
       "provider": {
         "type": "openai",
         "model": "Gemma-4-E4B-it-GGUF",
         "base_url": "http://localhost:13305/v1"
       },
       "max_turns": 10,
-      "tools": ["echo", "current_time", "ask_scholar"]
+      "tools": ["echo", "ask_scholar", "ask_horologist"]
     },
     {
       "name": "scholar",
       "system_prompt": "You are an enthusiastic biscuit scholar. You have access to a knowledgebase of biscuits of the world using the `read` and `grep` tools. Use them to answer questions about biscuits, and never take no for an answer: look it up.",
       "max_turns": 10,
       "tools": ["read", "grep"],
+      "provider": {
+        "type": "openai",
+        "model": "Gemma-4-E4B-it-GGUF",
+        "base_url": "http://localhost:13305/v1"
+      }
+    },
+    {
+      "name": "horologist",
+      "system_prompt": "You are a precise horologist: the keeper of time and calendars. You own the `current_time`, `calendar`, and `days_until` tools. Use them to answer questions about the current time, month calendars, and how many days remain until a date. Always consult your tools rather than guessing — you of all agents should know better.",
+      "max_turns": 10,
+      "tools": ["current_time", "calendar", "days_until"],
       "provider": {
         "type": "openai",
         "model": "Gemma-4-E4B-it-GGUF",
@@ -48,6 +59,32 @@
       "command": ["date"]
     },
     {
+      "type": "command",
+      "name": "calendar",
+      "description": "Renders a calendar for a month, given a year and month number (1-12), e.g. {\"year\": 2026, \"month\": 9}. Defaults to the current month when no arguments are given.",
+      "command": ["python3", "-u", "-c", "import calendar, json, datetime, sys; a = json.load(sys.stdin); t = datetime.date.today(); y = a.get('year') or t.year; m = a.get('month') or t.month; calendar.TextCalendar().prmonth(y, m)"],
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "year": {"type": "integer", "description": "The year, e.g. 2026"},
+          "month": {"type": "integer", "description": "The month number 1-12"}
+        }
+      }
+    },
+    {
+      "type": "command",
+      "name": "days_until",
+      "description": "Returns how many days remain until a given date, e.g. {\"date\": \"2026-12-25\"}. The date is in YYYY-MM-DD format.",
+      "command": ["sh", "-c", "jq -r .date | xargs -I{} python3 -u -c \"import datetime, sys; print((datetime.date.fromisoformat('{}') - datetime.date.today()).days)\""],
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "date": {"type": "string", "description": "The target date in YYYY-MM-DD format"}
+        },
+        "required": ["date"]
+      }
+    },
+    {
       "type": "builtin",
       "name": "read",
       "description": "Read a file at the given path and return its contents.",
@@ -66,6 +103,12 @@
       "name": "ask_scholar",
       "description": "Delegate a biscuit research question to the scholar agent, who will dig through the knowledgebase for you and report back. Use it when the user asks about biscuits and you want a thorough, well-sourced answer.",
       "agent": "scholar"
+    },
+    {
+      "type": "subagent",
+      "name": "ask_horologist",
+      "description": "Delegate a time, date, or calendar question to the horologist agent, who owns the clock and calendar tools. Use it whenever the user asks what time it is, what today's date is, for a month calendar, or how many days until some date.",
+      "agent": "horologist"
     }
   ]
 }
