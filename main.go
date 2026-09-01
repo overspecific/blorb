@@ -119,6 +119,8 @@ func runCommand() *cli.Command {
 		Usage: "Run one agent turn and exit",
 		// Prompt: a literal string (start it with @@ to begin with a
 		// literal @), @file, or - for stdin.
+		// Prompt: a literal string (start it with @@ to begin with a
+		// literal @), @file, or - for stdin.
 		ArgsUsage:   "[prompt]",
 		Description: "Prompt: a literal string (start it with @@ to begin with a literal @), @file, or - for stdin. Exactly one prompt argument is accepted; stdin is read only when explicitly requested with - or @-.",
 		Flags: []cli.Flag{
@@ -141,8 +143,6 @@ func runCommand() *cli.Command {
 				Usage: "Name of the agent to run; defaults to the config's default_agent",
 			},
 		},
-		// Prompt: a literal string (start it with @@ to begin with a
-		// literal @), @file, or - for stdin.
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			prompt, err := run.ResolvePrompt(cmd.Args().First(), os.Stdin)
 			if err == nil && cmd.Args().Len() > 1 {
