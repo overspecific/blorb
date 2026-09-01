@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -359,7 +358,7 @@ func runTurn(
 		cancel()
 	}()
 
-	printEvent, onSubagent, flush := chatEvents(opts.Stdout, opts.ToolOutput)
+	printEvent, onSubagent, flush := Events(opts.Stdout, opts.ToolOutput)
 	pipe.set(onSubagent)
 	defer pipe.set(nil)
 
@@ -473,7 +472,7 @@ func readLines(r io.Reader, out chan<- inputResult, done <-chan struct{}) {
 	close(out)
 }
 
-// chatEvents returns the parent event callback, the subagent event
+// Events returns the parent event callback, the subagent event
 // callback, and a flush function. All output goes to stdout: assistant
 // text under a ">>> Assistant:" heading, tool activity as heading blocks,
 // and streamed fragments written inline. Subagent activity renders through
@@ -485,7 +484,7 @@ func readLines(r io.Reader, out chan<- inputResult, done <-chan struct{}) {
 // the body of parent tool results: when false, a successful result block
 // shows a character and line count of the output instead of the output
 // itself. Failed results and subagent activity always render in full.
-func chatEvents(out io.Writer, toolOutput bool) (func(engine.Event) error, func(tools.SubagentEvent) error, func()) {
+func Events(out io.Writer, toolOutput bool) (func(engine.Event) error, func(tools.SubagentEvent) error, func()) {
 	var (
 		printedHeading   bool
 		printedThinking  bool
@@ -705,25 +704,9 @@ type subStreamHeadings struct {
 	toolHeadings     map[int]bool
 }
 
-// resolveSink builds the wire-log sink for a session. File logging is on
-// only when ConfigPath is set and the config enables logging; otherwise a
-// no-op sink is returned so downstream code always has a non-nil sink.
-// When enabled, the session gets its own `<timestamp>-<uuid>` subdirectory
-// of the log dir, so conversations never interleave.
+// resolveSink builds the wire-log sink for a session; see ResolveSink.
 func resolveSink(opts Options) (logging.Sink, error) {
-	if opts.ConfigPath == "" || !opts.Config.LoggingEnabled() {
-		return logging.NewNop(), nil
-	}
-
-	dir := filepath.Join(filepath.Dir(opts.ConfigPath), opts.Config.LogDir())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create log dir: %w", err)
-	}
-	sink, _, err := logging.NewSession(dir)
-	if err != nil {
-		return nil, fmt.Errorf("open log dir: %w", err)
-	}
-	return sink, nil
+	return opts.resolveSink()
 }
 
 // NewClient builds the LLM client described by an agent's provider,
