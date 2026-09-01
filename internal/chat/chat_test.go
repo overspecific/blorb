@@ -47,7 +47,7 @@ func newTestOptions(cfg config.Config, input string, responses ...llm.Response) 
 		Version: "test",
 		Stdin:   strings.NewReader(input),
 		Stdout:  &stdout,
-		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+		NewClient: func(config.Agent) (llm.Client, error) {
 			return &fakeClient{responses: responses}, nil
 		},
 	}
@@ -62,7 +62,7 @@ func newStreamingTestOptions(cfg config.Config, input string, responses ...llm.R
 		Version: "test",
 		Stdin:   strings.NewReader(input),
 		Stdout:  &stdout,
-		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+		NewClient: func(config.Agent) (llm.Client, error) {
 			return &streamingFakeClient{responses: responses}, nil
 		},
 	}
@@ -184,7 +184,7 @@ func TestRunScopesToolsToTheAgent(t *testing.T) {
 		Version: "test",
 		Stdin:   strings.NewReader("hi\nexit\n"),
 		Stdout:  &stdout,
-		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+		NewClient: func(config.Agent) (llm.Client, error) {
 			return fc, nil
 		},
 	}
@@ -229,7 +229,7 @@ func TestRunNoToolsAgentSendsNoTools(t *testing.T) {
 		Version: "test",
 		Stdin:   strings.NewReader("hi\nexit\n"),
 		Stdout:  &stdout,
-		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+		NewClient: func(config.Agent) (llm.Client, error) {
 			return fc, nil
 		},
 	}
@@ -616,7 +616,7 @@ func TestRunStartupErrors(t *testing.T) {
 		t.Parallel()
 
 		o, _ := newTestOptions(testConfig(testAgent()), "hello\n")
-		o.NewClient = func(config.Config, config.Agent) (llm.Client, error) {
+		o.NewClient = func(config.Agent) (llm.Client, error) {
 			return nil, errors.New("no provider available")
 		}
 
@@ -678,7 +678,7 @@ func TestRunSigintDuringTurnInterruptsTurnOnly(t *testing.T) {
 		Version: "test",
 		Stdin:   strings.NewReader("start a long turn\nexit\n"),
 		Stdout:  &stdout,
-		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+		NewClient: func(config.Agent) (llm.Client, error) {
 			return client, nil
 		},
 		SigintChan: sigs,
@@ -784,7 +784,7 @@ func TestRunInterruptedTurnThenSuccessKeepsSession(t *testing.T) {
 		Version: "test",
 		Stdin:   strings.NewReader("start a long turn\ntry again\nexit\n"),
 		Stdout:  &stdout,
-		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+		NewClient: func(config.Agent) (llm.Client, error) {
 			return &sequencedClient{first: client, rest: &fakeClient{
 				responses: []llm.Response{
 					{Message: llm.NewTextMessage(llm.RoleAssistant, "second try worked"), FinishReason: llm.FinishStop},
@@ -881,7 +881,7 @@ func TestNewClient(t *testing.T) {
 		agent := testAgent()
 		agent.Provider.APIKeyEnv = ptr("BLORB_TEST_KEY")
 
-		client, err := chat.NewClient(testConfig(agent), agent)
+		client, err := chat.NewClient(agent)
 		if err != nil || client == nil {
 			t.Fatalf("NewClient error = %v, want a client", err)
 		}
@@ -891,7 +891,7 @@ func TestNewClient(t *testing.T) {
 		agent := testAgent()
 		agent.Provider.APIKeyEnv = ptr("BLORB_TEST_MISSING_KEY")
 
-		_, err := chat.NewClient(testConfig(agent), agent)
+		_, err := chat.NewClient(agent)
 		if err == nil || !strings.Contains(err.Error(), "BLORB_TEST_MISSING_KEY") {
 			t.Errorf("error = %v, want a missing-env error naming the variable", err)
 		}
@@ -901,7 +901,7 @@ func TestNewClient(t *testing.T) {
 		agent := testAgent()
 		agent.Provider.Type = "telepathy"
 
-		_, err := chat.NewClient(testConfig(agent), agent)
+		_, err := chat.NewClient(agent)
 		if err == nil || !strings.Contains(err.Error(), "telepathy") {
 			t.Errorf("error = %v, want an unsupported-type error", err)
 		}
@@ -997,7 +997,7 @@ func TestRunLongLineDeliveredAsOneTurn(t *testing.T) {
 		Version: "test",
 		Stdin:   strings.NewReader(long + "\nexit\n"),
 		Stdout:  &stdout,
-		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+		NewClient: func(config.Agent) (llm.Client, error) {
 			return fc, nil
 		},
 	}
@@ -1345,7 +1345,7 @@ func TestNewClientWithGetenvNilSink(t *testing.T) {
 	agent := testAgent()
 	agent.Provider.APIKeyEnv = ptr("BLORB_TEST_KEY")
 
-	client, err := chat.NewClientWithGetenv(testConfig(agent), agent, os.Getenv, nil)
+	client, err := chat.NewClientWithGetenv(agent, os.Getenv, nil)
 	if err != nil || client == nil {
 		t.Fatalf("NewClientWithGetenv error = %v, want a client (nil sink = logging off)", err)
 	}

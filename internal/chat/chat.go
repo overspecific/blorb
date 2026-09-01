@@ -23,7 +23,6 @@ import (
 )
 
 // Options configure a chat session.
-// Options configure a chat session.
 type Options struct {
 	Config config.Config
 	// Agent is the resolved agent definition the session runs: its
@@ -33,7 +32,7 @@ type Options struct {
 	Version    string
 	Stdin      io.Reader
 	Stdout     io.Writer
-	NewClient  func(cfg config.Config, agent config.Agent) (llm.Client, error)
+	NewClient  func(agent config.Agent) (llm.Client, error)
 	SigintChan <-chan os.Signal
 	// Getenv overrides the environment lookup used to resolve
 	// provider.api_key_env; os.Getenv when nil. Tests only.
@@ -561,7 +560,7 @@ func resolveSink(opts Options) (logging.Sink, error) {
 // to a registry map. getenv is the environment lookup, injectable for
 // tests; pass os.Getenv in production. sink receives LLM wire logs; nil
 // disables them.
-func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+func NewClientWithGetenv(agent config.Agent, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
 	switch agent.Provider.Type {
 	case config.ProviderTypeOpenAI:
 		apiKey := ""
@@ -584,17 +583,17 @@ func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(stri
 
 // NewClient builds the LLM client described by an agent's provider using
 // os.Getenv.
-func NewClient(cfg config.Config, agent config.Agent) (llm.Client, error) {
-	return NewClientWithGetenv(cfg, agent, os.Getenv, logging.NewNop())
+func NewClient(agent config.Agent) (llm.Client, error) {
+	return NewClientWithGetenv(agent, os.Getenv, logging.NewNop())
 }
 
 func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
 	if o.NewClient != nil {
-		return o.NewClient(o.Config, o.Agent)
+		return o.NewClient(o.Agent)
 	}
 	getenv := o.Getenv
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	return NewClientWithGetenv(o.Config, o.Agent, getenv, sink)
+	return NewClientWithGetenv(o.Agent, getenv, sink)
 }

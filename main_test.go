@@ -161,7 +161,7 @@ func TestChatCommandHasNoNewFlags(t *testing.T) {
 }
 
 // newFakeProviderServer returns an OpenAI-compatible chat completions
-// server that always answers with a canned reply, so positional-argument
+// server that always answers with a canned reply, so agent-selection
 // tests run real sessions cheaply and observe the banner.
 func newFakeProviderServer(t *testing.T) *httptest.Server {
 	t.Helper()
