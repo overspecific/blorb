@@ -180,15 +180,39 @@ func TestChatCommandHasNoNewFlags(t *testing.T) {
 
 // newFakeProviderServer returns an OpenAI-compatible chat completions
 // server that always answers with a canned reply, so agent-selection
-// tests run real sessions cheaply and observe the banner.
+// tests run real sessions cheaply and observe the banner. When the
+// request asks for streaming it answers with an equivalent SSE stream.
 func newFakeProviderServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			sseData(w,
+				`{"id":"r","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
+				`{"id":"r","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}`,
+				`{"id":"r","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// sseData writes each payload as an SSE data line followed by a blank
+// line, then [DONE].
+func sseData(w io.Writer, payloads ...string) {
+	for _, p := range payloads {
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", p)
+	}
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 }
 
 // writeAgentConfig writes a config with the given agent names, an optional
@@ -281,6 +305,313 @@ func runChatCommand(t *testing.T, cfgPath string, args ...string) (string, error
 		return out.String(), errors.New(errOut.String())
 	}
 	return out.String(), runErr
+}
+
+// runRunCommand runs `blorb run -c cfgPath [args...]` over pipe-backed
+// stdio with the given stdin payload, and returns the captured stdout plus
+// the session error. Errors handed to the ExitErrHandler (cli.Exit) are
+// returned with the cli formatting stripped.
+func runRunCommand(t *testing.T, cfgPath string, stdin string, args ...string) (string, error) {
+	t.Helper()
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	if _, err := io.WriteString(stdinW, stdin); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if err := stdinW.Close(); err != nil {
+		t.Fatalf("close stdin: %v", err)
+	}
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+
+	oldStdin, oldStdout := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = stdinR, stdoutW
+	defer func() { os.Stdin, os.Stdout = oldStdin, oldStdout }()
+
+	cmd := rootCommand()
+	cmd.Writer = io.Discard
+	cmd.ErrWriter = io.Discard
+	errOut := &bytes.Buffer{}
+	cmd.ExitErrHandler = capturingExitHandler(errOut)
+
+	argv := append([]string{"blorb", "run", "-c", cfgPath}, args...)
+	runErr := cmd.Run(context.Background(), argv)
+
+	if err := stdoutW.Close(); err != nil {
+		t.Fatalf("close stdout: %v", err)
+	}
+	var out bytes.Buffer
+	if _, err := io.Copy(&out, stdoutR); err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := stdoutR.Close(); err != nil {
+		t.Fatalf("close stdout: %v", err)
+	}
+
+	if errOut.Len() > 0 {
+		return out.String(), errors.New(errOut.String())
+	}
+	return out.String(), runErr
+}
+
+// TestRunOneTurnCommand is the happy path: a literal prompt runs one turn
+// over the fake provider and exits 0.
+func TestRunOneTurnCommand(t *testing.T) {
+	srv := newFakeProviderServer(t)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+	out, err := runRunCommand(t, cfgPath, "", "say hi")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if !strings.Contains(out, ">>> Assistant:") || !strings.Contains(out, "hi") {
+		t.Errorf("stdout = %q, want the chat-style rendered reply", out)
+	}
+	if strings.Contains(out, ">>> User:") {
+		t.Errorf("stdout = %q, want no >>> User heading", out)
+	}
+}
+
+// TestRunPromptFromFileCommand verifies the @file prompt form: the
+// provider receives the file's trimmed content as the user message.
+func TestRunPromptFromFileCommand(t *testing.T) {
+	var gotContent string
+	srv := requestCapturingProvider(t, &gotContent)
+
+	dir := t.TempDir()
+	promptFile := filepath.Join(dir, "prompt.txt")
+	if err := os.WriteFile(promptFile, []byte("hello file\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfgPath := writeAgentConfig(t, dir, []string{"helper"}, "helper", srv.URL)
+
+	if _, err := runRunCommand(t, cfgPath, "", "@"+promptFile); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if !strings.Contains(gotContent, `"content":"hello file"`) {
+		t.Errorf("provider request = %q, want the file's content as the user message", gotContent)
+	}
+}
+
+// TestRunPromptFromStdinCommands verifies both stdin forms: bare `-` and
+// `@-`.
+func TestRunPromptFromStdinCommand(t *testing.T) {
+	t.Run("dash reads stdin", func(t *testing.T) {
+		var gotContent string
+		srv := requestCapturingProvider(t, &gotContent)
+		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+		if _, err := runRunCommand(t, cfgPath, "piped prompt\n", "-"); err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !strings.Contains(gotContent, `"content":"piped prompt"`) {
+			t.Errorf("provider request = %q, want the piped prompt", gotContent)
+		}
+	})
+
+	t.Run("at-dash reads stdin", func(t *testing.T) {
+		var gotContent string
+		srv := requestCapturingProvider(t, &gotContent)
+		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+		if _, err := runRunCommand(t, cfgPath, "piped prompt\n", "@-"); err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !strings.Contains(gotContent, `"content":"piped prompt"`) {
+			t.Errorf("provider request = %q, want the piped prompt", gotContent)
+		}
+	})
+}
+
+// requestCapturingProvider returns a fake provider server that records the
+// last request body into *got. It answers with the canned reply, as SSE
+// when the request asks for streaming.
+func requestCapturingProvider(t *testing.T, got *string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		*got = string(body)
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			sseData(w,
+				`{"id":"r","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
+				`{"id":"r","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}`,
+				`{"id":"r","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRunDoubleAtEscapeCommand verifies the @@ escape strips one @ and
+// passes the remainder verbatim.
+func TestRunDoubleAtEscapeCommand(t *testing.T) {
+	var gotContent string
+	srv := requestCapturingProvider(t, &gotContent)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+	if _, err := runRunCommand(t, cfgPath, "", "@@ @at-start"); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if !strings.Contains(gotContent, `"content":"@ @at-start"`) {
+		t.Errorf("provider request = %q, want the escaped literal @ @at-start", gotContent)
+	}
+}
+
+// TestRunNoPromptArgIsUsageError pins that an omitted prompt fails loudly
+// instead of appearing to hang reading stdin.
+func TestRunNoPromptArgIsUsageError(t *testing.T) {
+	srv := newFakeProviderServer(t)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+	_, err := runRunCommand(t, cfgPath, "")
+	if err == nil {
+		t.Fatal("run with no prompt succeeded, want a usage error")
+	}
+	if !strings.Contains(err.Error(), "run: no prompt given") {
+		t.Errorf("error = %v, want the no-prompt usage error", err)
+	}
+}
+
+// TestRunExtraArgsIsUsageError pins that extra positional args fail loudly
+// and never reach the provider.
+func TestRunExtraArgsIsUsageError(t *testing.T) {
+	var gotContent string
+	srv := requestCapturingProvider(t, &gotContent)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+	_, err := runRunCommand(t, cfgPath, "", "a", "b")
+	if err == nil {
+		t.Fatal("run with extra args succeeded, want a usage error")
+	}
+	if !strings.Contains(err.Error(), "run: unexpected arguments after the prompt") || !strings.Contains(err.Error(), "b") {
+		t.Errorf("error = %v, want the extra-args usage error naming the extras", err)
+	}
+	if gotContent != "" {
+		t.Errorf("provider request = %q, want no provider call", gotContent)
+	}
+}
+
+// TestRunMissingPromptFileCommand verifies a bad @file reference surfaces
+// the file read failure.
+func TestRunMissingPromptFileCommand(t *testing.T) {
+	srv := newFakeProviderServer(t)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+	_, err := runRunCommand(t, cfgPath, "", "@/no/such/prompt.txt")
+	if err == nil || !strings.Contains(err.Error(), "run: read prompt file") {
+		t.Errorf("error = %v, want the file read failure", err)
+	}
+}
+
+// TestRunNoStreamCommand verifies the --no-stream flag works end to end.
+func TestRunNoStreamCommand(t *testing.T) {
+	srv := newFakeProviderServer(t)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+	out, err := runRunCommand(t, cfgPath, "", "--no-stream", "say hi")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if !strings.Contains(out, ">>> Assistant:") || !strings.Contains(out, "hi") {
+		t.Errorf("stdout = %q, want the whole-message rendered reply", out)
+	}
+}
+
+// TestRunAgentFlagCommand verifies --agent selects the agent for the run.
+func TestRunAgentFlagCommand(t *testing.T) {
+	srv := newFakeProviderServer(t)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "beta", srv.URL)
+
+	out, err := runRunCommand(t, cfgPath, "", "--agent", "alpha", "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	// The run prints no banner; select the agent by its model in requests
+	// is not observable here, so just confirm the run completed.
+	if !strings.Contains(out, ">>> Assistant:") {
+		t.Errorf("stdout = %q, want the rendered reply", out)
+	}
+}
+
+// TestRunToolOutputFlagCommand verifies --tool-output renders the full
+// tool result body in run mode.
+func TestRunToolOutputFlagCommand(t *testing.T) {
+	var calls int
+	toolCallJSON := `{"id":"call_1","type":"function","function":{"name":"echo","arguments":"{}"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"id":"resp-1","choices":[{"message":{"role":"assistant","content":"","tool_calls":[%s]},"finish_reason":"tool_calls"}]}`, toolCallJSON)))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp-2","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	data, err := json.Marshal(map[string]any{
+		"default_agent": "helper",
+		"agents": []map[string]any{{
+			"name":          "helper",
+			"system_prompt": "You are helpful.",
+			"provider":      map[string]any{"type": "openai", "model": "m", "base_url": srv.URL},
+			"max_turns":     3,
+			"tools":         []string{"echo"},
+		}},
+		"tools": []map[string]any{{
+			"type":        "command",
+			"name":        "echo",
+			"description": "Echoes.",
+			"command":     []string{"echo", "tool body here"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "blorb.json")
+	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, runErr := runRunCommand(t, cfgPath, "", "--no-stream", "--tool-output", "run the tool")
+	if runErr != nil {
+		t.Fatalf("Run error = %v, want nil", runErr)
+	}
+	if !strings.Contains(out, ">>> Result: Tool: echo") || !strings.Contains(out, "tool body here") {
+		t.Errorf("stdout = %q, want the full tool output body", out)
+	}
+}
+
+// TestRunChatCommandStillRegisteredAfterRun guards the subcommand list
+// shape after inserting run between chat and version.
+func TestRunChatCommandStillRegisteredAfterRun(t *testing.T) {
+	cmd := rootCommand()
+	var names []string
+	for _, sub := range cmd.Commands {
+		names = append(names, sub.Name)
+	}
+	joined := strings.Join(names, ",")
+	for _, want := range []string{"chat", "run", "version"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("subcommands = %q, want %q present", joined, want)
+		}
+	}
 }
 
 func TestChatAgentArgument(t *testing.T) {

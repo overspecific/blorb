@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/prefactor"
+	"github.com/overspecific/blorb/internal/run"
 )
 
 // version is set at build time via -ldflags "-X main.version=..." (see bin/build).
@@ -34,6 +37,7 @@ func rootCommand() *cli.Command {
 		Usage: "a single-binary tool for making AI agents",
 		Commands: []*cli.Command{
 			chatCommand(),
+			runCommand(),
 			{
 				Name:   "version",
 				Usage:  "Print the version",
@@ -100,6 +104,84 @@ func chatCommand() *cli.Command {
 			})
 			if err != nil {
 				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
+			}
+			return nil
+		},
+	}
+}
+
+// runCommand builds the run subcommand: one prompt, one agent turn, exit.
+// The prompt is a positional argument: a literal string (start it with @@
+// to begin with a literal @), @file, or - for stdin.
+func runCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "run",
+		Usage: "Run one agent turn and exit",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Value:   config.DefaultPath,
+				Usage:   "Path to blorb.json",
+			},
+			&cli.BoolFlag{
+				Name:  "no-stream",
+				Usage: "Disable streaming of assistant responses",
+			},
+			&cli.BoolFlag{
+				Name:  "tool-output",
+				Usage: "Show the full output of tool results (subagent output is always shown)",
+			},
+			&cli.StringFlag{
+				Name:  "agent",
+				Usage: "Name of the agent to run; defaults to the config's default_agent",
+			},
+		},
+		// Prompt: a literal string (start it with @@ to begin with a
+		// literal @), @file, or - for stdin.
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			prompt, err := run.ResolvePrompt(cmd.Args().First(), os.Stdin)
+			if err == nil && cmd.Args().Len() > 1 {
+				err = fmt.Errorf("run: unexpected arguments after the prompt: %s", strings.Join(cmd.Args().Slice()[1:], " "))
+			}
+			if err != nil {
+				return cli.Exit(err.Error(), 1)
+			}
+
+			cfg, err := config.Load(cmd.String("config"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("run: %v", err), 1)
+			}
+
+			agent, err := resolveAgent(cfg, cmd.String("agent"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("run: %v", err), 1)
+			}
+
+			// SIGINT maps to exit code 130 via context propagation. The
+			// signal-to-exit-code mapping itself is not tested (driving a
+			// real signal through the in-process CLI harness is flaky);
+			// it is three lines verified by inspection:
+			// NotifyContext cancels sigCtx on SIGINT, run.Run wraps the
+			// ctx error, and the errors.Is check below maps it to 130.
+			sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt)
+			defer stop()
+
+			// The final text is already printed by the event printer;
+			// nothing extra is output on success.
+			_, err = run.Run(sigCtx, run.Options{
+				Config:     cfg,
+				Agent:      agent,
+				Stdout:     os.Stdout,
+				Stream:     !cmd.Bool("no-stream"),
+				ToolOutput: cmd.Bool("tool-output"),
+				ConfigPath: cmd.String("config"),
+			}, prompt)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return cli.Exit("run: interrupted", 130)
+				}
+				return cli.Exit(fmt.Sprintf("run: %v", err), 1)
 			}
 			return nil
 		},
