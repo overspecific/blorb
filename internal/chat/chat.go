@@ -22,6 +22,34 @@ import (
 	"github.com/overspecific/blorb/internal/tools"
 )
 
+// subagentPipe relays subagent activity events to the current turn's
+// display callback. The registry's event callback is fixed at construction
+// but the printer is created per turn, so the pipe is the stable
+// indirection: runTurn points it at the turn's printer and clears it after.
+type subagentPipe struct {
+	mu sync.Mutex
+	cb func(tools.SubagentEvent) error
+}
+
+// set points the pipe at cb (nil clears it).
+func (p *subagentPipe) set(cb func(tools.SubagentEvent) error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cb = cb
+}
+
+// emit forwards one event to the current callback. Events outside a turn
+// cannot occur; with no callback set they are dropped.
+func (p *subagentPipe) emit(ev tools.SubagentEvent) error {
+	p.mu.Lock()
+	cb := p.cb
+	p.mu.Unlock()
+	if cb == nil {
+		return nil
+	}
+	return cb(ev)
+}
+
 // Options configure a chat session.
 type Options struct {
 	Config config.Config
@@ -82,20 +110,6 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
-	agentTools := opts.Config.AgentTools(opts.Agent)
-	registry, err := tools.NewRegistry(agentTools,
-		tools.WithSink(sink), tools.WithConfigDir(opts.Config.Dir()))
-	if err != nil {
-		return fmt.Errorf("build tools: %w", err)
-	}
-	// Builtins hold per-instance resources (open sandbox roots) for their
-	// lifetime; release them when the session ends.
-	defer registry.Close()
-
-	// The holder lets per-turn tracing wrappers come and go without
-	// engine changes; the engine sees a stable llm.Client.
-	holder := &clientHolder{inner: client}
-
 	// The engine suppresses whole-message events when it streams; only
 	// claim streaming when the real (inner) client can stream — the
 	// holder implements ChatStream unconditionally, so asserting on it
@@ -107,6 +121,26 @@ func Run(ctx context.Context, opts Options) error {
 	if _, ok := client.(llm.StreamingClient); ok {
 		streaming = true
 	}
+
+	// The subagent runner builds per-invocation registries and engines for
+	// any agent in the config; the session's factory generalizes to any
+	// agent so subagents get their own clients. Streaming is shared with
+	// the session engine's capability check.
+	pipe := &subagentPipe{}
+	registry, err := tools.NewRegistry(opts.Config.AgentTools(opts.Agent),
+		tools.WithSink(sink), tools.WithConfigDir(opts.Config.Dir()),
+		tools.WithSubagentRunner(opts.subagentRunner(sink, pipe.emit, streaming)),
+		tools.WithSubagentEvents(pipe.emit))
+	if err != nil {
+		return fmt.Errorf("build tools: %w", err)
+	}
+	// Builtins hold per-instance resources (open sandbox roots) for their
+	// lifetime; release them when the session ends.
+	defer registry.Close()
+
+	// The holder lets per-turn tracing wrappers come and go without
+	// engine changes; the engine sees a stable llm.Client.
+	holder := &clientHolder{inner: client}
 
 	eng := engine.New(engine.EngineConfig{
 		Client:       holder,
@@ -255,7 +289,7 @@ func Run(ctx context.Context, opts Options) error {
 					return sessionGraceful, nil
 				}
 
-				res, err := runTurn(ctx, opts, eng, holder, takeInterrupted, setTurn, r.line)
+				res, err := runTurn(ctx, opts, eng, holder, pipe, takeInterrupted, setTurn, r.line)
 				needHeading = true
 				if res == sessionTerminate || res == sessionFailure {
 					return res, err
@@ -298,6 +332,7 @@ func Run(ctx context.Context, opts Options) error {
 }
 
 // runTurn executes one user turn, driving the tracer when configured.
+
 // Returns the session outcome: sessionGraceful keeps the loop alive
 // (recoverable turn errors are printed here); fatal outcomes abort.
 func runTurn(
@@ -305,6 +340,7 @@ func runTurn(
 	opts Options,
 	eng *engine.Engine,
 	holder *clientHolder,
+	pipe *subagentPipe,
 	takeInterrupted func() bool,
 	setTurn func(context.CancelFunc),
 	line string,
@@ -316,7 +352,9 @@ func runTurn(
 		cancel()
 	}()
 
-	printEvent, flush := chatEvents(opts.Stdout)
+	printEvent, onSubagent, flush := chatEvents(opts.Stdout)
+	pipe.set(onSubagent)
+	defer pipe.set(nil)
 
 	if opts.Tracer == nil {
 		_, runErr := eng.RunTurn(turnCtx, line, printEvent)
@@ -428,13 +466,16 @@ func readLines(r io.Reader, out chan<- inputResult, done <-chan struct{}) {
 	close(out)
 }
 
-// chatEvents returns the event callback plus a flush function. All output
-// goes to stdout: assistant text under a ">>> Assistant:" heading, tool
-// activity as heading blocks, and streamed fragments written inline. The
-// flush function terminates any partial streamed line after the turn.
-// Streamed fragments are written without a trailing newline; whole-message
-// events write complete blocks.
-func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
+// chatEvents returns the parent event callback, the subagent event
+// callback, and a flush function. All output goes to stdout: assistant
+// text under a ">>> Assistant:" heading, tool activity as heading blocks,
+// and streamed fragments written inline. Subagent activity renders through
+// the same writer with headings labeled by the producing agent and
+// indented by two spaces per nesting depth, so it interleaves with the
+// parent's blocks. The flush function terminates any partial streamed line
+// after the turn. Streamed fragments are written without a trailing
+// newline; whole-message events write complete blocks.
+func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEvent) error, func()) {
 	var (
 		printedHeading   bool
 		printedThinking  bool
@@ -463,6 +504,7 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
 
 	// heading writes a block heading, terminating any partial line first
 	// and prefixing a blank line so blocks are consistently separated.
+	// Subagent headings pass their indentation through text.
 	heading := func(text string) {
 		endLine()
 		fmt.Fprintf(out, "\n%s\n", text)
@@ -479,6 +521,14 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
 		printedThinking = false
 		toolHeadings = map[int]bool{}
 	}
+
+	// subagentState is the per-subagent-stream heading bookkeeping: for
+	// each (depth, agent), whether the given delta heading already printed.
+	type streamKey struct {
+		depth int
+		agent string
+	}
+	subHeadings := map[streamKey]subStreamHeadings{}
 
 	onEvent := func(ev engine.Event) error {
 		switch ev.Kind {
@@ -529,9 +579,82 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func()) {
 		return nil
 	}
 
+	// indent is two spaces per nesting depth.
+	indent := func(depth int) string {
+		return strings.Repeat("  ", depth)
+	}
+
+	onSubagent := func(ev tools.SubagentEvent) error {
+		key := streamKey{depth: ev.Depth, agent: ev.Agent}
+		st, ok := subHeadings[key]
+		if !ok {
+			st = subStreamHeadings{toolHeadings: map[int]bool{}}
+		}
+		label := fmt.Sprintf("%s[%s] ", indent(ev.Depth), ev.Agent)
+
+		switch ev.Kind {
+		case tools.SubagentThinking:
+			heading(label + ">>> Assistant (thinking):")
+			fmt.Fprintln(out, indent(ev.Depth)+ev.Text)
+		case tools.SubagentText:
+			heading(label + ">>> Assistant:")
+			fmt.Fprintln(out, indent(ev.Depth)+ev.Text)
+		case tools.SubagentThinkingDelta:
+			if !st.printedThinking {
+				heading(label + ">>> Assistant (thinking):")
+				st.printedThinking = true
+			}
+			writeDelta(ev.Text)
+		case tools.SubagentTextDelta:
+			if !st.printedHeading {
+				heading(label + ">>> Assistant:")
+				st.printedHeading = true
+			}
+			writeDelta(ev.Text)
+		case tools.SubsubagentToolCallDelta:
+			if ev.Name != "" && !st.toolHeadings[ev.Index] {
+				st.toolHeadings[ev.Index] = true
+				st.streamedToolCall = true
+				heading(label + ">>> Tool: " + ev.Name)
+			}
+			fmt.Fprint(out, ev.Args)
+			partialLine = !strings.HasSuffix(ev.Args, "\n")
+		case tools.SubsubagentToolCall:
+			// In streaming mode the fragments already rendered this call;
+			// skip the whole-message block to avoid printing it twice.
+			if !st.streamedToolCall {
+				heading(label + ">>> Tool: " + ev.Name)
+				fmt.Fprintln(out, indent(ev.Depth)+ev.Args)
+			}
+		case tools.SubsubagentToolResult:
+			marker := "Result:"
+			if ev.Failed {
+				marker = "Error:"
+			}
+			heading(label + ">>> " + marker + " Tool: " + ev.Name)
+			fmt.Fprintln(out, indent(ev.Depth)+ev.Output)
+			// A subagent tool result ends the subagent's round, mirroring
+			// the parent's startRound.
+			st.printedHeading = false
+			st.printedThinking = false
+			st.toolHeadings = map[int]bool{}
+		}
+		subHeadings[key] = st
+		return nil
+	}
+
 	flush := endLine
 
-	return onEvent, flush
+	return onEvent, onSubagent, flush
+}
+
+// subStreamHeadings tracks which delta headings a subagent stream already
+// printed, mirroring the parent's per-round state.
+type subStreamHeadings struct {
+	printedHeading   bool
+	printedThinking  bool
+	streamedToolCall bool
+	toolHeadings     map[int]bool
 }
 
 // resolveSink builds the wire-log sink for a session. File logging is on
@@ -588,12 +711,33 @@ func NewClient(agent config.Agent) (llm.Client, error) {
 }
 
 func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
+	return o.newClientFor(o.Agent, sink)
+}
+
+// newClientFor builds the LLM client for any agent: the injected NewClient
+// factory when set, else the real provider path with the injected getenv.
+func (o Options) newClientFor(agent config.Agent, sink logging.Sink) (llm.Client, error) {
 	if o.NewClient != nil {
-		return o.NewClient(o.Agent)
+		return o.NewClient(agent)
 	}
 	getenv := o.Getenv
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	return NewClientWithGetenv(o.Agent, getenv, sink)
+	return NewClientWithGetenv(agent, getenv, sink)
+}
+
+// subagentRunner builds the engine-backed runner for the session's config.
+// streaming is the session's capability check result (whether the session
+// client itself implements llm.StreamingClient), shared with the session's
+// engine; subagent clients that cannot stream fall back to whole messages.
+func (o Options) subagentRunner(sink logging.Sink, events func(tools.SubagentEvent) error, streaming bool) *engine.SubagentRunner {
+	return engine.NewSubagentRunner(engine.SubagentRunnerConfig{
+		Config: o.Config,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			return o.newClientFor(agent, sink)
+		},
+		Stream: o.Stream && streaming,
+		Sink:   sink,
+	})
 }

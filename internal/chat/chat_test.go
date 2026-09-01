@@ -1350,3 +1350,262 @@ func TestNewClientWithGetenvNilSink(t *testing.T) {
 		t.Fatalf("NewClientWithGetenv error = %v, want a client (nil sink = logging off)", err)
 	}
 }
+
+// subagentTestConfig builds a two-agent config: parent granted a subagent
+// tool targeting worker, and worker granted a trivial command tool so a
+// nested tool round trip is exercised.
+func subagentTestConfig(t *testing.T) config.Config {
+	t.Helper()
+
+	worker := testAgent()
+	worker.Name = "worker"
+	worker.SystemPrompt = "You are a worker."
+	worker.MaxTurns = 3
+	parent := testAgent()
+	parent.Name = "parent"
+	parent.SystemPrompt = "You are the parent."
+	parent.MaxTurns = 3
+
+	cfg := config.Config{
+		Agents: []config.Agent{parent, worker},
+		Tools: []config.ToolEntry{
+			{
+				Type:        config.ToolTypeSubagent,
+				Name:        "ask_worker",
+				Description: "Ask the worker.",
+				Agent:       "worker",
+			},
+			{
+				Type:        config.ToolTypeCommand,
+				Name:        "worker_tool",
+				Description: "The worker's tool.",
+				Command:     []string{"true"},
+			},
+		},
+	}
+	cfg.Agents[0].Tools = []string{"ask_worker"}
+	cfg.Agents[1].Tools = []string{"worker_tool"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("subagentTestConfig invalid: %v", err)
+	}
+	return cfg
+}
+
+// subagentClients builds the parent and worker fakes: the parent makes one
+// subagent tool call then finishes; the worker runs one tool round then
+// finishes with the final text.
+func subagentClients(finalText string) (*fakeClient, *fakeClient) {
+	parent := &fakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_p", Type: "function", FunctionName: "ask_worker", FunctionArgs: `{"prompt":"do it"}`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "parent done"),
+			FinishReason: llm.FinishStop,
+		},
+	}}
+	worker := &fakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_w", Type: "function", FunctionName: "worker_tool", FunctionArgs: "{}"}},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, finalText),
+			FinishReason: llm.FinishStop,
+		},
+	}}
+	return parent, worker
+}
+
+// TestRunSubagentToolRendersActivity is the end-to-end chat test: the
+// parent delegates to the worker, whose nested activity renders indented
+// and labeled on stdout, and whose final text becomes the parent's tool
+// result.
+func TestRunSubagentToolRendersActivity(t *testing.T) {
+	t.Parallel()
+
+	cfg := subagentTestConfig(t)
+	parent, worker := subagentClients("worker result text")
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("go\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	// Order: the parent's tool call heading, the indented worker activity,
+	// then the parent's tool result carrying the worker's final text.
+	toolCallAt := strings.Index(out, ">>> Tool: ask_worker")
+	workerAssistantAt := strings.Index(out, "[worker] >>> Assistant:")
+	workerToolAt := strings.Index(out, "[worker] >>> Tool: worker_tool")
+	resultAt := strings.Index(out, ">>> Result: Tool: ask_worker")
+	if toolCallAt < 0 || workerAssistantAt < 0 || workerToolAt < 0 || resultAt < 0 {
+		t.Fatalf("stdout = %q, want the subagent call, activity, and result headings", out)
+	}
+	if !(toolCallAt < workerToolAt && workerToolAt < workerAssistantAt && workerAssistantAt < resultAt) {
+		t.Errorf("stdout = %q, want tool call, worker activity, then result in order", out)
+	}
+
+	// The worker's whole-message blocks carry its final text, indented.
+	if !strings.Contains(out, "[worker] >>> Assistant:\n  worker result text") {
+		t.Errorf("stdout = %q, want the worker's final text under an indented labeled heading", out)
+	}
+	// The parent's tool result body is the subagent's final text.
+	resultTail := out[resultAt:]
+	if !strings.Contains(resultTail, "worker result text") {
+		t.Errorf("result tail = %q, want the subagent output as the tool result", resultTail)
+	}
+
+	// The parent's request carried the subagent tool definition with the
+	// default prompt schema.
+	var def *llm.Tool
+	for i := range parent.requests[0].Tools {
+		if parent.requests[0].Tools[i].Name == "ask_worker" {
+			def = &parent.requests[0].Tools[i]
+		}
+	}
+	if def == nil {
+		t.Fatal("parent request carried no ask_worker definition")
+	}
+	if !strings.Contains(string(def.Parameters), `"prompt"`) {
+		t.Errorf("definition parameters = %s, want the default prompt schema", def.Parameters)
+	}
+	// The worker got the prompt from the parent's tool call as its message.
+	wMsgs := worker.requests[0].Messages
+	if wMsgs[len(wMsgs)-1].Role != llm.RoleUser || wMsgs[len(wMsgs)-1].Content != "do it" {
+		t.Errorf("worker user message = %+v, want the prompt from the tool call", wMsgs[len(wMsgs)-1])
+	}
+}
+
+// TestRunSubagentStreamedDeltas verifies the streaming variant: the
+// subagent's deltas render inline under its labeled heading while the
+// parent's own deltas still render.
+func TestRunSubagentStreamedDeltas(t *testing.T) {
+	t.Parallel()
+
+	cfg := subagentTestConfig(t)
+
+	parent := &streamingFakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_p", Type: "function", FunctionName: "ask_worker", FunctionArgs: `{"prompt":"do it"}`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "parent done"),
+			FinishReason: llm.FinishStop,
+		},
+	}}
+	worker := &streamingFakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_w", Type: "function", FunctionName: "worker_tool", FunctionArgs: "{}"}},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "worker streamed answer"),
+			FinishReason: llm.FinishStop,
+		},
+	}}
+
+	var stdout syncBuffer
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("go\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+		Stream: true,
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	// The subagent's text deltas render inline under its labeled heading.
+	if !strings.Contains(out, "[worker] >>> Assistant:\nworker streamed answer") {
+		t.Errorf("stdout = %q, want the worker's streamed text under its labeled heading", out)
+	}
+	// The parent's own deltas still render under its unlabeled heading.
+	if !strings.Contains(out, ">>> Assistant:\nparent done\n") {
+		t.Errorf("stdout = %q, want the parent's streamed text under its own heading", out)
+	}
+	// The worker's tool heading is labeled and indented.
+	if !strings.Contains(out, "  [worker] >>> Tool: worker_tool") {
+		t.Errorf("stdout = %q, want an indented labeled worker tool heading", out)
+	}
+	// The parent's result heading terminates the worker's partial line.
+	if !strings.Contains(out, ">>> Result: Tool: ask_worker") {
+		t.Errorf("stdout = %q, want the parent's result heading", out)
+	}
+}
+
+// TestRunSubagentNonStreamingWholeBlocks pins the --no-stream variant:
+// whole-message subagent blocks render indented and labeled.
+func TestRunSubagentNonStreamingWholeBlocks(t *testing.T) {
+	t.Parallel()
+
+	cfg := subagentTestConfig(t)
+	parent, worker := subagentClients("worker whole text")
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("go\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+		Stream: false,
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "  [worker] >>> Tool: worker_tool\n") {
+		t.Errorf("stdout = %q, want a whole-message indented worker tool block", out)
+	}
+	if !strings.Contains(out, "  [worker] >>> Assistant:\n  worker whole text") || !strings.Contains(out, "worker whole text") {
+		// The worker's final text appears under its labeled heading.
+		if !strings.Contains(out, "[worker] >>> Assistant:") || !strings.Contains(out, "worker whole text") {
+			t.Errorf("stdout = %q, want the worker's whole-message assistant block", out)
+		}
+	}
+}
