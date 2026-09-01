@@ -4,7 +4,7 @@ A new `blorb run` subcommand executes exactly one agent turn and exits — the s
 
 ## Todo
 
-- [ ] Commit 1: prompt resolution (arg / `@file` / stdin `-`)
+- [x] Commit 1: prompt resolution (arg / `@file` / stdin `-`)
 - [ ] Commit 2: internal/run engine chain and one-turn execution
 - [ ] Commit 3: `blorb run` subcommand wiring
 - [ ] Commit 4: Prefactor tracing for run
