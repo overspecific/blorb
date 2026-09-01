@@ -8,7 +8,7 @@ A single-binary tool for making AI agents.
 
 Blorb lets you define agents in a `blorb.json` file and chat with any of them. It's built for experimentation: try different system prompts and tool setups with minimal ceremony, using a plain JSON config — a single config can hold several named agents sharing one tool set, and you pick which one to run per invocation.
 
-Tools are plain executables declared in the config, or built-ins implemented inside Blorb. When the model calls a tool, Blorb runs it, pipes the JSON arguments to its stdin (for command tools), and returns the output to the model. Anything that can read stdin and write stdout can be a tool.
+Tools are plain executables declared in the config, built-ins implemented inside Blorb, or other agents in the same config (subagents). When the model calls a tool, Blorb runs it, pipes the JSON arguments to its stdin (for command tools), and returns the output to the model. Anything that can read stdin and write stdout can be a tool.
 
 ## Features
 
@@ -16,7 +16,7 @@ Tools are plain executables declared in the config, or built-ins implemented ins
 - Interactive chat REPL with multi-turn tool calling, running a chosen agent per invocation
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
 - Full wire logging: every LLM request/response and tool call/result is written to a timestamped file per session, so a plain sort of the filenames replays a turn in order (see [Logging](#logging))
-- Tools as local subprocesses or built-ins (`read`, `grep`), with JSON Schema argument declarations
+- Tools as local subprocesses, built-ins (`read`, `grep`), or subagents — one agent delegating to another defined in the same config, with JSON Schema argument declarations
 - Any OpenAI-compatible chat completions endpoint as the LLM backend
 - Optional tracing of every run to [Prefactor](https://prefactor.ai) (see [Prefactor tracing](#prefactor-tracing))
 - Per-tool 30s timeout, process-group cleanup, and stderr capture
@@ -182,7 +182,7 @@ Currently supported: `openai` — any OpenAI-compatible chat completions API (Op
 
 ### Tools
 
-Each tool has a required `type` field selecting one of two kinds:
+Each tool has a required `type` field selecting one of three kinds:
 
 **`command` tools** run an executable as a subprocess:
 
@@ -215,6 +215,28 @@ The two builtins:
 
 - `read` takes `{"path": ...}` and returns a file's contents.
 - `grep` takes `{"pattern": ...}` and an optional `{"path": ...}` (default: the base directory). It returns matches as `path:line:text`, skipping `.git` directories and binary files. Matching is case-insensitive by default; the model can pass `"case_sensitive": true` in the tool-call arguments for exact-case matching.
+
+**`subagent` tools** delegate to another agent defined in the same config:
+
+```json
+{
+  "type": "subagent",
+  "name": "ask_scholar",
+  "description": "Delegate biscuit research questions to the scholar agent.",
+  "agent": "scholar"
+}
+```
+
+- `agent` — required; the name of a defined agent in the same config. Naming an agent that does not exist is a config error, as is any delegation cycle (an agent chain that loops back to itself, including an agent granted a subagent tool targeting itself).
+- `args_schema` — optional JSON Schema object. By default the tool takes a single required `prompt` string, which becomes the subagent's user message. With a custom schema, the raw JSON arguments are presented to the subagent as JSON in the user message; the subagent's system prompt is expected to account for that.
+
+Execution semantics:
+
+- The subagent runs to completion — all of its tool calls resolved, exactly like a chat turn — and its concatenated assistant messages become the tool output returned to the calling model.
+- Subagent tools are exempt from the 30s per-tool timeout: the run is bounded by the subagent's own `max_turns` (and context cancellation).
+- Subagents can themselves use subagent tools (acyclically), so deep delegation is possible.
+- The chat interface shows the subagent's activity live — its assistant messages and tool calls — indented and labeled with the subagent's name, so you watch it work.
+- Limitation: nested LLM calls inside subagents are not traced to Prefactor; only the parent agent's spans are recorded.
 
 ### Logging
 

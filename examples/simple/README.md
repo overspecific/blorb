@@ -2,10 +2,10 @@
 
 A config with two named agents sharing one tool set:
 
-- `simple` (the default) — a cheerful demo agent with all four tools: `echo` (echoes text back), `current_time` (returns the current date and time), and the `read` and `grep` builtins (sandboxed to the `knowledgebase/` directory, a field guide to biscuits of the world split into one file per region plus a dunking guide, with a README listing the files).
+- `simple` (the default) — a cheerful demo agent with all five tools: `echo` (echoes text back), `current_time` (returns the current date and time), the `read` and `grep` builtins (sandboxed to the `knowledgebase/` directory, a field guide to biscuits of the world split into one file per region plus a dunking guide, with a README listing the files), and `ask_scholar` (a subagent tool delegating to `scholar`).
 - `scholar` — a biscuit scholar granted only the `read` and `grep` builtins; no echo, no clock, just the knowledgebase.
 
-Both agents share the tool declarations: the four tools are declared once at the top level and granted to each agent by name.
+Both agents share the tool declarations: the five tools are declared once at the top level and granted to each agent by name. `simple` can delegate biscuit questions to `scholar` via the `ask_scholar` subagent tool; the scholar's activity (its tool calls and answers) shows up indented and labeled in the chat, and only `simple` holds the delegation — `scholar` cannot delegate back, which would be a cycle.
 
 ## Setup
 
@@ -28,6 +28,7 @@ tell me the time
 echo "blorb is fun"
 what's a jammie dodger?
 which biscuits survive a long dunking?
+ask the scholar which biscuits survive a long dunking
 ```
 
 Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C while idle exits.

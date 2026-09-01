@@ -20,7 +20,7 @@ Out of scope: Prefactor spans for nested activity (nested LLM calls are not wrap
 - [x] Commit 2: tools — subagentTool, SubagentRunner interface, registry wiring, timeout exemption
 - [x] Commit 3: engine — the real SubagentRunner
 - [x] Commit 4: chat — wiring and streaming subagent display
-- [ ] Commit 5: docs and example
+- [x] Commit 5: docs and example
 
 ---
 

@@ -10,7 +10,7 @@
         "base_url": "http://localhost:13305/v1"
       },
       "max_turns": 10,
-      "tools": ["echo", "current_time", "read", "grep"]
+      "tools": ["echo", "current_time", "read", "grep", "ask_scholar"]
     },
     {
       "name": "scholar",
@@ -60,6 +60,12 @@
       "description": "Search the knowledgebase files for lines matching a regular expression pattern, returning matches as path:line:text.",
       "builtin": "grep",
       "config": {"base_dir": "knowledgebase"}
+    },
+    {
+      "type": "subagent",
+      "name": "ask_scholar",
+      "description": "Delegate a biscuit research question to the scholar agent, who will dig through the knowledgebase for you and report back. Use it when the user asks about biscuits and you want a thorough, well-sourced answer.",
+      "agent": "scholar"
     }
   ]
 }
