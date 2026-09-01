@@ -1571,6 +1571,154 @@ func TestRunSubagentStreamedDeltas(t *testing.T) {
 	}
 }
 
+// TestRunSubagentStreamedTwiceInOneTurn pins the round-boundary reset of
+// the per-(depth, agent) subagent heading state: the same subagent invoked
+// twice in one streamed turn must get its labeled heading each time, since
+// the parent's tool result ends the round.
+func TestRunSubagentStreamedTwiceInOneTurn(t *testing.T) {
+	t.Parallel()
+
+	cfg := subagentTestConfig(t)
+
+	subCall := llm.ToolCall{ID: "call_p", Type: "function", FunctionName: "ask_worker", FunctionArgs: `{"prompt":"do it"}`}
+	parent := &streamingFakeClient{responses: []llm.Response{
+		{
+			Message:      llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{subCall}},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{
+			Message:      llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{subCall}},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "parent done"),
+			FinishReason: llm.FinishStop,
+		},
+	}}
+	worker := &streamingFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "first answer"), FinishReason: llm.FinishStop},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "second answer"), FinishReason: llm.FinishStop},
+	}}
+
+	var stdout syncBuffer
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("go\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+		Stream: true,
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if got := strings.Count(out, "[worker] >>> Assistant:"); got != 2 {
+		t.Errorf("stdout = %q, want %d labeled worker assistant headings (one per invocation), got %d", out, 2, got)
+	}
+	if !strings.Contains(out, "[worker] >>> Assistant:\nfirst answer") {
+		t.Errorf("stdout = %q, want the first invocation's text under its heading", out)
+	}
+	if !strings.Contains(out, "[worker] >>> Assistant:\nsecond answer") {
+		t.Errorf("stdout = %q, want the second invocation's text under its heading", out)
+	}
+}
+
+// TestRunSubagentNestedStreamedTwiceInOneTurn pins the reset of the whole
+// subagent heading map on a subagent's own tool result: a three-level chain
+// (parent -> b -> c) where b calls c twice in one turn must label c's
+// second invocation too. The tool-result event carries the calling agent's
+// identity (b), not the called agent's (c), so resetting only b's state
+// would orphan c's and drop its second heading.
+func TestRunSubagentNestedStreamedTwiceInOneTurn(t *testing.T) {
+	t.Parallel()
+
+	parent := testAgent()
+	parent.Name = "parent"
+	parent.SystemPrompt = "parent"
+	parent.MaxTurns = 3
+	b := testAgent()
+	b.Name = "b"
+	b.SystemPrompt = "b"
+	b.MaxTurns = 3
+	c := testAgent()
+	c.Name = "c"
+	c.SystemPrompt = "c"
+	c.MaxTurns = 3
+
+	cfg := config.Config{
+		Agents: []config.Agent{parent, b, c},
+		Tools: []config.ToolEntry{
+			{Type: config.ToolTypeSubagent, Name: "ask_b", Description: "ask b", Agent: "b"},
+			{Type: config.ToolTypeSubagent, Name: "ask_c", Description: "ask c", Agent: "c"},
+		},
+	}
+	cfg.Agents[0].Tools = []string{"ask_b"}
+	cfg.Agents[1].Tools = []string{"ask_c"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config invalid: %v", err)
+	}
+
+	askC := llm.ToolCall{ID: "call_c", Type: "function", FunctionName: "ask_c", FunctionArgs: `{"prompt":"go"}`}
+	askB := llm.ToolCall{ID: "call_b", Type: "function", FunctionName: "ask_b", FunctionArgs: `{"prompt":"go"}`}
+
+	parentClient := &streamingFakeClient{responses: []llm.Response{
+		{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{askB}}, FinishReason: llm.FinishToolCalls},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "parent done"), FinishReason: llm.FinishStop},
+	}}
+	bClient := &streamingFakeClient{responses: []llm.Response{
+		{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{askC}}, FinishReason: llm.FinishToolCalls},
+		{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{askC}}, FinishReason: llm.FinishToolCalls},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "b done"), FinishReason: llm.FinishStop},
+	}}
+	cClient := &streamingFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "c first"), FinishReason: llm.FinishStop},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "c second"), FinishReason: llm.FinishStop},
+	}}
+
+	var stdout syncBuffer
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("go\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			switch agent.Name {
+			case "b":
+				return bClient, nil
+			case "c":
+				return cClient, nil
+			}
+			return parentClient, nil
+		},
+		Stream: true,
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if got := strings.Count(out, "[c] >>> Assistant:"); got != 2 {
+		t.Errorf("stdout = %q, want %d labeled c assistant headings (one per invocation), got %d", out, 2, got)
+	}
+	if !strings.Contains(out, "[c] >>> Assistant:\nc first") {
+		t.Errorf("stdout = %q, want c's first text under its heading", out)
+	}
+	if !strings.Contains(out, "[c] >>> Assistant:\nc second") {
+		t.Errorf("stdout = %q, want c's second text under its heading", out)
+	}
+}
+
 // TestRunSubagentNonStreamingWholeBlocks pins the --no-stream variant:
 // whole-message subagent blocks render indented and labeled.
 func TestRunSubagentNonStreamingWholeBlocks(t *testing.T) {

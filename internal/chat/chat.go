@@ -510,8 +510,18 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEve
 		fmt.Fprintf(out, "\n%s\n", text)
 	}
 
+	// subagentState is the per-subagent-stream heading bookkeeping: for
+	// each (depth, agent), whether the given delta heading already printed.
+	type streamKey struct {
+		depth int
+		agent string
+	}
+	subHeadings := map[streamKey]subStreamHeadings{}
+
 	// startRound resets per-round heading state: a tool result ends the
-	// current round, so the next response's blocks start fresh.
+	// current round, so the next response's blocks start fresh. The
+	// subagent stream state resets too: a later invocation of the same
+	// subagent in the same turn must print its headings again.
 	// streamedToolCall is deliberately not reset: a streamed round already
 	// rendered every subsequent whole-message tool call inline, so
 	// suppressing whole-message tool blocks stays correct for the rest of
@@ -520,15 +530,8 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEve
 		printedHeading = false
 		printedThinking = false
 		toolHeadings = map[int]bool{}
+		subHeadings = map[streamKey]subStreamHeadings{}
 	}
-
-	// subagentState is the per-subagent-stream heading bookkeeping: for
-	// each (depth, agent), whether the given delta heading already printed.
-	type streamKey struct {
-		depth int
-		agent string
-	}
-	subHeadings := map[streamKey]subStreamHeadings{}
 
 	onEvent := func(ev engine.Event) error {
 		switch ev.Kind {
@@ -634,10 +637,12 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEve
 			heading(label + ">>> " + marker + " Tool: " + ev.Name)
 			fmt.Fprintln(out, indent(ev.Depth)+ev.Output)
 			// A subagent tool result ends the subagent's round, mirroring
-			// the parent's startRound.
-			st.printedHeading = false
-			st.printedThinking = false
-			st.toolHeadings = map[int]bool{}
+			// the parent's startRound. The result event carries the calling
+			// agent's identity, not the called agent's, so the whole map is
+			// reset: any deeper subagent stream that just finished must
+			// print its headings again on a later invocation.
+			subHeadings = map[streamKey]subStreamHeadings{}
+			st = subStreamHeadings{toolHeadings: map[int]bool{}}
 		}
 		subHeadings[key] = st
 		return nil
