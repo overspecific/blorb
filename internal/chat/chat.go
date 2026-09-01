@@ -373,10 +373,10 @@ func runTurn(
 		return tracerFailure(err)
 	}
 
-	holder.inner = newTracingClient(holder.inner, turn, opts.Agent.Provider.Model)
+	holder.inner = NewTracingClient(holder.inner, turn, opts.Agent.Provider.Model)
 	defer func() { holder.inner = unwrapTracingClient(holder.inner) }()
 
-	finalText, runErr := eng.RunTurn(turnCtx, line, traceEvent(turn, printEvent))
+	finalText, runErr := eng.RunTurn(turnCtx, line, TraceEvent(turn, printEvent))
 	flush()
 
 	interrupted := takeInterrupted()

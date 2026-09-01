@@ -3,6 +3,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/overspecific/blorb/internal/engine"
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/logging"
+	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/tools"
 )
 
@@ -39,6 +41,10 @@ type Options struct {
 	// ConfigPath is the path to the blorb.json that produced Config, with
 	// the same file-logging semantics as chat.Options.ConfigPath.
 	ConfigPath string
+	// Tracer, when non-nil, records the run to Prefactor: one instance
+	// containing one turn span. Tracing is a hard dependency: a tracer
+	// error fails the run. Nil disables tracing.
+	Tracer *prefactor.Tracer
 }
 
 // Run executes exactly one agent turn for prompt and returns the final
@@ -77,6 +83,39 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	// lifetime; release them when the run ends.
 	defer registry.Close()
 
+	// With a tracer there is no holder (one turn, one wrapper), so the
+	// engine is constructed below, after the client is wrapped: sink →
+	// client → streaming check (raw client) → registry (needs the
+	// streaming flag) → StartSession (needs the registry schema) →
+	// StartTurn → wrap client → engine.New → RunTurn.
+	var turn *prefactor.Turn
+	if opts.Tracer != nil {
+		schema := prefactor.DefaultAgentSchemaVersion(opts.Agent.Name, registry)
+		if err := opts.Tracer.StartSession(ctx, schema); err != nil {
+			if isTerminated(err) {
+				fmt.Fprintf(opts.Stdout, "stopped by platform: %v\n", terminationReason(err))
+				return "", nil
+			}
+			return "", fmt.Errorf("run: %w", err)
+		}
+
+		turn, err = opts.Tracer.StartTurn(ctx, prompt)
+		if err != nil {
+			if isTerminated(err) {
+				fmt.Fprintf(opts.Stdout, "stopped by platform: %v\n", terminationReason(err))
+				return "", nil
+			}
+			return "", finishTracedRun(opts, fmt.Errorf("run: %w", err))
+		}
+		// The streaming check above ran on the raw client; re-asserting on
+		// the wrapper would always succeed because tracingClient
+		// implements ChatStream unconditionally.
+		client = chat.NewTracingClient(client, turn, opts.Agent.Provider.Model)
+	}
+
+	// The engine is built here (not before the tracing block) so the
+	// wrapped client is in place when tracing; see the construction-order
+	// comment above.
 	eng := engine.New(engine.EngineConfig{
 		Client:       client,
 		Tools:        registry,
@@ -85,20 +124,99 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		Stream:       opts.Stream && streaming,
 	})
 
-	final, runErr := eng.RunTurn(ctx, prompt, printEvent)
+	// With tracing, engine events map onto the turn's spans before
+	// printing; onSubagent stays the registry callback as without tracing.
+	turnEvent := printEvent
+	if turn != nil {
+		turnEvent = chat.TraceEvent(turn, printEvent)
+	}
+
+	final, runErr := eng.RunTurn(ctx, prompt, turnEvent)
 	flush()
 
-	switch {
-	case runErr == nil:
+	err = mapTurnOutcome(turn, final, runErr, ctx)
+	if err == nil {
+		err = finishTracedRun(opts, nil)
+		if err != nil {
+			return "", err
+		}
 		return final, nil
-	case ctx.Err() != nil:
-		// The turn was cut short by cancellation (e.g. SIGINT mapped to
-		// the context): surface the ctx error so the CLI can distinguish
-		// interruption from a plain failure.
-		return "", fmt.Errorf("run: %w", ctx.Err())
-	default:
-		return "", fmt.Errorf("run: %w", runErr)
 	}
+
+	return "", finishTracedRun(opts, err)
+}
+
+// mapTurnOutcome finishes the turn span to match the turn's outcome and
+// returns the run's outcome error (nil on success). A run is intended to
+// run to completion, so a user interrupt is a failed run, not a graceful
+// outcome: a cancelled ctx arrives as an ordinary turn error and fails the
+// turn, deliberately unlike chat.
+func mapTurnOutcome(turn *prefactor.Turn, final string, runErr error, ctx context.Context) error {
+	if turn == nil {
+		if runErr == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("run: %w", ctx.Err())
+		}
+		return fmt.Errorf("run: %w", runErr)
+	}
+
+	switch {
+	case runErr != nil && isTerminated(runErr):
+		if err := turn.Fail(runErr); err != nil && !isTerminated(err) {
+			return fmt.Errorf("run: %w", err)
+		}
+		return errTerminated{reason: terminationReason(runErr)}
+	case runErr != nil:
+		if err := turn.Fail(runErr); err != nil {
+			return fmt.Errorf("run: %w", err)
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("run: %w", ctx.Err())
+		}
+		return fmt.Errorf("run: %w", runErr)
+	default:
+		if err := turn.Complete(final); err != nil {
+			return fmt.Errorf("run: %w", err)
+		}
+		return nil
+	}
+}
+
+// errTerminated marks the platform-termination outcome: the reason has
+// been (or will be) reported to the user and the run exits 0.
+type errTerminated struct{ reason string }
+
+func (e errTerminated) Error() string { return "terminated: " + e.reason }
+
+// finishTracedRun finishes the Prefactor instance to match the run
+// outcome, then returns the run's outcome error (nil on success). On
+// platform termination the instance is already marked server-side and a
+// second finish would 409, so FinishSession is skipped.
+func finishTracedRun(opts Options, runErr error) error {
+	if opts.Tracer == nil {
+		return runErr
+	}
+	if term, ok := runErr.(errTerminated); ok {
+		fmt.Fprintf(opts.Stdout, "stopped by platform: %s\n", term.reason)
+		return nil
+	}
+	status := prefactor.InstanceComplete
+	if runErr != nil {
+		status = prefactor.InstanceFailed
+	}
+	// The instance finish uses a background context, like the span
+	// finishes and chat's session finish: when the run is cancelled the
+	// run ctx is already dead, and a clean exit must still be able to
+	// record its terminal state.
+	if err := opts.Tracer.FinishSession(context.Background(), status); err != nil {
+		if runErr != nil {
+			return runErr
+		}
+		return fmt.Errorf("run: %w", err)
+	}
+	return runErr
 }
 
 // newClient builds the LLM client for the run's agent: the injected
@@ -135,4 +253,22 @@ func (o Options) subagentRunner(sink logging.Sink, streaming bool) *engine.Subag
 		Stream: o.Stream && streaming,
 		Sink:   sink,
 	})
+}
+
+// isTerminated reports whether err is the tracer's termination sentinel.
+// Both helpers only use exported prefactor types; chat keeps its copies
+// unexported, so run replicates the two small functions (parallel
+// structure, like newClient).
+func isTerminated(err error) bool {
+	return errors.Is(err, prefactor.ErrTerminated)
+}
+
+// terminationReason extracts the platform's reason from a termination
+// error for display.
+func terminationReason(err error) string {
+	var te *prefactor.TerminatedError
+	if errors.As(err, &te) {
+		return te.Reason
+	}
+	return ""
 }

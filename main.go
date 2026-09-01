@@ -158,6 +158,14 @@ func runCommand() *cli.Command {
 				return cli.Exit(fmt.Sprintf("run: %v", err), 1)
 			}
 
+			var tracer *prefactor.Tracer
+			if cfg.PrefactorEnabled() {
+				tracer, err = buildPrefactorTracer(ctx, cfg, agent)
+				if err != nil {
+					return cli.Exit(fmt.Sprintf("run: %v", err), 1)
+				}
+			}
+
 			// SIGINT maps to exit code 130 via context propagation. The
 			// signal-to-exit-code mapping itself is not tested (driving a
 			// real signal through the in-process CLI harness is flaky);
@@ -176,6 +184,7 @@ func runCommand() *cli.Command {
 				Stream:     !cmd.Bool("no-stream"),
 				ToolOutput: cmd.Bool("tool-output"),
 				ConfigPath: cmd.String("config"),
+				Tracer:     tracer,
 			}, prompt)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {

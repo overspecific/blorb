@@ -47,9 +47,11 @@ type tracingClient struct {
 	model string
 }
 
-// newTracingClient wraps inner for the given turn. model is the configured
-// provider model, used when the request's model is empty.
-func newTracingClient(inner llm.Client, turn *prefactor.Turn, model string) *tracingClient {
+// NewTracingClient wraps inner for the given turn. model is the configured
+// provider model, used when the request's model is empty. The concrete
+// *tracingClient type stays unexported; its ChatStream passthrough
+// preserves streaming capability through the returned llm.Client.
+func NewTracingClient(inner llm.Client, turn *prefactor.Turn, model string) llm.Client {
 	return &tracingClient{inner: inner, turn: turn, model: model}
 }
 
@@ -136,7 +138,7 @@ func unwrapTracingClient(c llm.Client) llm.Client {
 	return c
 }
 
-// traceEvent composes the printing callback with tracing. It maps engine
+// TraceEvent composes the printing callback with tracing. It maps engine
 // events onto the turn's spans:
 //
 //   - EventToolCall starts an active blorb:tool span (the engine emits it
@@ -153,7 +155,7 @@ func unwrapTracingClient(c llm.Client) llm.Client {
 //
 // The printing callback always runs first. A tracer error is returned,
 // which the engine propagates as a turn failure.
-func traceEvent(turn *prefactor.Turn, print func(engine.Event) error) func(engine.Event) error {
+func TraceEvent(turn *prefactor.Turn, print func(engine.Event) error) func(engine.Event) error {
 	var pending []*prefactor.ToolSpan
 
 	return func(ev engine.Event) error {

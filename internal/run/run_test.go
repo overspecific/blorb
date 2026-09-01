@@ -2,7 +2,10 @@ package run_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/engine"
 	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/run"
 )
 
@@ -571,5 +575,325 @@ func TestRunEventsExportMatchesChat(t *testing.T) {
 	flush()
 	if !strings.Contains(b.String(), ">>> Assistant:\nhi!") {
 		t.Errorf("output = %q, want chat's assistant heading rendering", b.String())
+	}
+}
+
+// --- Prefactor tracing tests (mirror chat's tracewrap_test fake server) ---
+
+// runPFServer is a minimal Prefactor API over httptest, recording the
+// calls it receives.
+type runPFServer struct {
+	mu    sync.Mutex
+	calls []runPFCall
+	next  int
+
+	// spanTerminate, when true, the first span create responds with
+	// control.terminate and the given reason.
+	spanTerminate   bool
+	terminateReason string
+	terminated      bool
+}
+
+type runPFCall struct {
+	Path string
+	Body map[string]any
+}
+
+func newRunPFServer(t *testing.T) (*runPFServer, *httptest.Server) {
+	t.Helper()
+	f := &runPFServer{next: 1}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	return f, srv
+}
+
+func (f *runPFServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	f.mu.Lock()
+	f.calls = append(f.calls, runPFCall{Path: r.URL.Path, Body: body})
+	terminate := f.spanTerminate && !f.terminated && r.URL.Path == "/agent_spans"
+	if terminate {
+		f.terminated = true
+	}
+	f.mu.Unlock()
+
+	if terminate {
+		writeRunJSON(w, http.StatusOK, map[string]any{
+			"status":  "success",
+			"control": map[string]any{"terminate": true, "reason": f.terminateReason},
+			"details": map[string]any{"id": "span-term"},
+		})
+		return
+	}
+	switch {
+	case r.URL.Path == "/agent_instance/register":
+		writeRunJSON(w, http.StatusOK, map[string]any{
+			"status":  "success",
+			"details": map[string]any{"id": "inst-1"},
+		})
+	case r.URL.Path == "/agent_spans":
+		writeRunJSON(w, http.StatusOK, map[string]any{
+			"status":  "success",
+			"control": map[string]any{"terminate": false},
+			"details": map[string]any{"id": "span"},
+		})
+	case strings.HasPrefix(r.URL.Path, "/agent_instance/") && strings.HasSuffix(r.URL.Path, "/start"),
+		strings.HasPrefix(r.URL.Path, "/agent_instance/") && strings.HasSuffix(r.URL.Path, "/finish"),
+		strings.HasPrefix(r.URL.Path, "/agent_spans/") && strings.HasSuffix(r.URL.Path, "/finish"):
+		writeRunJSON(w, http.StatusOK, map[string]any{
+			"status":  "success",
+			"control": map[string]any{"terminate": false},
+			"details": map[string]any{"id": "x"},
+		})
+	default:
+		writeRunJSON(w, http.StatusNotFound, map[string]any{
+			"error": map[string]any{"code": "not_found", "message": r.URL.Path},
+		})
+	}
+}
+
+func writeRunJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// spanCreates returns the recorded span-create calls.
+func (f *runPFServer) spanCreates() []runPFCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []runPFCall
+	for _, c := range f.calls {
+		if c.Path == "/agent_spans" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// finishCalls returns recorded /finish calls.
+func (f *runPFServer) finishCalls() []runPFCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []runPFCall
+	for _, c := range f.calls {
+		if strings.HasSuffix(c.Path, "/finish") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (f *runPFServer) setSpanTerminate(reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.spanTerminate = true
+	f.terminateReason = reason
+}
+
+// pfSpanSchema extracts a span's schema_name.
+func pfSpanSchema(c runPFCall) string {
+	d, _ := c.Body["details"].(map[string]any)
+	s, _ := d["schema_name"].(string)
+	return s
+}
+
+// runTracedOptions builds options wired to trace against srv.
+func runTracedOptions(cfg config.Config, srv *httptest.Server, stdout *runSyncBuffer, responses ...llm.Response) run.Options {
+	client := prefactor.New(prefactor.Config{BaseURL: srv.URL, Token: "t"})
+	return run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: stdout,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: responses}, nil
+		},
+		Tracer: prefactor.NewTracer(prefactor.TracerConfig{
+			Client:    client,
+			AgentName: cfg.Agents[0].Name,
+		}),
+	}
+}
+
+func TestRunTracedSuccess(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "the final words"), FinishReason: llm.FinishStop},
+	)
+
+	final, err := run.Run(context.Background(), opts, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "the final words" {
+		t.Errorf("final = %q, want %q", final, "the final words")
+	}
+
+	// Spans: turn and user_message (carried by StartTurn) plus one llm
+	// span for the round; the whole-message path also records
+	// assistant_message.
+	var schemas []string
+	for _, c := range f.spanCreates() {
+		schemas = append(schemas, pfSpanSchema(c))
+	}
+	for _, want := range []string{"blorb:agent_turn", "blorb:user_message", "blorb:llm"} {
+		found := false
+		for _, s := range schemas {
+			if s == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("span schemas = %v, want %q present", schemas, want)
+		}
+	}
+
+	// One user-turn span completed with the final text.
+	var turnFinish map[string]any
+	for _, c := range f.finishCalls() {
+		if !strings.HasPrefix(c.Path, "/agent_spans/") {
+			continue
+		}
+		if rp, ok := c.Body["result_payload"].(map[string]any); ok && rp["assistant_text"] == "the final words" {
+			turnFinish = c.Body
+		}
+	}
+	if turnFinish == nil || turnFinish["status"] != "complete" {
+		t.Errorf("turn finish = %v, want complete with the final text", turnFinish)
+	}
+
+	// Instance finished complete.
+	var instanceFinish map[string]any
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			instanceFinish = c.Body
+		}
+	}
+	if instanceFinish == nil || instanceFinish["status"] != "complete" {
+		t.Errorf("instance finish = %v, want status complete", instanceFinish)
+	}
+}
+
+func TestRunTracedProviderFailure(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout) // no responses: the turn fails
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want the provider failure to surface")
+	}
+	if !strings.HasPrefix(err.Error(), "run: ") {
+		t.Errorf("error = %v, want the run: prefix", err)
+	}
+
+	var instanceFinish map[string]any
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			instanceFinish = c.Body
+		}
+	}
+	if instanceFinish == nil || instanceFinish["status"] != "failed" {
+		t.Errorf("instance finish = %v, want status failed", instanceFinish)
+	}
+}
+
+func TestRunTracedTerminateMidRun(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setSpanTerminate("operator stopped")
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+
+	final, err := run.Run(context.Background(), opts, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (terminate exits cleanly)", err)
+	}
+	if final != "" {
+		t.Errorf("final = %q, want empty", final)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "stopped by platform") || !strings.Contains(out, "operator stopped") {
+		t.Errorf("stdout = %q, want the termination reason", out)
+	}
+
+	// No instance finish: the platform has already terminated it.
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			t.Errorf("unexpected instance finish %v after termination", c.Body)
+		}
+	}
+}
+
+func TestRunTracedCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	cfg := runTestConfig(runTestAgent())
+	client := &runBlockingClient{started: make(chan struct{})}
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout)
+	opts.NewClient = func(config.Agent) (llm.Client, error) { return client, nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := run.Run(ctx, opts, "hello")
+		done <- err
+	}()
+
+	<-client.started
+	cancel()
+
+	if err := <-done; err == nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want it to wrap context.Canceled", err)
+	}
+
+	// The deliberate interrupt semantics: unlike chat, an interrupted run
+	// is a failed instance.
+	var instanceFinish map[string]any
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			instanceFinish = c.Body
+		}
+	}
+	if instanceFinish == nil || instanceFinish["status"] != "failed" {
+		t.Errorf("instance finish = %v, want status failed (an interrupted run is a failed run)", instanceFinish)
+	}
+}
+
+func TestRunTracingDisabledNoSpans(t *testing.T) {
+	t.Parallel()
+
+	// Point a tracer at the fake server but never attach it: no span may
+	// be recorded. The fake would record any stray traffic; assert there
+	// was none by checking the run succeeded (span assertions would fail
+	// in the traced tests above if wiring leaked).
+	f, srv := newRunPFServer(t)
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+	opts.Tracer = nil
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if got := len(f.spanCreates()) + len(f.finishCalls()); got != 0 {
+		t.Errorf("recorded %d tracer calls with tracing disabled, want 0", got)
 	}
 }
