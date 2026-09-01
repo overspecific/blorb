@@ -70,7 +70,7 @@ func (t *subagentTool) definition() llm.Tool {
 
 // longRunning marks the tool exempt from the registry's per-call timeout:
 // a subagent run is bounded by the subagent's max_turns and ctx instead.
-func (t *subagentTool) longRunning() bool { return true }
+func (t *subagentTool) longRunning() {}
 
 // run executes the subagent for one turn. Tool-level failures (bad
 // arguments, subagent-level failure such as exhausted max_turns) return

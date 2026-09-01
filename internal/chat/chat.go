@@ -129,7 +129,7 @@ func Run(ctx context.Context, opts Options) error {
 	pipe := &subagentPipe{}
 	registry, err := tools.NewRegistry(opts.Config.AgentTools(opts.Agent),
 		tools.WithSink(sink), tools.WithConfigDir(opts.Config.Dir()),
-		tools.WithSubagentRunner(opts.subagentRunner(sink, pipe.emit, streaming)),
+		tools.WithSubagentRunner(opts.subagentRunner(sink, streaming)),
 		tools.WithSubagentEvents(pipe.emit))
 	if err != nil {
 		return fmt.Errorf("build tools: %w", err)
@@ -614,7 +614,7 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEve
 				st.printedHeading = true
 			}
 			writeDelta(ev.Text)
-		case tools.SubsubagentToolCallDelta:
+		case tools.SubagentToolCallDelta:
 			if ev.Name != "" && !st.toolHeadings[ev.Index] {
 				st.toolHeadings[ev.Index] = true
 				st.streamedToolCall = true
@@ -622,14 +622,14 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEve
 			}
 			fmt.Fprint(out, ev.Args)
 			partialLine = !strings.HasSuffix(ev.Args, "\n")
-		case tools.SubsubagentToolCall:
+		case tools.SubagentToolCall:
 			// In streaming mode the fragments already rendered this call;
 			// skip the whole-message block to avoid printing it twice.
 			if !st.streamedToolCall {
 				heading(label + ">>> Tool: " + ev.Name)
 				fmt.Fprintln(out, indent(ev.Depth)+ev.Args)
 			}
-		case tools.SubsubagentToolResult:
+		case tools.SubagentToolResult:
 			marker := "Result:"
 			if ev.Failed {
 				marker = "Error:"
@@ -736,7 +736,7 @@ func (o Options) newClientFor(agent config.Agent, sink logging.Sink) (llm.Client
 // streaming is the session's capability check result (whether the session
 // client itself implements llm.StreamingClient), shared with the session's
 // engine; subagent clients that cannot stream fall back to whole messages.
-func (o Options) subagentRunner(sink logging.Sink, events func(tools.SubagentEvent) error, streaming bool) *engine.SubagentRunner {
+func (o Options) subagentRunner(sink logging.Sink, streaming bool) *engine.SubagentRunner {
 	return engine.NewSubagentRunner(engine.SubagentRunnerConfig{
 		Config: o.Config,
 		NewClient: func(agent config.Agent) (llm.Client, error) {

@@ -409,8 +409,8 @@ func (c *Config) validateSubagentCycles() error {
 	edges := make(map[string][]string, len(c.Agents))
 	for _, a := range c.Agents {
 		for _, name := range a.Tools {
-			if target, ok := target[name]; ok {
-				edges[a.Name] = append(edges[a.Name], target)
+			if to, ok := target[name]; ok {
+				edges[a.Name] = append(edges[a.Name], to)
 			}
 		}
 	}

@@ -44,7 +44,7 @@ type tool interface {
 // their run is bounded by their own logic and context cancellation, not
 // the 30s default.
 type longRunning interface {
-	longRunning() bool
+	longRunning()
 }
 
 // ToolResult is the outcome of running a tool. Err marks tool-level failure

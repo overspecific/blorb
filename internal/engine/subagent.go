@@ -130,11 +130,11 @@ func (r *SubagentRunner) convert(agentName string, onEvent func(tools.SubagentEv
 		case EventAssistantThinkingDelta:
 			out.Kind = tools.SubagentThinkingDelta
 		case EventToolCall:
-			out.Kind = tools.SubsubagentToolCall
+			out.Kind = tools.SubagentToolCall
 		case EventToolCallDelta:
-			out.Kind = tools.SubsubagentToolCallDelta
+			out.Kind = tools.SubagentToolCallDelta
 		case EventToolResult:
-			out.Kind = tools.SubsubagentToolResult
+			out.Kind = tools.SubagentToolResult
 		default:
 			return fmt.Errorf("subagent %q: unhandled event kind %d", agentName, ev.Kind)
 		}

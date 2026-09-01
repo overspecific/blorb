@@ -6,13 +6,13 @@ import "context"
 type SubagentEventKind string
 
 const (
-	SubagentText             SubagentEventKind = "text"
-	SubagentThinking         SubagentEventKind = "thinking"
-	SubagentTextDelta        SubagentEventKind = "text_delta"
-	SubagentThinkingDelta    SubagentEventKind = "thinking_delta"
-	SubsubagentToolCall      SubagentEventKind = "tool_call"
-	SubsubagentToolCallDelta SubagentEventKind = "tool_call_delta"
-	SubsubagentToolResult    SubagentEventKind = "tool_result"
+	SubagentText          SubagentEventKind = "text"
+	SubagentThinking      SubagentEventKind = "thinking"
+	SubagentTextDelta     SubagentEventKind = "text_delta"
+	SubagentThinkingDelta SubagentEventKind = "thinking_delta"
+	SubagentToolCall      SubagentEventKind = "tool_call"
+	SubagentToolCallDelta SubagentEventKind = "tool_call_delta"
+	SubagentToolResult    SubagentEventKind = "tool_result"
 )
 
 // SubagentEvent is one observable moment of a subagent run. Agent is

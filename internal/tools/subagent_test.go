@@ -267,7 +267,7 @@ func TestSubagentEventForwarding(t *testing.T) {
 		result: tools.SubagentResult{Output: "done"},
 		events: []tools.SubagentEvent{
 			{Agent: "deepest", Depth: 0, Kind: tools.SubagentText, Text: "hello"},
-			{Agent: "deepest", Depth: 2, Kind: tools.SubsubagentToolCall, Name: "t"},
+			{Agent: "deepest", Depth: 2, Kind: tools.SubagentToolCall, Name: "t"},
 		},
 	}
 	var got []tools.SubagentEvent
