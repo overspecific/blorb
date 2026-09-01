@@ -143,6 +143,32 @@ func TestDefinitions(t *testing.T) {
 	}
 }
 
+func TestDefinitionsPreserveInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	// Definitions keep the caller's listing order (the agent's tool
+	// order), not the alphabetically sorted one Names() produces.
+	r, err := tools.NewRegistry([]config.ToolEntry{
+		entry("zulu", "Last alphabetically.", "echo"),
+		entry("alpha", "First alphabetically.", "echo"),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	defs := r.Definitions()
+	if len(defs) != 2 {
+		t.Fatalf("len(Definitions()) = %d, want 2", len(defs))
+	}
+	if defs[0].Name != "zulu" || defs[1].Name != "alpha" {
+		t.Errorf("Definitions order = [%s, %s], want insertion order [zulu, alpha]", defs[0].Name, defs[1].Name)
+	}
+	// Names stays sorted for stable error messages.
+	if got := r.Names(); got[0] != "alpha" || got[1] != "zulu" {
+		t.Errorf("Names() = %v, want sorted %v", got, []string{"alpha", "zulu"})
+	}
+}
+
 func TestRunSuccess(t *testing.T) {
 	requireExecTools(t)
 	t.Parallel()

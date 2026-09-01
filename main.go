@@ -103,17 +103,17 @@ func chatCommand() *cli.Command {
 // chosen name is not in the config.
 func resolveAgent(cfg config.Config, name string) (config.Agent, error) {
 	if name == "" {
-		if cfg.DefaultAgent == "" {
+		def, ok := cfg.DefaultAgentName()
+		if !ok {
 			return config.Agent{}, fmt.Errorf("no agent given and no default_agent configured (available: %s)", strings.Join(sortedAgentNames(cfg), ", "))
 		}
-		name = cfg.DefaultAgent
+		name = def
 	}
-	for _, a := range cfg.Agents {
-		if a.Name == name {
-			return a, nil
-		}
+	agent, ok := cfg.Agent(name)
+	if !ok {
+		return config.Agent{}, fmt.Errorf("agent %q is not defined in the config", name)
 	}
-	return config.Agent{}, fmt.Errorf("agent %q is not defined in the config", name)
+	return agent, nil
 }
 
 // sortedAgentNames lists the config's agent names sorted alphabetically.

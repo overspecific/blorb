@@ -50,7 +50,10 @@ type ToolResult struct {
 
 // Registry holds the configured tools.
 type Registry struct {
-	tools   map[string]tool
+	tools map[string]tool
+	// order lists the tool names in registration order, preserving the
+	// caller's listing (the agent's tool order) for Definitions.
+	order   []string
 	timeout time.Duration
 	sink    logging.Sink
 	baseDir string
@@ -115,6 +118,7 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 			return nil, fmt.Errorf("duplicate tool name %q", t.name())
 		}
 		r.tools[t.name()] = t
+		r.order = append(r.order, t.name())
 	}
 	return r, nil
 }
@@ -141,10 +145,10 @@ func (r *Registry) Names() []string {
 }
 
 // Definitions produces the API-facing tool definitions using the neutral llm
-// types.
+// types, in registration order: the caller's (the agent's) tool listing.
 func (r *Registry) Definitions() []llm.Tool {
-	defs := make([]llm.Tool, 0, len(r.tools))
-	for _, name := range r.Names() {
+	defs := make([]llm.Tool, 0, len(r.order))
+	for _, name := range r.order {
 		defs = append(defs, r.tools[name].definition())
 	}
 	return defs

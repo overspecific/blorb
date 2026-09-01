@@ -158,6 +158,93 @@ func TestRunPlainReplySession(t *testing.T) {
 	}
 }
 
+// TestRunScopesToolsToTheAgent verifies the registry only carries the
+// agent's granted tools: a top-level tool the agent does not list never
+// reaches the model, and granted tools arrive in the agent's listed order
+// (not the top-level declaration order).
+func TestRunScopesToolsToTheAgent(t *testing.T) {
+	t.Parallel()
+
+	tools := []config.ToolEntry{
+		{Type: config.ToolTypeCommand, Name: "shared", Description: "Shared tool.", Command: []string{"true"}},
+		{Type: config.ToolTypeCommand, Name: "alpha", Description: "Alpha.", Command: []string{"true"}},
+		{Type: config.ToolTypeCommand, Name: "beta", Description: "Beta tool.", Command: []string{"true"}},
+	}
+	agent := testAgent()
+	agent.Tools = []string{"beta", "alpha"}
+	cfg := config.Config{Agents: []config.Agent{agent}, Tools: tools}
+
+	fc := &fakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "ok"), FinishReason: llm.FinishStop},
+	}}
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   agent,
+		Version: "test",
+		Stdin:   strings.NewReader("hi\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return fc, nil
+		},
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if len(fc.requests) != 1 {
+		t.Fatalf("API calls = %d, want 1", len(fc.requests))
+	}
+	var names []string
+	for _, tl := range fc.requests[0].Tools {
+		names = append(names, tl.Name)
+	}
+	if got, want := fmt.Sprint(names), fmt.Sprint([]string{"beta", "alpha"}); got != want {
+		t.Errorf("request tools = %s, want %s (agent's listed order; the shared tool must not appear)", got, want)
+	}
+}
+
+// TestRunNoToolsAgentSendsNoTools verifies a no-tools agent's requests
+// carry no tool definitions at all.
+func TestRunNoToolsAgentSendsNoTools(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Agents: []config.Agent{testAgent()},
+		Tools: []config.ToolEntry{{
+			Type:        config.ToolTypeCommand,
+			Name:        "shared",
+			Description: "Shared tool.",
+			Command:     []string{"true"},
+		}},
+	}
+
+	fc := &fakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "ok"), FinishReason: llm.FinishStop},
+	}}
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("hi\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return fc, nil
+		},
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if len(fc.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(fc.requests))
+	}
+	if len(fc.requests[0].Tools) != 0 {
+		t.Errorf("request tools = %v, want none (no-tools agent)", fc.requests[0].Tools)
+	}
+}
+
 func TestRunThinkingDisplayedOnStdout(t *testing.T) {
 	t.Parallel()
 

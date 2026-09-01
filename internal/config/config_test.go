@@ -164,6 +164,95 @@ func TestMaxTurnsOrDefaultProgrammatic(t *testing.T) {
 	}
 }
 
+func TestAgentLookup(t *testing.T) {
+	cfg := config.Config{
+		Agents:       []config.Agent{{Name: "alpha"}, {Name: "beta"}},
+		DefaultAgent: "b",
+	}
+
+	t.Run("present", func(t *testing.T) {
+		a, ok := cfg.Agent("alpha")
+		if !ok || a.Name != "alpha" {
+			t.Errorf("Agent(alpha) = (%+v, %v), want the alpha agent", a, ok)
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		a, ok := cfg.Agent("missing")
+		if ok {
+			t.Errorf("Agent(missing) = (%+v, %v), want not ok", a, ok)
+		}
+		if a.Name != "" {
+			t.Errorf("Agent(missing).Name = %q, want empty for the zero Agent", a.Name)
+		}
+	})
+
+	t.Run("default set", func(t *testing.T) {
+		name, ok := cfg.DefaultAgentName()
+		if !ok || name != "b" {
+			t.Errorf("DefaultAgentName() = (%q, %v), want (b, true)", name, ok)
+		}
+	})
+
+	t.Run("default unset", func(t *testing.T) {
+		name, ok := config.Config{Agents: []config.Agent{{Name: "alpha"}}}.DefaultAgentName()
+		if ok {
+			t.Errorf("DefaultAgentName() = (%q, true), want false when default_agent is unset", name)
+		}
+	})
+}
+
+func TestAgentTools(t *testing.T) {
+	cfg := config.Config{
+		Tools: []config.ToolEntry{
+			{Name: "first"},
+			{Name: "second"},
+			{Name: "third"},
+		},
+	}
+
+	t.Run("listed order wins over declaration order", func(t *testing.T) {
+		// The agent lists its tools out of top-level declaration order;
+		// AgentTools must follow the agent's list order.
+		agent := config.Agent{Name: "a", Tools: []string{"third", "first"}}
+		got := cfg.AgentTools(agent)
+		if len(got) != 2 {
+			t.Fatalf("got %d tools, want 2: %+v", len(got), got)
+		}
+		if got[0].Name != "third" || got[1].Name != "first" {
+			t.Errorf("AgentTools = [%s, %s], want [third, first] (agent's listed order)", got[0].Name, got[1].Name)
+		}
+	})
+
+	t.Run("no-tools agent gets an empty slice", func(t *testing.T) {
+		agent := config.Agent{Name: "a"}
+		if got := cfg.AgentTools(agent); len(got) != 0 {
+			t.Errorf("AgentTools = %v, want empty for a no-tools agent", got)
+		}
+	})
+
+	t.Run("all tools granted misses nothing", func(t *testing.T) {
+		agent := config.Agent{Name: "a", Tools: []string{"first", "second", "third"}}
+		got := cfg.AgentTools(agent)
+		if len(got) != 3 {
+			t.Fatalf("got %d tools, want 3", len(got))
+		}
+		for i, want := range []string{"first", "second", "third"} {
+			if got[i].Name != want {
+				t.Errorf("tool %d = %q, want %q", i, got[i].Name, want)
+			}
+		}
+	})
+
+	t.Run("unlisted top-level tools are excluded", func(t *testing.T) {
+		agent := config.Agent{Name: "a", Tools: []string{"second"}}
+		got := cfg.AgentTools(agent)
+		if len(got) != 1 || got[0].Name != "second" {
+			t.Errorf("AgentTools = %v, want only second", got)
+		}
+	})
+}
+
 // TestValidateRejectsBadArgsSchema covers args_schema validation. It cannot
 // be exercised through Load: json.RawMessage only captures values that are
 // already valid JSON, so invalid schema JSON fails the outer parse first.

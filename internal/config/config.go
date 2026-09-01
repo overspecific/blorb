@@ -280,6 +280,45 @@ func (a Agent) MaxTurnsOrDefault() int {
 	return a.MaxTurns
 }
 
+// Agent returns the named agent definition and whether it exists in the
+// config. Callers resolve an agent by name before handing one to a command.
+func (c Config) Agent(name string) (Agent, bool) {
+	for _, a := range c.Agents {
+		if a.Name == name {
+			return a, true
+		}
+	}
+	return Agent{}, false
+}
+
+// DefaultAgentName returns the configured default agent name and whether
+// one is set.
+func (c Config) DefaultAgentName() (string, bool) {
+	if c.DefaultAgent == "" {
+		return "", false
+	}
+	return c.DefaultAgent, true
+}
+
+// AgentTools returns the top-level tool entries the agent may use, in the
+// agent's listed order (not the top-level declaration order), so tool
+// listing order is the agent author's. An empty result is valid: a
+// no-tools agent. Validation guarantees every listed name exists in the
+// top-level tools, so the result only comes up short for a programmatically
+// built config that never went through Validate.
+func (c Config) AgentTools(a Agent) []ToolEntry {
+	out := make([]ToolEntry, 0, len(a.Tools))
+	for _, name := range a.Tools {
+		for _, t := range c.Tools {
+			if t.Name == name {
+				out = append(out, t)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // Validate checks all required fields and value constraints.
 func (c *Config) Validate() error {
 	if c.Agents == nil {

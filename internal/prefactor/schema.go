@@ -5,8 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 
+	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/tools"
 )
 
@@ -68,13 +71,16 @@ func objectSchemaFor(raw json.RawMessage) map[string]any {
 
 // toolSpanSchemas builds the span type schemas for the configured tools,
 // derived from each tool's args_schema. Tools are visited in sorted order
-// so the schema content is stable.
+// (Definitions preserves the agent's tool listing) so the schema content
+// is stable regardless of how the agent orders its tools.
 func toolSpanSchemas(reg *tools.Registry) []SpanTypeSchema {
 	if reg == nil {
 		return nil
 	}
+	defs := reg.Definitions()
+	slices.SortFunc(defs, func(a, b llm.Tool) int { return strings.Compare(a.Name, b.Name) })
 	var out []SpanTypeSchema
-	for _, def := range reg.Definitions() { // Definitions is already sorted by name
+	for _, def := range defs {
 		out = append(out, SpanTypeSchema{
 			Name:         ToolSchemaName(def.Name),
 			ParamsSchema: objectSchemaFor(def.Parameters),
