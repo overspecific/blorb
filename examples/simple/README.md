@@ -22,6 +22,7 @@ bin/build
 ./blorb chat --config examples/simple/blorb.json                      # the default agent: simple
 ./blorb chat --config examples/simple/blorb.json --agent scholar    # the knowledgebase agent (delegates searching)
 ./blorb chat --config examples/simple/blorb.json --agent search    # the expert searcher, directly
+./blorb run --config examples/simple/blorb.json "what's a jammie dodger?"   # one turn, then exit
 ```
 
 Then try prompts like:

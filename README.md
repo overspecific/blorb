@@ -14,6 +14,7 @@ Tools are plain executables declared in the config, built-ins implemented inside
 
 - One `blorb.json` defines any number of named agents, each with its own system prompt, provider, and tool grants
 - Interactive chat REPL with multi-turn tool calling, running a chosen agent per invocation
+- One-shot `run` mode: one prompt in, one agent turn out, for scripting — the prompt comes from a quoted argument, a file, or stdin
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
 - Tool results summarize by default in chat (a character and line count); `--tool-output` shows the full output, and failed results and subagent output always show in full
 - Full wire logging: every LLM request/response and tool call/result is written to a timestamped file per session, so a plain sort of the filenames replays a turn in order (see [Logging](#logging))
@@ -61,6 +62,7 @@ blorb <command> [flags]
 Commands:
 
 - `chat` — chat with an agent defined in `blorb.json`
+- `run` — run one agent turn and exit
 - `version` — print the version
 - `help` — print help
 
@@ -83,6 +85,33 @@ The agent is resolved in order: the `--agent` flag when given, else the config's
 Flags: `-c | --config <path>`, `--agent <name>`, `--no-stream` (disable streamed responses), `--tool-output` (show the full output of tool results — without it, result blocks show a character and line count instead; failed results and subagent output always show in full), `-h | --help`. Version: `blorb --version` or `blorb version`.
 
 Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C while idle exits the session.
+
+### One-shot runs
+
+`blorb run` executes exactly one agent turn and exits — the scripting counterpart to `chat`:
+
+```sh
+# a literal prompt
+./blorb run "Summarize ./notes.md"
+
+# the prompt from a file
+./blorb run @prompt.txt
+
+# the prompt from stdin
+echo "What changed in the last commit?" | ./blorb run -
+
+# stdin via the @ form (equivalent to -)
+git diff | ./blorb run @-
+
+# a prompt that should start with a literal @: escape it with @@
+./blorb run "@@ literal @ prompt"
+```
+
+The prompt argument is required and exactly one is accepted: omitting it or passing extra arguments is a usage error (a scripting tool must not appear to hang when its arguments are forgotten, so stdin is only read when explicitly requested with `-` or `@-`).
+
+`run` takes the same flags as `chat` (`-c | --config <path>`, `--agent <name>`, `--no-stream`, `--tool-output`). The output format is currently identical to chat (including the `>>>` headings); additional output formats are planned.
+
+Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
 
 ## Configuration
 
@@ -260,7 +289,7 @@ Log files capture full request/response bodies and headers — including any API
 
 ### Prefactor tracing
 
-Blorb can trace every agent run to [Prefactor](https://prefactor.ai), an agent-activity auditing platform. Add a `prefactor` block to enable it; when present, chat sessions are recorded as Prefactor agent instances, and each user message, assistant message, LLM API call, and tool call becomes a span within the instance.
+Blorb can trace every agent run to [Prefactor](https://prefactor.ai), an agent-activity auditing platform. Add a `prefactor` block to enable it; when present, chat sessions are recorded as Prefactor agent instances, and each user message, assistant message, LLM API call, and tool call becomes a span within the instance. A `blorb run` invocation records one instance with one turn — the same span model as a one-turn chat session.
 
 ```json
 {
