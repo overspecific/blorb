@@ -46,8 +46,15 @@ func rootCommand() *cli.Command {
 // chatCommand builds the chat subcommand.
 func chatCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "chat",
-		Usage: "Chat with an agent defined in blorb.json",
+		Name:      "chat",
+		Usage:     "Chat with an agent defined in blorb.json",
+		UsageText: "blorb chat [command options] [agent]",
+		Arguments: []cli.Argument{
+			&cli.StringArg{
+				Name:      "agent",
+				UsageText: "Name of the agent to chat with; defaults to the config's default_agent",
+			},
+		},
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "config",
@@ -66,7 +73,7 @@ func chatCommand() *cli.Command {
 				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
 			}
 
-			agent, err := resolveAgent(cfg, "")
+			agent, err := resolveAgent(cfg, cmd.StringArg("agent"))
 			if err != nil {
 				return cli.Exit(fmt.Sprintf("chat: %v", err), 1)
 			}

@@ -3,8 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,6 +154,182 @@ func TestChatCommandHasNoNewFlags(t *testing.T) {
 			t.Error("chat has a logging flag; logging must be configured via blorb.json only")
 		}
 	}
+	// The agent is a positional argument, not a flag.
+	if len(cmd.Arguments) != 1 {
+		t.Fatalf("chat has %d positional arguments, want 1 (agent): %+v", len(cmd.Arguments), cmd.Arguments)
+	}
+	if !cmd.Arguments[0].HasName("agent") {
+		t.Errorf("chat's positional argument is %q, want \"agent\"", cmd.Arguments[0].Get())
+	}
+}
+
+// newFakeProviderServer returns an OpenAI-compatible chat completions
+// server that always answers with a canned reply, so positional-argument
+// tests run real sessions cheaply and observe the banner.
+func newFakeProviderServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// writeAgentConfig writes a config with the given agent names, an optional
+// default_agent (empty means none), and each agent's provider pointing at
+// baseURL with model-<name>. Returns the config path.
+func writeAgentConfig(t *testing.T, dir string, names []string, defaultAgent string, baseURL string) string {
+	t.Helper()
+
+	agents := make([]map[string]any, len(names))
+	for i, name := range names {
+		agents[i] = map[string]any{
+			"name":          name,
+			"system_prompt": fmt.Sprintf("You are %s.", name),
+			"provider": map[string]any{
+				"type":     "openai",
+				"model":    "model-" + name,
+				"base_url": baseURL,
+			},
+			"max_turns": 1,
+		}
+	}
+	base := map[string]any{
+		"agents": agents,
+	}
+	if defaultAgent != "" {
+		base["default_agent"] = defaultAgent
+	}
+
+	data, err := json.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	path := filepath.Join(dir, "blorb.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+// runChatCommand runs `blorb chat -c cfgPath [args...]` over pipe-backed
+// stdio and returns the captured stdout plus the session error. Errors
+// handed to the ExitErrHandler (cli.Exit) are returned with the cli
+// formatting stripped.
+func runChatCommand(t *testing.T, cfgPath string, args ...string) (string, error) {
+	t.Helper()
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	if _, err := io.WriteString(stdinW, "hi\nexit\n"); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if err := stdinW.Close(); err != nil {
+		t.Fatalf("close stdin: %v", err)
+	}
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+
+	oldStdin, oldStdout := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = stdinR, stdoutW
+	defer func() { os.Stdin, os.Stdout = oldStdin, oldStdout }()
+
+	cmd := rootCommand()
+	cmd.Writer = io.Discard
+	cmd.ErrWriter = io.Discard
+	errOut := &bytes.Buffer{}
+	cmd.ExitErrHandler = capturingExitHandler(errOut)
+
+	argv := append([]string{"blorb", "chat", "-c", cfgPath}, args...)
+	runErr := cmd.Run(context.Background(), argv)
+
+	if err := stdoutW.Close(); err != nil {
+		t.Fatalf("close stdout: %v", err)
+	}
+	var out bytes.Buffer
+	if _, err := io.Copy(&out, stdoutR); err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := stdoutR.Close(); err != nil {
+		t.Fatalf("close stdout: %v", err)
+	}
+
+	// cli.Exit errors are reported through the ExitErrHandler; that is the
+	// user-visible failure, so return it as the run error.
+	if errOut.Len() > 0 {
+		return out.String(), errors.New(errOut.String())
+	}
+	return out.String(), runErr
+}
+
+func TestChatAgentArgument(t *testing.T) {
+	srv := newFakeProviderServer(t)
+
+	t.Run("no arg uses default_agent", func(t *testing.T) {
+		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "beta", srv.URL)
+
+		out, err := runChatCommand(t, cfgPath)
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !strings.Contains(out, "beta") || !strings.Contains(out, "model-beta") {
+			t.Errorf("stdout = %q, want the banner naming the default agent and its model", out)
+		}
+	})
+
+	t.Run("positional arg overrides the default", func(t *testing.T) {
+		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "beta", srv.URL)
+
+		out, err := runChatCommand(t, cfgPath, "alpha")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !strings.Contains(out, "alpha") || !strings.Contains(out, "model-alpha") {
+			t.Errorf("stdout = %q, want the banner naming agent alpha and its model", out)
+		}
+	})
+
+	t.Run("unknown agent fails", func(t *testing.T) {
+		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "beta", srv.URL)
+
+		_, err := runChatCommand(t, cfgPath, "gamma")
+		if err == nil || !strings.Contains(err.Error(), `agent "gamma" is not defined in the config`) {
+			t.Errorf("error = %v, want the not-defined error mentioning gamma", err)
+		}
+	})
+
+	t.Run("no default and no arg lists available agents", func(t *testing.T) {
+		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "", srv.URL)
+
+		_, err := runChatCommand(t, cfgPath)
+		if err == nil {
+			t.Fatal("chat with no agent and no default succeeded, want an error")
+		}
+		if !strings.Contains(err.Error(), "no agent given and no default_agent configured") {
+			t.Errorf("error = %v, want the available-agents error", err)
+		}
+		if !strings.Contains(err.Error(), "alpha") || !strings.Contains(err.Error(), "beta") {
+			t.Errorf("error = %q, want both agent names listed", err)
+		}
+	})
+
+	t.Run("no default but explicit arg", func(t *testing.T) {
+		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "", srv.URL)
+
+		out, err := runChatCommand(t, cfgPath, "alpha")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !strings.Contains(out, "alpha") || !strings.Contains(out, "model-alpha") {
+			t.Errorf("stdout = %q, want the banner naming agent alpha", out)
+		}
+	})
 }
 
 func TestChatPrefactorMissingEnvVarExits(t *testing.T) {
