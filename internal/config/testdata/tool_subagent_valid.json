@@ -1,0 +1,27 @@
+{
+  "default_agent": "main",
+  "agents": [
+    {
+      "name": "main",
+      "system_prompt": "You are helpful.",
+      "provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+      "max_turns": 3,
+      "tools": ["ask_researcher"]
+    },
+    {
+      "name": "researcher",
+      "system_prompt": "You research things.",
+      "provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+      "max_turns": 3,
+      "tools": []
+    }
+  ],
+  "tools": [
+    {
+      "type": "subagent",
+      "name": "ask_researcher",
+      "description": "Ask the researcher.",
+      "agent": "researcher"
+    }
+  ]
+}

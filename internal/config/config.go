@@ -28,6 +28,11 @@ const ToolTypeCommand ToolType = "command"
 // the builtin field.
 const ToolTypeBuiltin ToolType = "builtin"
 
+// ToolTypeSubagent selects a tool that delegates to another agent defined
+// in the same config: calling it runs that agent for one turn and returns
+// its final assistant text.
+const ToolTypeSubagent ToolType = "subagent"
+
 // NamePattern is the strict pattern agent and tool names must match so
 // they are valid function names for the API and safe to exec.
 var NamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -242,6 +247,11 @@ type ToolEntry struct {
 	// parser.
 	Builtin string          `json:"builtin,omitempty"`
 	Config  json.RawMessage `json:"config,omitempty"`
+
+	// Fields for type "subagent".
+	// Agent names the target agent this tool delegates to; it must be
+	// a defined agent in the same config.
+	Agent string `json:"agent,omitempty"`
 }
 
 // Load reads and parses the blorb.json file at path, then validates it.
@@ -357,6 +367,102 @@ func (c *Config) Validate() error {
 	if c.DefaultAgent != "" && !slices.ContainsFunc(c.Agents, func(a Agent) bool { return a.Name == c.DefaultAgent }) {
 		return fmt.Errorf("default_agent %q is not a defined agent", c.DefaultAgent)
 	}
+	// Subagent references and cycles come after per-agent validation, so
+	// every agent name is known by the time they run.
+	if err := c.validateSubagentRefs(); err != nil {
+		return err
+	}
+	if err := c.validateSubagentCycles(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateSubagentRefs checks that every subagent tool entry names a
+// defined agent. Runs after per-agent validation so all agent names are
+// known.
+func (c *Config) validateSubagentRefs() error {
+	for _, t := range c.Tools {
+		if t.Type != ToolTypeSubagent {
+			continue
+		}
+		if _, ok := c.Agent(t.Agent); !ok {
+			return fmt.Errorf("tool %q: agent %q is not a defined agent", t.Name, t.Agent)
+		}
+	}
+	return nil
+}
+
+// validateSubagentCycles builds the agent delegation graph — an edge from
+// an agent to each subagent tool target it is granted — and rejects any
+// cycle, including self-reference. A cycle anywhere is fatal: delegation
+// depth would otherwise be unbounded.
+func (c *Config) validateSubagentCycles() error {
+	// target[toolName] is the agent a subagent tool delegates to.
+	target := make(map[string]string, len(c.Tools))
+	for _, t := range c.Tools {
+		if t.Type == ToolTypeSubagent {
+			target[t.Name] = t.Agent
+		}
+	}
+
+	edges := make(map[string][]string, len(c.Agents))
+	for _, a := range c.Agents {
+		for _, name := range a.Tools {
+			if target, ok := target[name]; ok {
+				edges[a.Name] = append(edges[a.Name], target)
+			}
+		}
+	}
+
+	const (
+		white = 0 // unvisited
+		gray  = 1 // on the current DFS path
+		black = 2 // fully explored
+	)
+	color := make(map[string]int, len(c.Agents))
+	var stack []string
+
+	var visit func(agent string) error
+	visit = func(agent string) error {
+		color[agent] = gray
+		stack = append(stack, agent)
+		for _, next := range edges[agent] {
+			switch color[next] {
+			case white:
+				if err := visit(next); err != nil {
+					return err
+				}
+			case gray:
+				// Found a cycle: report the path from its first
+				// occurrence on the current stack.
+				start := 0
+				for i, a := range stack {
+					if a == next {
+						start = i
+						break
+					}
+				}
+				path := append(append([]string(nil), stack[start:]...), next)
+				quoted := make([]string, len(path))
+				for i, a := range path {
+					quoted[i] = fmt.Sprintf("%q", a)
+				}
+				return fmt.Errorf("agent cycle detected: %s", strings.Join(quoted, " -> "))
+			}
+		}
+		stack = stack[:len(stack)-1]
+		color[agent] = black
+		return nil
+	}
+
+	for _, a := range c.Agents {
+		if color[a.Name] == white {
+			if err := visit(a.Name); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -433,7 +539,7 @@ func (p *Provider) validate() error {
 // SupportedToolTypes lists the tool types this build recognizes, sorted
 // alphabetically.
 func SupportedToolTypes() []string {
-	return []string{string(ToolTypeBuiltin), string(ToolTypeCommand)}
+	return []string{string(ToolTypeBuiltin), string(ToolTypeCommand), string(ToolTypeSubagent)}
 }
 
 func (t *ToolEntry) validate(dir string) error {
@@ -483,6 +589,25 @@ func (t *ToolEntry) validate(dir string) error {
 		}
 		if _, err := builtin.ParseConfig(t.Builtin, t.Config, builtin.ParseOptions{BaseDir: dir}); err != nil {
 			return err
+		}
+	case ToolTypeSubagent:
+		if t.Agent == "" {
+			return fmt.Errorf("agent is required")
+		}
+		if !NamePattern.MatchString(t.Agent) {
+			return fmt.Errorf("agent %q must match %s", t.Agent, NamePattern)
+		}
+		if len(t.ArgsSchema) > 0 && !json.Valid(t.ArgsSchema) {
+			return fmt.Errorf("args_schema must be valid JSON")
+		}
+		if len(t.Command) > 0 {
+			return fmt.Errorf("command is not valid for subagent tools")
+		}
+		if t.Builtin != "" {
+			return fmt.Errorf("builtin is not valid for subagent tools")
+		}
+		if len(t.Config) > 0 {
+			return fmt.Errorf("config is not valid for subagent tools")
 		}
 	default:
 		return fmt.Errorf("unknown tool type %q (supported: %s)", t.Type, strings.Join(SupportedToolTypes(), ", "))

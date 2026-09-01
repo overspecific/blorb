@@ -397,6 +397,14 @@ func TestLoadRejects(t *testing.T) {
 		{"tool_builtin_with_args_schema.json", []string{"args_schema is not valid for builtin tools"}},
 		{"tool_command_with_builtin.json", []string{"builtin is not valid for command tools"}},
 		{"tool_command_with_config.json", []string{"config is not valid for command tools"}},
+		{"tool_subagent_missing_agent.json", []string{"agent is required"}},
+		{"tool_subagent_bad_agent_name.json", []string{`agent "has space" must match`}},
+		{"tool_subagent_unknown_agent.json", []string{`tool "ask_ghost": agent "ghost" is not a defined agent`}},
+		{"tool_subagent_with_command.json", []string{"command is not valid for subagent tools"}},
+		{"tool_subagent_with_builtin.json", []string{"builtin is not valid for subagent tools"}},
+		{"tool_subagent_with_config.json", []string{"config is not valid for subagent tools"}},
+		{"tool_subagent_cycle.json", []string{`agent cycle detected: "a" -> "b" -> "a"`}},
+		{"tool_subagent_self_cycle.json", []string{`agent cycle detected: "a" -> "a"`}},
 		{"duplicate_tool_names.json", []string{"duplicate tool name"}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
 		{"empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
@@ -418,6 +426,55 @@ func TestLoadRejects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadSubagentValid(t *testing.T) {
+	cfg, err := loadTestdata(t, "tool_subagent_valid.json")
+	if err != nil {
+		t.Fatalf("Load(tool_subagent_valid.json) error = %v, want nil", err)
+	}
+	if len(cfg.Tools) != 1 {
+		t.Fatalf("len(Tools) = %d, want 1", len(cfg.Tools))
+	}
+	tool := cfg.Tools[0]
+	if tool.Type != config.ToolTypeSubagent {
+		t.Errorf("Type = %q, want subagent", tool.Type)
+	}
+	if tool.Agent != "researcher" {
+		t.Errorf("Agent = %q, want researcher", tool.Agent)
+	}
+	if len(tool.Command) != 0 || tool.Builtin != "" || len(tool.Config) != 0 {
+		t.Errorf("command/builtin/config = %v/%q/%s, want empty for a subagent entry", tool.Command, tool.Builtin, tool.Config)
+	}
+}
+
+// TestValidateRejectsSubagentBadArgsSchema covers args_schema validation
+// for subagent tools. Like the command-tool variant it cannot be exercised
+// through Load: json.RawMessage only captures values that are already valid
+// JSON, so invalid schema JSON fails the outer parse first.
+func TestValidateRejectsSubagentBadArgsSchema(t *testing.T) {
+	cfg := config.Config{
+		Agents: []config.Agent{validAgent()},
+		Tools: []config.ToolEntry{{
+			Type:        config.ToolTypeSubagent,
+			Name:        "t",
+			Description: "Delegates with a broken schema.",
+			Agent:       "helper",
+			ArgsSchema:  json.RawMessage(`{oops`),
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "args_schema must be valid JSON") {
+		t.Errorf("Validate error = %v, want an args_schema error", err)
+	}
+}
+
+func TestValidateSubagentToolTypes(t *testing.T) {
+	// SupportedToolTypes stays sorted alphabetically.
+	if got, want := config.SupportedToolTypes(), []string{"builtin", "command", "subagent"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("SupportedToolTypes() = %v, want %v", got, want)
 	}
 }
 
