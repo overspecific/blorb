@@ -146,20 +146,17 @@ func TestChatNoStreamFlag(t *testing.T) {
 
 func TestChatCommandHasNoNewFlags(t *testing.T) {
 	cmd := chatCommand()
-	if len(cmd.Flags) != 2 {
-		t.Errorf("chat has %d flags, want 2 (config, no-stream): %+v", len(cmd.Flags), cmd.Flags)
+	if len(cmd.Flags) != 3 {
+		t.Errorf("chat has %d flags, want 3 (config, no-stream, agent): %+v", len(cmd.Flags), cmd.Flags)
 	}
 	for _, f := range cmd.Flags {
 		if f.Names()[0] == "logging" {
 			t.Error("chat has a logging flag; logging must be configured via blorb.json only")
 		}
 	}
-	// The agent is a positional argument, not a flag.
-	if len(cmd.Arguments) != 1 {
-		t.Fatalf("chat has %d positional arguments, want 1 (agent): %+v", len(cmd.Arguments), cmd.Arguments)
-	}
-	if !cmd.Arguments[0].HasName("agent") {
-		t.Errorf("chat's positional argument is %q, want \"agent\"", cmd.Arguments[0].Get())
+	// The agent is selected via a flag, not a positional argument.
+	if len(cmd.Arguments) != 0 {
+		t.Errorf("chat has %d positional arguments, want 0: %+v", len(cmd.Arguments), cmd.Arguments)
 	}
 }
 
@@ -283,10 +280,10 @@ func TestChatAgentArgument(t *testing.T) {
 		}
 	})
 
-	t.Run("positional arg overrides the default", func(t *testing.T) {
+	t.Run("--agent overrides the default", func(t *testing.T) {
 		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "beta", srv.URL)
 
-		out, err := runChatCommand(t, cfgPath, "alpha")
+		out, err := runChatCommand(t, cfgPath, "--agent", "alpha")
 		if err != nil {
 			t.Fatalf("Run error = %v, want nil", err)
 		}
@@ -298,13 +295,13 @@ func TestChatAgentArgument(t *testing.T) {
 	t.Run("unknown agent fails", func(t *testing.T) {
 		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "beta", srv.URL)
 
-		_, err := runChatCommand(t, cfgPath, "gamma")
+		_, err := runChatCommand(t, cfgPath, "--agent", "gamma")
 		if err == nil || !strings.Contains(err.Error(), `agent "gamma" is not defined in the config`) {
 			t.Errorf("error = %v, want the not-defined error mentioning gamma", err)
 		}
 	})
 
-	t.Run("no default and no arg lists available agents", func(t *testing.T) {
+	t.Run("no default and no flag lists available agents", func(t *testing.T) {
 		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "", srv.URL)
 
 		_, err := runChatCommand(t, cfgPath)
@@ -319,10 +316,10 @@ func TestChatAgentArgument(t *testing.T) {
 		}
 	})
 
-	t.Run("no default but explicit arg", func(t *testing.T) {
+	t.Run("no default but explicit flag", func(t *testing.T) {
 		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "", srv.URL)
 
-		out, err := runChatCommand(t, cfgPath, "alpha")
+		out, err := runChatCommand(t, cfgPath, "--agent", "alpha")
 		if err != nil {
 			t.Fatalf("Run error = %v, want nil", err)
 		}

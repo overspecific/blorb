@@ -17,8 +17,8 @@ From the repo root:
 
 ```sh
 bin/build
-./blorb chat --config examples/simple/blorb.json            # the default agent: simple
-./blorb chat --config examples/simple/blorb.json scholar    # the knowledgebase-only agent
+./blorb chat --config examples/simple/blorb.json                      # the default agent: simple
+./blorb chat --config examples/simple/blorb.json --agent scholar    # the knowledgebase-only agent
 ```
 
 Then try prompts like:

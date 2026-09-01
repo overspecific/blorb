@@ -63,25 +63,23 @@ Commands:
 - `version` — print the version
 - `help` — print help
 
-### Chat
-
 ```sh
 # chat with the config's default agent (./blorb.json by default)
 ./blorb chat
 
 # or chat with an explicitly named agent
-./blorb chat alpha
+./blorb chat --agent alpha
 
 # or point at an explicit config
 ./blorb chat --config examples/simple/blorb.json
 
-# the agent name can follow the flags
-./blorb chat --config examples/simple/blorb.json simple
+# flags can appear in any order
+./blorb chat --config examples/simple/blorb.json --agent simple
 ```
 
-The agent is resolved in order: the positional `agent` argument when given, else the config's `default_agent`; with neither, the command fails and lists the defined agents. Naming an agent that is not in the config is an error.
+The agent is resolved in order: the `--agent` flag when given, else the config's `default_agent`; with neither, the command fails and lists the defined agents. Naming an agent that is not in the config is an error.
 
-Flags: `-c | --config <path>`, `--no-stream` (disable streamed responses), `-h | --help`. Version: `blorb --version` or `blorb version`.
+Flags: `-c | --config <path>`, `--agent <name>`, `--no-stream` (disable streamed responses), `-h | --help`. Version: `blorb --version` or `blorb version`.
 
 Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C while idle exits the session.
 
@@ -141,7 +139,7 @@ A `blorb.json` defines the agents and their shared tool vocabulary:
 }
 ```
 
-With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb chat quiet` runs the quiet one, and `./blorb chat nope` fails naming the defined agents. Both agents share the `echo` tool; only `simple` also uses the `read` builtin.
+With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb chat --agent quiet` runs the quiet one, and `./blorb chat --agent nope` fails naming the defined agents. Both agents share the `echo` tool; only `simple` also uses the `read` builtin.
 
 ### Top-level fields
 
@@ -159,7 +157,7 @@ Each agent definition carries its own settings and the names of the top-level to
 
 | Field           | Required | Description                                                                                    |
 | --------------- | -------- | ----------------------------------------------------------------------------------------------- |
-| `name`          | yes      | Unique within the config; must match `^[a-zA-Z0-9_-]+$`. Shown in the chat banner, registered with Prefactor, and what `blorb chat [agent]` takes. |
+| `name`          | yes      | Unique within the config; must match `^[a-zA-Z0-9_-]+$`. Shown in the chat banner, registered with Prefactor, and what the `--agent` flag of `blorb chat` takes. |
 | `system_prompt` | yes      | The agent's system prompt.                                                                       |
 | `provider`      | yes      | LLM backend config (see below).                                                                  |
 | `max_turns`     | yes      | Max model turns per user message; must be at least 1.                                            |
@@ -167,7 +165,7 @@ Each agent definition carries its own settings and the names of the top-level to
 
 Tools are shared vocabulary: they are declared once at the top level, and each agent lists, by name, the ones it may use. An agent listing an unknown tool is a config error, and listing the same tool twice within one agent is an error too. The listed order is the agent's — that is the order the tools are presented to the model. Agent names must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
 
-`default_agent` is optional; when set it must name a defined agent, and when absent `blorb chat` requires an explicit agent argument.
+`default_agent` is optional; when set it must name a defined agent, and when absent `blorb chat` requires an explicit `--agent`.
 
 ### Provider
 
