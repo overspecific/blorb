@@ -40,6 +40,13 @@ type tool interface {
 	close()
 }
 
+// longRunning marks tools exempt from the registry's per-call timeout:
+// their run is bounded by their own logic and context cancellation, not
+// the 30s default.
+type longRunning interface {
+	longRunning() bool
+}
+
 // ToolResult is the outcome of running a tool. Err marks tool-level failure
 // (non-zero exit); that is still a valid result for the model and does not
 // surface as a Go error.
@@ -57,6 +64,11 @@ type Registry struct {
 	timeout time.Duration
 	sink    logging.Sink
 	baseDir string
+	// subagentRunner executes named agents as subagents; required only
+	// when the entries include a subagent tool.
+	subagentRunner SubagentRunner
+	// subagentEvents receives subagent activity for display; may be nil.
+	subagentEvents func(SubagentEvent) error
 }
 
 // Option customizes a Registry.
@@ -78,6 +90,18 @@ func WithSink(s logging.Sink) Option {
 // process working directory.
 func WithConfigDir(dir string) Option {
 	return func(r *Registry) { r.baseDir = dir }
+}
+
+// WithSubagentRunner sets the runner that subagent tools use to execute
+// their target agents. Required for configs containing subagent tools.
+func WithSubagentRunner(r SubagentRunner) Option {
+	return func(reg *Registry) { reg.subagentRunner = r }
+}
+
+// WithSubagentEvents sets the callback receiving subagent activity events
+// for display. Nil (the default) discards them.
+func WithSubagentEvents(cb func(SubagentEvent) error) Option {
+	return func(r *Registry) { r.subagentEvents = cb }
 }
 
 // NewRegistry converts config tool entries into a registry, revalidating
@@ -107,6 +131,8 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 			t, err = newCommandTool(e)
 		case config.ToolTypeBuiltin:
 			t, err = newBuiltinTool(e, r.baseDir)
+		case config.ToolTypeSubagent:
+			t, err = newSubagentTool(e, r.subagentRunner, r.subagentEvents)
 		default:
 			err = fmt.Errorf("tool %q: unknown tool type %q (supported: %s)",
 				e.Name, e.Type, strings.Join(config.SupportedToolTypes(), ", "))
@@ -190,7 +216,11 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 		})
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	runCtx := ctx
+	cancel := func() {}
+	if _, skip := t.(longRunning); !skip {
+		runCtx, cancel = context.WithTimeout(ctx, r.timeout)
+	}
 	defer cancel()
 
 	return t.run(runCtx, args, r.sink)
