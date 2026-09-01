@@ -73,10 +73,17 @@ func TestSimpleExampleTracingDisabled(t *testing.T) {
 	if cfg.DefaultAgent != "simple" {
 		t.Errorf("DefaultAgent = %q, want simple — ./blorb chat must run exactly as before", cfg.DefaultAgent)
 	}
-	// simple gets all four tools; scholar only the knowledgebase builtins.
-	for _, name := range []string{"echo", "current_time", "read", "grep"} {
+	// simple gets the utilities and the subagent delegation to the scholar
+	// (no direct knowledgebase access); scholar only the knowledgebase
+	// builtins.
+	for _, name := range []string{"echo", "current_time", "ask_scholar"} {
 		if !slices.Contains(simple.Tools, name) {
 			t.Errorf("agent simple tools = %v, want it to include %q", simple.Tools, name)
+		}
+	}
+	for _, name := range []string{"read", "grep"} {
+		if slices.Contains(simple.Tools, name) {
+			t.Errorf("agent simple tools = %v, want it to exclude %q (the knowledgebase is the scholar's)", simple.Tools, name)
 		}
 	}
 	if got, want := scholar.Tools, []string{"read", "grep"}; fmt.Sprint(got) != fmt.Sprint(want) {
