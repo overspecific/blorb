@@ -609,6 +609,241 @@ func TestRunToolEventsOnStdout(t *testing.T) {
 	}
 }
 
+// TestRunToolOutputSuppressedByDefault pins the --tool-output off state:
+// the tool call heading and arguments still render, but the result block
+// shows a char/line count instead of the output body.
+func TestRunToolOutputSuppressedByDefault(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	File := filepath.Join(dir, "marker.txt")
+	if err := os.WriteFile(File, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := testConfig(testAgent(), config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "echoer",
+		Description: "Echoes.",
+		Command:     []string{"printf", "one\ntwo\nthree\nfour\n"},
+	})
+
+	toolCallResp := llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID: "call_1", Type: "function", FunctionName: "echoer", FunctionArgs: "{}",
+			}},
+		},
+		FinishReason: llm.FinishToolCalls,
+	}
+
+	o, stdout := newTestOptions(cfg, "make the marker\nexit\n",
+		toolCallResp,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "made it"), FinishReason: llm.FinishStop},
+	)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, ">>> Tool: echoer") {
+		t.Errorf("stdout = %q, want a tool call heading", out)
+	}
+	if !strings.Contains(out, ">>> Result: Tool: echoer") {
+		t.Errorf("stdout = %q, want a tool result heading", out)
+	}
+	// The output body is replaced by the count summary.
+	if !strings.Contains(out, "18 characters, 4 lines") {
+		t.Errorf("stdout = %q, want a 18 characters, 4 lines count line", out)
+	}
+	if strings.Contains(out, "\none\n") {
+		t.Errorf("stdout = %q, want no tool output body", out)
+	}
+}
+
+// TestRunToolOutputFlagShowsOutput pins the --tool-output on state: the
+// result block shows the full output body, not the count summary.
+func TestRunToolOutputFlagShowsOutput(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	File := filepath.Join(dir, "marker.txt")
+	if err := os.WriteFile(File, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := testConfig(testAgent(), config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "echoer",
+		Description: "Echoes.",
+		Command:     []string{"printf", "one\ntwo\nthree\nfour\n"},
+	})
+
+	toolCallResp := llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID: "call_1", Type: "function", FunctionName: "echoer", FunctionArgs: "{}",
+			}},
+		},
+		FinishReason: llm.FinishToolCalls,
+	}
+
+	o, stdout := newTestOptions(cfg, "make the marker\nexit\n",
+		toolCallResp,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "made it"), FinishReason: llm.FinishStop},
+	)
+	o.ToolOutput = true
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, ">>> Result: Tool: echoer\none\ntwo\nthree\nfour") {
+		t.Errorf("stdout = %q, want the full tool output body", out)
+	}
+	if strings.Contains(out, "characters") {
+		t.Errorf("stdout = %q, want no count summary", out)
+	}
+}
+
+// TestRunFailedToolResultAlwaysShowsOutput pins the failure carve-out:
+// even with tool output suppressed, a failed tool result shows its full
+// output so the user can diagnose the failure.
+func TestRunFailedToolResultAlwaysShowsOutput(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(testAgent(), config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "failer",
+		Description: "Fails.",
+		Command:     []string{"sh", "-c", "echo boom >&2; exit 3"},
+	})
+
+	toolCallResp := llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID: "call_1", Type: "function", FunctionName: "failer", FunctionArgs: "{}",
+			}},
+		},
+		FinishReason: llm.FinishToolCalls,
+	}
+
+	o, stdout := newTestOptions(cfg, "make the marker\nexit\n",
+		toolCallResp,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "made it"), FinishReason: llm.FinishStop},
+	)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, ">>> Error: Tool: failer") {
+		t.Errorf("stdout = %q, want a failed tool result heading", out)
+	}
+	if !strings.Contains(out, "boom") {
+		t.Errorf("stdout = %q, want the full failure output", out)
+	}
+}
+
+// TestRunToolOutputStreamingPinsCountLine pins the streaming path: with
+// tool output suppressed, the streamed arguments leave the stream mid-line
+// and the count-summary result block still terminates the partial line with
+// its blank-line separator.
+func TestRunToolOutputStreamingPinsCountLine(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker.txt")
+
+	cfg := testConfig(testAgent(), config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "touch",
+		Description: "Creates a marker file.",
+		Command:     []string{"touch", marker},
+	})
+
+	toolCallResp := llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID: "call_1", Type: "function", FunctionName: "touch", FunctionArgs: "{}",
+			}},
+		},
+		FinishReason: llm.FinishToolCalls,
+	}
+	o, stdout := newStreamingTestOptions(cfg, "run it\nexit\n",
+		toolCallResp,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "done"), FinishReason: llm.FinishStop},
+	)
+	o.Stream = true
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if strings.Count(out, "\n\n>>> Result: Tool: touch") != 1 {
+		t.Errorf("stdout = %q, want a blank line between the arguments and the result heading", out)
+	}
+	if strings.Count(out, "0 characters, 0 lines") != 1 {
+		t.Errorf("stdout = %q, want exactly one count line for the empty output", out)
+	}
+}
+
+// TestRunSubagentResultShowsCountsForParent pins the subagent carve-out's
+// parent side: with tool output suppressed, the parent's ask_worker result
+// block shows a count summary instead of the subagent's final text.
+func TestRunSubagentResultShowsCountsForParent(t *testing.T) {
+	t.Parallel()
+
+	cfg := subagentTestConfig(t)
+	parent, worker := subagentClients("worker result text")
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("go\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	// The worker's activity always renders, suppression does not apply.
+	if !strings.Contains(out, "[worker] >>> Assistant:\n  worker result text") {
+		t.Errorf("stdout = %q, want the worker's live activity", out)
+	}
+	resultAt := strings.Index(out, ">>> Result: Tool: ask_worker")
+	if resultAt < 0 {
+		t.Fatalf("stdout = %q, want the parent's result heading", out)
+	}
+	// The parent's result body is the count summary, not the subagent text.
+	// "worker result text" is 18 characters on one line (the tool layer
+	// trims the trailing newline before the result event).
+	resultTail := out[resultAt:]
+	if !strings.Contains(resultTail, "18 characters, 1 line") {
+		t.Errorf("result tail = %q, want a count summary", resultTail)
+	}
+	if strings.Contains(resultTail, "worker result text") {
+		t.Errorf("result tail = %q, want no raw output", resultTail)
+	}
+}
+
 func TestRunStartupErrors(t *testing.T) {
 	t.Parallel()
 
@@ -1427,7 +1662,8 @@ func subagentClients(finalText string) (*fakeClient, *fakeClient) {
 // TestRunSubagentToolRendersActivity is the end-to-end chat test: the
 // parent delegates to the worker, whose nested activity renders indented
 // and labeled on stdout, and whose final text becomes the parent's tool
-// result.
+// result. Tool output is enabled: the test asserts the parent's result
+// body, which the default summary line replaces.
 func TestRunSubagentToolRendersActivity(t *testing.T) {
 	t.Parallel()
 
@@ -1435,11 +1671,12 @@ func TestRunSubagentToolRendersActivity(t *testing.T) {
 	parent, worker := subagentClients("worker result text")
 	var stdout strings.Builder
 	o := chat.Options{
-		Config:  cfg,
-		Agent:   cfg.Agents[0],
-		Version: "test",
-		Stdin:   strings.NewReader("go\nexit\n"),
-		Stdout:  &stdout,
+		Config:     cfg,
+		Agent:      cfg.Agents[0],
+		Version:    "test",
+		Stdin:      strings.NewReader("go\nexit\n"),
+		Stdout:     &stdout,
+		ToolOutput: true,
 		NewClient: func(agent config.Agent) (llm.Client, error) {
 			if agent.Name == "worker" {
 				return worker, nil

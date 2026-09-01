@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/engine"
@@ -69,6 +70,12 @@ type Options struct {
 	// true and the client supports it, text, reasoning, and tool call
 	// fragments are printed as they arrive. Disabled by --no-stream.
 	Stream bool
+	// ToolOutput enables printing the full body of parent tool results in
+	// the chat. When false (the default), result blocks show a character
+	// and line count of the output instead of the output itself. The full
+	// body always renders for failed results and for subagent activity,
+	// which is never suppressed.
+	ToolOutput bool
 	// ConfigPath is the path to the blorb.json that produced Config. When
 	// empty, the session runs without file logging. When set and logging
 	// is enabled in the config, the session writes wire logs into the
@@ -352,7 +359,7 @@ func runTurn(
 		cancel()
 	}()
 
-	printEvent, onSubagent, flush := chatEvents(opts.Stdout)
+	printEvent, onSubagent, flush := chatEvents(opts.Stdout, opts.ToolOutput)
 	pipe.set(onSubagent)
 	defer pipe.set(nil)
 
@@ -474,8 +481,11 @@ func readLines(r io.Reader, out chan<- inputResult, done <-chan struct{}) {
 // indented by two spaces per nesting depth, so it interleaves with the
 // parent's blocks. The flush function terminates any partial streamed line
 // after the turn. Streamed fragments are written without a trailing
-// newline; whole-message events write complete blocks.
-func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEvent) error, func()) {
+// newline; whole-message events write complete blocks. toolOutput gates
+// the body of parent tool results: when false, a successful result block
+// shows a character and line count of the output instead of the output
+// itself. Failed results and subagent activity always render in full.
+func chatEvents(out io.Writer, toolOutput bool) (func(engine.Event) error, func(tools.SubagentEvent) error, func()) {
 	var (
 		printedHeading   bool
 		printedThinking  bool
@@ -574,7 +584,14 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEve
 				marker = "Error:"
 			}
 			heading(">>> " + marker + " Tool: " + ev.Name)
-			fmt.Fprintln(out, ev.Output)
+			// A failed result always shows its body so the user can diagnose
+			// the failure; a successful one shows a count summary unless tool
+			// output is enabled.
+			if ev.Failed || toolOutput {
+				fmt.Fprintln(out, ev.Output)
+			} else {
+				fmt.Fprintln(out, outputSummary(ev.Output))
+			}
 			// A tool result marks the end of an assistant round: the next
 			// response starts a fresh set of heading blocks.
 			startRound()
@@ -635,6 +652,8 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEve
 				marker = "Error:"
 			}
 			heading(label + ">>> " + marker + " Tool: " + ev.Name)
+			// Subagent results always render in full: suppression applies
+			// only to the parent's own tool results.
 			fmt.Fprintln(out, indent(ev.Depth)+ev.Output)
 			// A subagent tool result ends the subagent's round, mirroring
 			// the parent's startRound. The result event carries the calling
@@ -651,6 +670,30 @@ func chatEvents(out io.Writer) (func(engine.Event) error, func(tools.SubagentEve
 	flush := endLine
 
 	return onEvent, onSubagent, flush
+}
+
+// outputSummary describes a tool result body when the body itself is not
+// printed: the character count and the line count (empty output is
+// 0 characters, 0 lines; a trailing newline does not count as an extra
+// line, so "a\nb" and "a\nb\n" are both 2 lines).
+func outputSummary(output string) string {
+	charCount := utf8.RuneCountInString(output)
+	lineCount := 0
+	if output != "" {
+		lineCount = strings.Count(output, "\n") + 1
+		if strings.HasSuffix(output, "\n") {
+			lineCount--
+		}
+	}
+	return fmt.Sprintf("%d characters, %d %s", charCount, lineCount, pluralize("line", lineCount))
+}
+
+// pluralize returns the singular or plural form of word for n.
+func pluralize(word string, n int) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }
 
 // subStreamHeadings tracks which delta headings a subagent stream already

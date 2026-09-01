@@ -59,6 +59,10 @@ func chatCommand() *cli.Command {
 				Name:  "no-stream",
 				Usage: "Disable streaming of assistant responses",
 			},
+			&cli.BoolFlag{
+				Name:  "tool-output",
+				Usage: "Show the full output of tool results (subagent output is always shown)",
+			},
 			&cli.StringFlag{
 				Name:  "agent",
 				Usage: "Name of the agent to chat with; defaults to the config's default_agent",
@@ -90,6 +94,7 @@ func chatCommand() *cli.Command {
 				Stdin:      os.Stdin,
 				Stdout:     os.Stdout,
 				Stream:     !cmd.Bool("no-stream"),
+				ToolOutput: cmd.Bool("tool-output"),
 				ConfigPath: cmd.String("config"),
 				Tracer:     tracer,
 			})

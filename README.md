@@ -15,6 +15,7 @@ Tools are plain executables declared in the config, built-ins implemented inside
 - One `blorb.json` defines any number of named agents, each with its own system prompt, provider, and tool grants
 - Interactive chat REPL with multi-turn tool calling, running a chosen agent per invocation
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
+- Tool results summarize by default in chat (a character and line count); `--tool-output` shows the full output, and failed results and subagent output always show in full
 - Full wire logging: every LLM request/response and tool call/result is written to a timestamped file per session, so a plain sort of the filenames replays a turn in order (see [Logging](#logging))
 - Tools as local subprocesses, built-ins (`read`, `grep`), or subagents — one agent delegating to another defined in the same config, with JSON Schema argument declarations
 - Any OpenAI-compatible chat completions endpoint as the LLM backend
@@ -79,7 +80,7 @@ Commands:
 
 The agent is resolved in order: the `--agent` flag when given, else the config's `default_agent`; with neither, the command fails and lists the defined agents. Naming an agent that is not in the config is an error.
 
-Flags: `-c | --config <path>`, `--agent <name>`, `--no-stream` (disable streamed responses), `-h | --help`. Version: `blorb --version` or `blorb version`.
+Flags: `-c | --config <path>`, `--agent <name>`, `--no-stream` (disable streamed responses), `--tool-output` (show the full output of tool results — without it, result blocks show a character and line count instead; failed results and subagent output always show in full), `-h | --help`. Version: `blorb --version` or `blorb version`.
 
 Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C while idle exits the session.
 

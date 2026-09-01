@@ -144,10 +144,28 @@ func TestChatNoStreamFlag(t *testing.T) {
 	}
 }
 
+func TestChatToolOutputFlag(t *testing.T) {
+	cmd := chatCommand()
+
+	var toolOutput *cli.BoolFlag
+	for _, f := range cmd.Flags {
+		if bf, ok := f.(*cli.BoolFlag); ok && f.Names()[0] == "tool-output" {
+			toolOutput = bf
+			break
+		}
+	}
+	if toolOutput == nil {
+		t.Fatalf("chat has no tool-output flag; flags = %+v", cmd.Flags)
+	}
+	if toolOutput.Value {
+		t.Errorf("tool-output default = true, want false (tool output off by default)")
+	}
+}
+
 func TestChatCommandHasNoNewFlags(t *testing.T) {
 	cmd := chatCommand()
-	if len(cmd.Flags) != 3 {
-		t.Errorf("chat has %d flags, want 3 (config, no-stream, agent): %+v", len(cmd.Flags), cmd.Flags)
+	if len(cmd.Flags) != 4 {
+		t.Errorf("chat has %d flags, want 4 (config, no-stream, tool-output, agent): %+v", len(cmd.Flags), cmd.Flags)
 	}
 	for _, f := range cmd.Flags {
 		if f.Names()[0] == "logging" {
