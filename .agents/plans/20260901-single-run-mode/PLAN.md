@@ -10,6 +10,13 @@ A new `blorb run` subcommand executes exactly one agent turn and exits — the s
 - [x] Commit 4: Prefactor tracing for run
 - [x] Commit 5: docs
 
+Review follow-ups (from the post-completion review pass):
+
+- [ ] Follow-up 1: tracer-failure tests for `internal/run`
+- [ ] Follow-up 2: strengthen `--agent` and `--no-stream` CLI tests
+- [ ] Follow-up 3: dedupe canned provider response bodies in `main_test.go`
+- [ ] Follow-up 4: drop duplicated prompt-forms comment in `runCommand`
+
 ---
 
 ## Commit 1: prompt resolution (arg / `@file` / stdin `-`)
@@ -181,3 +188,58 @@ A new `blorb run` subcommand executes exactly one agent turn and exits — the s
 > Files: `README.md`, `examples/simple/README.md`, `examples/prefactor-tracing/README.md` (if applicable).
 >
 > Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at top when done.
+
+## Follow-up 1: tracer-failure tests for `internal/run`
+
+> `internal/run` has the repo's lowest coverage (75%) and the uncovered branches are exactly the tracer *failure* paths in `internal/run/run.go`:
+>
+> - sink error (run.go:56)
+> - `StartSession`/`StartTurn` non-terminate errors (run.go:99, 108) and the `StartSession` terminate branch (run.go:95-98)
+> - `turn.Fail`/`turn.Complete` error branches (run.go:167-182)
+> - `FinishSession` failure and its error-priority logic (run.go:214-217)
+>
+> The `finishTracedRun` priority rule — when the run already failed, a `FinishSession` error loses to the original run error — is entirely untested. Chat covers the equivalent ground with `f.setSpanFail(http.StatusInternalServerError)` (see `TestRunTracedFatalError`, `internal/chat/tracewrap_test.go:713`); run has no such test.
+>
+> Work, in `internal/run/run_test.go`:
+>
+> - Extend the existing `runPFServer` with a `setSpanFail(code int)` mode (fail span creates with the given status; mirror chat's `fakePFServer.setSpanFail`, tracewrap_test.go) and a way to fail instance finishes (e.g. `setFinishFail(path prefix, code)` failing `/agent_instance/*/finish` with a 500).
+> - New tests:
+>   - `StartTurn` span failure (setSpanFail 500): Run returns an error mentioning `run:`, the instance is finished `failed`, and `turn.Fail`'s error branch on the already-started session is exercised via the StartTurn error path (run.go:108).
+>   - `StartSession` span/instance failure: Run returns the wrapped `run:` error before any turn runs (run.go:99).
+>   - `FinishSession` failure on an otherwise-successful run (finish endpoint 500): Run returns `run: <finish error>` (run.go:217).
+>   - `FinishSession` failure on an already-failed run: the original run error wins, not the finish error (run.go:214-216).
+>   - If cheap to add with the same fake (e.g. terminate-on-register or terminate-on-first-span-create), cover the `StartSession` terminate branch (run.go:95-98): prints `stopped by platform: <reason>`, returns `("", nil)`, no instance finish recorded.
+> - Sink error path (run.go:56): a `ResolveSink` failure is awkward to trigger through `run.Run` (it needs an unwritable log dir); cover it with a direct `chat.ResolveSink` error test only if chat doesn't already have one — otherwise leave it, and note that here.
+>
+> Verify with `bin/qc` (expect `internal/run` coverage to rise meaningfully; mapTurnOutcome and finishTracedRun should be near-fully covered). Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at top when done.
+
+## Follow-up 2: strengthen `--agent` and `--no-stream` CLI tests
+
+> Two `main_test.go` run-command tests don't actually verify what they claim:
+>
+> - `TestRunAgentFlagCommand` (main_test.go:536) admits it cannot observe agent selection. It can: `writeAgentConfig` gives each agent `model-<name>`, so `requestCapturingProvider` + asserting `"model":"model-alpha"` in the captured request body proves the `--agent` flag selected alpha over the default beta.
+> - `TestRunNoStreamCommand` (main_test.go:522) never asserts `--no-stream` reached the provider. With the captured request body, assert the JSON contains `"stream":false` (the default path sends `"stream":true`; the existing request-asserting tests already pin the streamed content).
+>
+> Update both tests to capture and assert on the request body (replacing the "not observable here" comments). Optionally fold `--agent` + `--no-stream` assertions into one test each; keep the existing names.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at top when done.
+
+## Follow-up 3: dedupe canned provider response bodies in `main_test.go`
+
+> `newFakeProviderServer` (main_test.go:185) and `requestCapturingProvider` (main_test.go:431) duplicate the same canned JSON and SSE payloads (the three SSE deltas and the non-streaming reply). Extract a shared helper, e.g.:
+>
+> ```go
+> // respondCanned replies to a chat-completions request with the canned
+> // reply: an SSE stream when the request asks for one, else plain JSON.
+> func respondCanned(w http.ResponseWriter, body []byte)
+> ```
+>
+> Both servers then read the body (the capturing one records it), unmarshal the `stream` field, and delegate to the helper. The payloads must stay byte-identical — the existing tests assert on `"content":"hi"` and the SSE shape.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at top when done.
+
+## Follow-up 4: drop duplicated prompt-forms comment in `runCommand`
+
+> The comment "Prompt: a literal string (start it with @@ to begin with a literal @), @file, or - for stdin" appears twice in `runCommand` in `main.go` — above the struct literal (main.go:114-115) and inside the Action (main.go:122-123). The `Description` field already carries the text for users. Keep one comment (the one above the struct literal, next to `ArgsUsage`), delete the one inside the Action.
+>
+> Verify with `bin/qc` (no behavior change; docs-only diff within the function). Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at top when done.
