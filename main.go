@@ -117,6 +117,10 @@ func runCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "run",
 		Usage: "Run one agent turn and exit",
+		// Prompt: a literal string (start it with @@ to begin with a
+		// literal @), @file, or - for stdin.
+		ArgsUsage:   "[prompt]",
+		Description: "Prompt: a literal string (start it with @@ to begin with a literal @), @file, or - for stdin. Exactly one prompt argument is accepted; stdin is read only when explicitly requested with - or @-.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "config",
