@@ -13,9 +13,9 @@ A new `blorb run` subcommand executes exactly one agent turn and exits — the s
 Review follow-ups (from the post-completion review pass):
 
 - [x] Follow-up 1: tracer-failure tests for `internal/run`
-- [ ] Follow-up 2: strengthen `--agent` and `--no-stream` CLI tests
-- [ ] Follow-up 3: dedupe canned provider response bodies in `main_test.go`
-- [ ] Follow-up 4: drop duplicated prompt-forms comment in `runCommand`
+- [x] Follow-up 2: strengthen `--agent` and `--no-stream` CLI tests
+- [x] Follow-up 3: dedupe canned provider response bodies in `main_test.go`
+- [x] Follow-up 4: drop duplicated prompt-forms comment in `runCommand`
 
 ---
 
