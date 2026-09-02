@@ -49,6 +49,11 @@ const (
 	// fragment. Emitted only when streaming; fragments assemble into the
 	// round's tool calls.
 	EventToolCallDelta
+	// EventUsage carries the token usage of one completed LLM call,
+	// emitted once per call after its response is fully received
+	// (whole-message or streamed). Usage is the provider-reported
+	// counts; a provider that reports none yields a zero Usage.
+	EventUsage
 )
 
 // Event is emitted as a turn progresses. Text is set for
@@ -57,7 +62,8 @@ const (
 // kinds carry fragments: EventAssistantTextDelta and
 // EventAssistantThinkingDelta set Text, and EventToolCallDelta sets Name,
 // Args, and Index (the 0-based index of the tool call the fragment belongs
-// to, from llm.ToolCallDelta.Index).
+// to, from llm.ToolCallDelta.Index). Usage, AgentName, and Model are set
+// only for EventUsage; they are zero/empty for all other kinds.
 type Event struct {
 	Kind   EventKind
 	Text   string
@@ -66,6 +72,12 @@ type Event struct {
 	Index  int
 	Output string
 	Failed bool
+	// Usage is the provider-reported token usage of the completed call.
+	Usage llm.Usage
+	// AgentName attributes the call to the agent whose engine made it.
+	AgentName string
+	// Model is the agent's configured provider model.
+	Model string
 }
 
 // EngineConfig configures an Engine.
@@ -84,6 +96,14 @@ type EngineConfig struct {
 	// tool calls are emitted incrementally as delta events; otherwise
 	// the whole-message path is used.
 	Stream bool
+	// AgentName is the display name of the agent this engine runs (the
+	// session agent or a subagent), used to attribute EventUsage. It is
+	// optional: empty means the caller does not care and the events
+	// simply carry an empty name.
+	AgentName string
+	// Model is the agent's configured provider model, reported on
+	// EventUsage. Optional; empty when unknown.
+	Model string
 }
 
 // Engine owns conversation state and drives turns.
@@ -221,11 +241,42 @@ func (e *Engine) call(ctx context.Context, onEvent func(Event) error) (resp *llm
 	if e.cfg.Stream {
 		if sc, ok := e.cfg.Client.(llm.StreamingClient); ok {
 			resp, err := e.streamCall(ctx, sc, req, onEvent)
-			return resp, err == nil && resp != nil, err
+			if err != nil {
+				return nil, true, err
+			}
+			// EventUsage is emitted once per completed LLM call; for
+			// streamed calls it arrives after the call's deltas, since
+			// the provider reports usage in the stream's final chunk.
+			if err := e.emitUsage(resp, onEvent); err != nil {
+				return nil, true, err
+			}
+			return resp, true, nil
 		}
 	}
 	resp, err = e.cfg.Client.Chat(ctx, req)
-	return resp, false, err
+	if err != nil {
+		return nil, false, err
+	}
+	// EventUsage is emitted once per completed LLM call; in the
+	// whole-message path it precedes the response's thinking/text events.
+	if err := e.emitUsage(resp, onEvent); err != nil {
+		return nil, false, err
+	}
+	return resp, false, nil
+}
+
+// emitUsage reports one completed LLM call's usage via EventUsage.
+func (e *Engine) emitUsage(resp *llm.Response, onEvent func(Event) error) error {
+	var usage llm.Usage
+	if resp != nil {
+		usage = resp.Usage
+	}
+	return onEvent(Event{
+		Kind:      EventUsage,
+		Usage:     usage,
+		AgentName: e.cfg.AgentName,
+		Model:     e.cfg.Model,
+	})
 }
 
 // streamCall performs one streaming API call, emitting each fragment as an

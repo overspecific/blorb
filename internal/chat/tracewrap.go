@@ -188,6 +188,8 @@ func TraceEvent(turn *prefactor.Turn, print func(engine.Event) error) func(engin
 				return err
 			}
 		}
+		// EventUsage and the delta kinds fall through intentionally: usage
+		// is accounted by the display layer, not traced.
 		return nil
 	}
 }

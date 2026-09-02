@@ -113,6 +113,12 @@ func textResp(content string) llm.Response {
 	}
 }
 
+func usageResp(content string, usage llm.Usage) llm.Response {
+	resp := textResp(content)
+	resp.Usage = usage
+	return resp
+}
+
 func toolCallResp(calls ...llm.ToolCall) llm.Response {
 	return llm.Response{
 		ID:           "resp",
@@ -160,8 +166,8 @@ func TestRunTurnPlainReply(t *testing.T) {
 		t.Errorf("messages[1] = %+v, want user message", msgs[1])
 	}
 
-	if len(events) != 1 || events[0].Kind != engine.EventAssistantText || events[0].Text != "the answer" {
-		t.Errorf("events = %+v, want one assistant text event", events)
+	if len(events) != 2 || events[0].Kind != engine.EventUsage || events[1].Kind != engine.EventAssistantText || events[1].Text != "the answer" {
+		t.Errorf("events = %+v, want a usage event then one assistant text event", events)
 	}
 }
 
@@ -213,6 +219,9 @@ func TestRunTurnSingleToolCall(t *testing.T) {
 
 	kinds := []engine.EventKind{}
 	for _, ev := range events {
+		if ev.Kind == engine.EventUsage {
+			continue
+		}
 		kinds = append(kinds, ev.Kind)
 	}
 	// The tool response carries no content, so the sequence is tool call,
@@ -281,6 +290,9 @@ func TestRunTurnBuiltinToolCall(t *testing.T) {
 
 	kinds := []engine.EventKind{}
 	for _, ev := range events {
+		if ev.Kind == engine.EventUsage {
+			continue
+		}
 		kinds = append(kinds, ev.Kind)
 	}
 	want := []engine.EventKind{engine.EventToolCall, engine.EventToolResult, engine.EventAssistantText}
@@ -428,6 +440,7 @@ func TestRunTurnEmitsThinkingBeforeText(t *testing.T) {
 		kind engine.EventKind
 		text string
 	}{
+		{engine.EventUsage, ""},
 		{engine.EventAssistantThinking, "step by step..."},
 		{engine.EventAssistantText, "the answer"},
 	}
@@ -481,6 +494,9 @@ func TestRunTurnStreamTextDeltas(t *testing.T) {
 			text.WriteString(ev.Text)
 		case engine.EventAssistantThinkingDelta:
 			thinking.WriteString(ev.Text)
+		case engine.EventUsage:
+			// One usage event per completed call arrives after the call's
+			// deltas; checked in TestRunTurnEmitsUsageStreamed.
 		default:
 			t.Errorf("unexpected event kind %v", ev.Kind)
 		}
@@ -492,10 +508,17 @@ func TestRunTurnStreamTextDeltas(t *testing.T) {
 		t.Errorf("thinking deltas concatenate to %q, want %q", thinking.String(), "hmm...")
 	}
 
-	// Reasoning fragments arrive before text, in arrival order.
-	if len(events) != 2 || events[0].Kind != engine.EventAssistantThinkingDelta ||
-		events[1].Kind != engine.EventAssistantTextDelta {
-		t.Errorf("events = %+v, want thinking delta then text delta in order", events)
+	// Reasoning fragments arrive before text, in arrival order; the
+	// streaming path's usage event follows both deltas.
+	nonUsage := []engine.Event{}
+	for _, ev := range events {
+		if ev.Kind != engine.EventUsage {
+			nonUsage = append(nonUsage, ev)
+		}
+	}
+	if len(nonUsage) != 2 || nonUsage[0].Kind != engine.EventAssistantThinkingDelta ||
+		nonUsage[1].Kind != engine.EventAssistantTextDelta {
+		t.Errorf("events = %+v, want thinking delta then text delta in order", nonUsage)
 	}
 
 	// The whole-message events must not be emitted when streaming.
@@ -645,8 +668,8 @@ func TestRunTurnStreamOffUsesWholeMessage(t *testing.T) {
 	if final != "whole message" {
 		t.Errorf("final = %q, want %q", final, "whole message")
 	}
-	if len(events) != 1 || events[0].Kind != engine.EventAssistantText || events[0].Text != "whole message" {
-		t.Errorf("events = %+v, want one whole-message assistant text event", events)
+	if len(events) != 2 || events[0].Kind != engine.EventUsage || events[1].Kind != engine.EventAssistantText || events[1].Text != "whole message" {
+		t.Errorf("events = %+v, want a usage event then one whole-message assistant text event", events)
 	}
 }
 
@@ -968,5 +991,151 @@ func TestRepairUnansweredToolCallsPreservesCallOrder(t *testing.T) {
 	}
 	if toolResults[0].ToolCallID != "call_b" || toolResults[1].ToolCallID != "call_a" {
 		t.Errorf("tool result ids = [%s %s], want [call_b call_a] (call order)", toolResults[0].ToolCallID, toolResults[1].ToolCallID)
+	}
+}
+
+func TestRunTurnEmitsUsageWholeMessage(t *testing.T) {
+	t.Parallel()
+
+	wantUsage := llm.Usage{PromptTokens: 120, CompletionTokens: 34, TotalTokens: 154}
+	fc := &fakeClient{responses: []llm.Response{usageResp("the answer", wantUsage)}}
+	e := engine.New(engine.EngineConfig{
+		Client:    fc,
+		AgentName: "main",
+		Model:     "gpt-test",
+	})
+
+	var events []engine.Event
+	_, err := e.RunTurn(context.Background(), "hi", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+
+	var usageEvents []engine.Event
+	for _, ev := range events {
+		if ev.Kind == engine.EventUsage {
+			usageEvents = append(usageEvents, ev)
+		}
+	}
+	if len(usageEvents) != 1 {
+		t.Fatalf("usage events = %+v, want exactly one", usageEvents)
+	}
+	if usageEvents[0].Usage != wantUsage {
+		t.Errorf("usage = %+v, want %+v", usageEvents[0].Usage, wantUsage)
+	}
+	if usageEvents[0].AgentName != "main" {
+		t.Errorf("AgentName = %q, want %q", usageEvents[0].AgentName, "main")
+	}
+	if usageEvents[0].Model != "gpt-test" {
+		t.Errorf("Model = %q, want %q", usageEvents[0].Model, "gpt-test")
+	}
+}
+
+func TestRunTurnEmitsUsageStreamed(t *testing.T) {
+	t.Parallel()
+
+	wantUsage := llm.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}
+	resp := usageResp("the answer", wantUsage)
+	fc := &streamingClient{responses: []llm.Response{resp}}
+	e := engine.New(engine.EngineConfig{Client: fc, Stream: true})
+
+	var events []engine.Event
+	_, err := e.RunTurn(context.Background(), "hi", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+
+	usageIndexes := []int{}
+	for i, ev := range events {
+		if ev.Kind == engine.EventUsage {
+			usageIndexes = append(usageIndexes, i)
+		}
+	}
+	if len(usageIndexes) != 1 {
+		t.Fatalf("usage events = %d, want exactly one", len(usageIndexes))
+	}
+	idx := usageIndexes[0]
+	if events[idx].Usage != wantUsage {
+		t.Errorf("usage = %+v, want %+v", events[idx].Usage, wantUsage)
+	}
+	// For streamed calls the usage event arrives after the call's deltas,
+	// since the provider reports usage in the stream's final chunk.
+	if idx == 0 || events[idx-1].Kind != engine.EventAssistantTextDelta {
+		t.Errorf("usage event at index %d of %+v, want it after the text delta", idx, events)
+	}
+}
+
+func TestRunTurnEmitsUsagePerCallInOrder(t *testing.T) {
+	t.Parallel()
+
+	r := toolRegistry(t)
+	first := usageResp("", llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15})
+	first.Message = llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call("call_1", "echo", "{}")}}
+	first.FinishReason = llm.FinishToolCalls
+	second := usageResp("done", llm.Usage{PromptTokens: 50, CompletionTokens: 7, TotalTokens: 57})
+	fc := &fakeClient{responses: []llm.Response{first, second}}
+	e := engine.New(engine.EngineConfig{Client: fc, Tools: r})
+
+	var usageEvents []engine.Event
+	_, err := e.RunTurn(context.Background(), "run it", func(ev engine.Event) error {
+		if ev.Kind == engine.EventUsage {
+			usageEvents = append(usageEvents, ev)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+
+	if len(usageEvents) != 2 {
+		t.Fatalf("usage events = %+v, want 2 in call order", usageEvents)
+	}
+	if usageEvents[0].Usage != first.Usage || usageEvents[1].Usage != second.Usage {
+		t.Errorf("usage events = [%+v %+v], want call order [%+v %+v]",
+			usageEvents[0].Usage, usageEvents[1].Usage, first.Usage, second.Usage)
+	}
+}
+
+func TestRunTurnUsageEventErrorAborts(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("stop on usage")
+	fc := &fakeClient{responses: []llm.Response{usageResp("answer", llm.Usage{TotalTokens: 1})}}
+	e := engine.New(engine.EngineConfig{Client: fc})
+
+	_, err := e.RunTurn(context.Background(), "hi", func(ev engine.Event) error {
+		if ev.Kind == engine.EventUsage {
+			return boom
+		}
+		return nil
+	})
+	if !errors.Is(err, boom) {
+		t.Errorf("error = %v, want the onEvent error", err)
+	}
+}
+
+func TestRunTurnFailedCallEmitsNoUsage(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeClient{err: errors.New("api down")}
+	e := engine.New(engine.EngineConfig{Client: fc})
+
+	var events []engine.Event
+	if _, err := e.RunTurn(context.Background(), "hi", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	}); err == nil {
+		t.Fatal("RunTurn succeeded, want the injected error")
+	}
+	for _, ev := range events {
+		if ev.Kind == engine.EventUsage {
+			t.Errorf("usage event emitted on failed call: %+v", ev)
+		}
 	}
 }

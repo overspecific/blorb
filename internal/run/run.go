@@ -122,6 +122,8 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		SystemPrompt: opts.Agent.SystemPrompt,
 		MaxTurns:     opts.Agent.MaxTurnsOrDefault(),
 		Stream:       opts.Stream && streaming,
+		AgentName:    opts.Agent.Name,
+		Model:        opts.Agent.Provider.Model,
 	})
 
 	// With tracing, engine events map onto the turn's spans before

@@ -73,6 +73,8 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 		SystemPrompt: agent.SystemPrompt,
 		MaxTurns:     agent.MaxTurnsOrDefault(),
 		Stream:       r.cfg.Stream,
+		AgentName:    agent.Name,
+		Model:        agent.Provider.Model,
 	})
 
 	final, err := eng.RunTurn(ctx, userMessage, r.convert(agentName, onEvent))
@@ -135,6 +137,10 @@ func (r *SubagentRunner) convert(agentName string, onEvent func(tools.SubagentEv
 			out.Kind = tools.SubagentToolCallDelta
 		case EventToolResult:
 			out.Kind = tools.SubagentToolResult
+		case EventUsage:
+			// Usage forwarding to SubagentUsage events is not wired yet;
+			// nested usage events are dropped rather than failing the turn.
+			return nil
 		default:
 			return fmt.Errorf("subagent %q: unhandled event kind %d", agentName, ev.Kind)
 		}

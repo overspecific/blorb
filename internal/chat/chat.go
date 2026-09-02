@@ -154,6 +154,8 @@ func Run(ctx context.Context, opts Options) error {
 		SystemPrompt: opts.Agent.SystemPrompt,
 		MaxTurns:     opts.Agent.MaxTurnsOrDefault(),
 		Stream:       opts.Stream && streaming,
+		AgentName:    opts.Agent.Name,
+		Model:        opts.Agent.Provider.Model,
 	})
 
 	// Session-level tracing: register and start the Prefactor instance
