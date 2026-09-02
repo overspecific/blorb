@@ -1,5 +1,13 @@
 # Roadmap - conversation log
 
+## Conversation persistence - 2026-09-02
+
+Topic: SQLite conversation database, resumable conversations, and resumable subagents. User wants all three added to the roadmap. Grounded in the code: history is an in-memory `[]llm.Message` in the engine (discarded at exit), and each subagent tool call spins up a fresh engine for one turn and discards it — both genuine gaps. Decisions from clarifying questions: one shared SQLite DB holds all conversations (chat, run, subagents) with subagent rows linked to their parent; resume is durable across process restarts; UX is CLI flags (chat gets `--resume` by conversation ID with probably a picker, run can resume an existing conversation for another turn); resumable subagents work by the subagent tool returning a conversation handle/ID to the parent, which can call it again to continue — requiring the runner interface and tool args schema to grow a handle notion. Noted that the system prompt lives outside history today, so stored conversations need config identity (agent name/model) for faithful resume. This is blorb's first storage dependency — pure-Go driver (no CGO) is the lean to keep the single binary; driver choice, DB location, run's resume flag shape, handle shape, and picker scope captured as open questions. New "Conversation persistence" section added to the vision doc.
+
+## Conversation persistence - 2026-09-02
+
+Topic: subagent resumability must not depend on SQLite. User clarified: resuming a subagent within a parent conversation doesn't require the database — in-memory handles within the process are enough for the base implementation, and even when SQLite is enabled, in-process subagent resume should use live state rather than the DB. The database only matters for restoring subagent conversations after a restart (a resumed parent picking up its subagent conversations). Vision doc updated to state this independence explicitly.
+
 ## Session start - 2026-09-02
 
 Topic: creating the vision document. Created blank `roadmap.md` alongside this log, ready to start discussing what comes next in blorb.
