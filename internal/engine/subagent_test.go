@@ -134,9 +134,10 @@ func TestSubagentRunnerNoTools(t *testing.T) {
 		t.Errorf("subagent user message = %+v, want %q", msgs[1], "do the thing")
 	}
 
-	if len(events) != 1 || events[0].Kind != tools.SubagentText ||
-		events[0].Agent != "worker" || events[0].Depth != 0 || events[0].Text != "the answer" {
-		t.Errorf("events = %+v, want one SubagentText from worker at depth 0", events)
+	if len(events) != 2 || events[0].Kind != tools.SubagentUsage ||
+		events[1].Kind != tools.SubagentText ||
+		events[1].Agent != "worker" || events[1].Depth != 0 || events[1].Text != "the answer" {
+		t.Errorf("events = %+v, want a usage event then one SubagentText from worker at depth 0", events)
 	}
 }
 
@@ -502,5 +503,145 @@ func TestSubagentRunnerStreaming(t *testing.T) {
 		if ev.Kind == tools.SubagentText || ev.Kind == tools.SubagentThinking {
 			t.Errorf("whole-message event %v emitted during streaming", ev.Kind)
 		}
+	}
+}
+
+func TestSubagentRunnerUsagePropagation(t *testing.T) {
+	t.Parallel()
+
+	cfg := subagentConfig(t, map[string]string{"worker": "You work."}, nil, nil, nil)
+	// Give the worker a real tool to call so the run makes two LLM calls.
+	cfg = grantTool(t, cfg, config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "echo",
+		Description: "Echo stdin.",
+		Command:     []string{"cat"},
+	}, "worker")
+
+	firstUsage := llm.Usage{PromptTokens: 11, CompletionTokens: 4, TotalTokens: 15}
+	secondUsage := llm.Usage{PromptTokens: 60, CompletionTokens: 6, TotalTokens: 66}
+	first := llm.Response{
+		ID:           "resp",
+		Message:      llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call("call_1", "echo", "{}")}},
+		FinishReason: llm.FinishToolCalls,
+		Usage:        firstUsage,
+	}
+	second := textResp("final")
+	second.Usage = secondUsage
+	sub := &fakeClient{responses: []llm.Response{first, second}}
+	factory := &clientFactory{clients: map[string]llm.Client{"worker": sub}}
+
+	runner := engine.NewSubagentRunner(engine.SubagentRunnerConfig{
+		Config:    cfg,
+		NewClient: factory.newClient,
+	})
+
+	var usageEvents []tools.SubagentEvent
+	_, err := runner.RunSubagent(context.Background(), "worker", "go", func(ev tools.SubagentEvent) error {
+		if ev.Kind == tools.SubagentUsage {
+			usageEvents = append(usageEvents, ev)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunSubagent error = %v, want nil", err)
+	}
+
+	if len(usageEvents) != 2 {
+		t.Fatalf("usage events = %+v, want 2 in call order", usageEvents)
+	}
+	for i, want := range []llm.Usage{firstUsage, secondUsage} {
+		if usageEvents[i].Usage != want {
+			t.Errorf("usage event %d = %+v, want %+v", i, usageEvents[i].Usage, want)
+		}
+		if usageEvents[i].Agent != "worker" {
+			t.Errorf("usage event %d Agent = %q, want %q", i, usageEvents[i].Agent, "worker")
+		}
+		if usageEvents[i].Depth != 0 {
+			t.Errorf("usage event %d Depth = %d, want 0 from RunSubagent", i, usageEvents[i].Depth)
+		}
+	}
+}
+
+func TestSubagentRunnerUsageCollectedWithoutCallback(t *testing.T) {
+	t.Parallel()
+
+	cfg := subagentConfig(t, map[string]string{"worker": "You work."}, nil, nil, nil)
+	first := llm.Response{
+		ID:           "resp",
+		Message:      llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call("call_1", "echo", "{}")}},
+		FinishReason: llm.FinishToolCalls,
+		Usage:        llm.Usage{PromptTokens: 11, CompletionTokens: 4, TotalTokens: 15},
+	}
+	second := textResp("final")
+	second.Usage = llm.Usage{PromptTokens: 60, CompletionTokens: 6, TotalTokens: 66}
+	sub := &fakeClient{responses: []llm.Response{first, second}}
+	factory := &clientFactory{clients: map[string]llm.Client{"worker": sub}}
+
+	runner := engine.NewSubagentRunner(engine.SubagentRunnerConfig{
+		Config:    cfg,
+		NewClient: factory.newClient,
+	})
+
+	// No onEvent: usage must still reach SubagentResult via collection.
+	res, err := runner.RunSubagent(context.Background(), "worker", "go", nil)
+	if err != nil {
+		t.Fatalf("RunSubagent error = %v, want nil", err)
+	}
+
+	want := []tools.SubagentUsageRecord{
+		{Agent: "worker", Model: "m", Usage: first.Usage},
+		{Agent: "worker", Model: "m", Usage: second.Usage},
+	}
+	if len(res.Usage) != len(want) {
+		t.Fatalf("res.Usage = %+v, want %+v", res.Usage, want)
+	}
+	for i, w := range want {
+		if res.Usage[i] != w {
+			t.Errorf("res.Usage[%d] = %+v, want %+v", i, res.Usage[i], w)
+		}
+	}
+}
+
+func TestSubagentRunnerFailureStillCarriesUsage(t *testing.T) {
+	t.Parallel()
+
+	// The subagent always calls a tool: with max_turns 1 it exhausts its
+	// budget after one real LLM call, whose usage must survive.
+	cfg := subagentConfig(t,
+		map[string]string{"worker": "You work."},
+		nil,
+		nil,
+		map[string]int{"worker": 1},
+	)
+	cfg = grantTool(t, cfg, config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "echo",
+		Description: "Echo stdin.",
+		Command:     []string{"cat"},
+	}, "worker")
+
+	loopResp := toolCallResp(call("call_loop", "echo", "{}"))
+	loopResp.Usage = llm.Usage{PromptTokens: 9, CompletionTokens: 2, TotalTokens: 11}
+	sub := &fakeClient{responses: []llm.Response{loopResp, loopResp}}
+	factory := &clientFactory{clients: map[string]llm.Client{"worker": sub}}
+
+	runner := engine.NewSubagentRunner(engine.SubagentRunnerConfig{
+		Config:    cfg,
+		NewClient: factory.newClient,
+	})
+
+	res, err := runner.RunSubagent(context.Background(), "worker", "go", nil)
+	if err != nil {
+		t.Fatalf("RunSubagent error = %v, want nil (exhaustion is a result)", err)
+	}
+	if !res.Err {
+		t.Error("res.Err = false, want true")
+	}
+	want := []tools.SubagentUsageRecord{
+		{Agent: "worker", Model: "m", Usage: loopResp.Usage},
+	}
+	if len(res.Usage) != 1 || res.Usage[0] != want[0] {
+		t.Errorf("res.Usage = %+v, want %+v (calls that ran still spent tokens)", res.Usage, want)
 	}
 }

@@ -77,7 +77,22 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 		Model:        agent.Provider.Model,
 	})
 
-	final, err := eng.RunTurn(ctx, userMessage, r.convert(agentName, onEvent))
+	// Usage records are always collected — even when the caller wants no
+	// events — so SubagentResult.Usage is populated regardless: the calls
+	// happened and their tokens were spent.
+	var usageRecords []tools.SubagentUsageRecord
+	collect := func(ev Event) error {
+		if ev.Kind == EventUsage {
+			usageRecords = append(usageRecords, tools.SubagentUsageRecord{
+				Agent: agentName,
+				Model: ev.Model,
+				Usage: ev.Usage,
+			})
+		}
+		return r.convert(agentName, onEvent)(ev)
+	}
+
+	final, err := eng.RunTurn(ctx, userMessage, collect)
 	if ctx.Err() != nil {
 		// Cancellation (e.g. SIGINT) is infrastructure, not a subagent
 		// outcome: surface it as an error so the caller can treat the
@@ -87,10 +102,12 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 	if err != nil {
 		// Any other failure — ErrTooManyTurns, provider truncation, API
 		// errors — is a subagent-level failure the parent model sees and
-		// can react to, like a tool-reported failure.
-		return tools.SubagentResult{Output: err.Error(), Err: true}, nil
+		// can react to, like a tool-reported failure. The calls that ran
+		// still spent their tokens, so the collected usage travels with
+		// the failure.
+		return tools.SubagentResult{Output: err.Error(), Err: true, Usage: usageRecords}, nil
 	}
-	return tools.SubagentResult{Output: final, Err: false}, nil
+	return tools.SubagentResult{Output: final, Err: false, Usage: usageRecords}, nil
 }
 
 func (r *SubagentRunner) newClient(agent config.Agent) (llm.Client, error) {
@@ -107,10 +124,9 @@ func (r *SubagentRunner) newClient(agent config.Agent) (llm.Client, error) {
 // convert adapts engine events to subagent events, tagging each with the
 // producing agent's name and Depth 0 (the nested subagentTool adds its own
 // increment as the event bubbles out). A callback error aborts the turn.
+// When onEvent is nil the conversion still happens — callers use it for
+// usage collection — but nothing is forwarded.
 func (r *SubagentRunner) convert(agentName string, onEvent func(tools.SubagentEvent) error) func(Event) error {
-	if onEvent == nil {
-		return nil
-	}
 	return func(ev Event) error {
 		out := tools.SubagentEvent{
 			Agent:  agentName,
@@ -121,6 +137,7 @@ func (r *SubagentRunner) convert(agentName string, onEvent func(tools.SubagentEv
 			Index:  ev.Index,
 			Output: ev.Output,
 			Failed: ev.Failed,
+			Usage:  ev.Usage,
 		}
 		switch ev.Kind {
 		case EventAssistantText:
@@ -138,11 +155,12 @@ func (r *SubagentRunner) convert(agentName string, onEvent func(tools.SubagentEv
 		case EventToolResult:
 			out.Kind = tools.SubagentToolResult
 		case EventUsage:
-			// Usage forwarding to SubagentUsage events is not wired yet;
-			// nested usage events are dropped rather than failing the turn.
-			return nil
+			out.Kind = tools.SubagentUsage
 		default:
 			return fmt.Errorf("subagent %q: unhandled event kind %d", agentName, ev.Kind)
+		}
+		if onEvent == nil {
+			return nil
 		}
 		return onEvent(out)
 	}

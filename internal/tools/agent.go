@@ -1,6 +1,10 @@
 package tools
 
-import "context"
+import (
+	"context"
+
+	"github.com/overspecific/blorb/internal/llm"
+)
 
 // SubagentEventKind mirrors the engine event kinds relevant to display.
 type SubagentEventKind string
@@ -13,6 +17,9 @@ const (
 	SubagentToolCall      SubagentEventKind = "tool_call"
 	SubagentToolCallDelta SubagentEventKind = "tool_call_delta"
 	SubagentToolResult    SubagentEventKind = "tool_result"
+	// SubagentUsage carries the token usage of one completed LLM call
+	// by the named agent.
+	SubagentUsage SubagentEventKind = "usage"
 )
 
 // SubagentEvent is one observable moment of a subagent run. Agent is
@@ -28,6 +35,16 @@ type SubagentEvent struct {
 	Index  int
 	Output string
 	Failed bool
+	// Usage is set on SubagentUsage events: the token usage of one
+	// completed LLM call by the named agent.
+	Usage llm.Usage
+}
+
+// SubagentUsageRecord is one LLM call's usage within a subagent run.
+type SubagentUsageRecord struct {
+	Agent string
+	Model string
+	Usage llm.Usage
 }
 
 // SubagentResult is the outcome of a subagent run, mirroring ToolResult:
@@ -36,6 +53,13 @@ type SubagentEvent struct {
 type SubagentResult struct {
 	Output string
 	Err    bool
+	// Usage itemises the subagent's own LLM calls, one record per call
+	// in call order; a subagent whose provider reports no usage has
+	// zero-usage records. Empty when the subagent run failed before
+	// completing its first call. The parent's own usage from this
+	// exchange is accounted by its next LLM call's prompt tokens, which
+	// include the tool call and result messages.
+	Usage []SubagentUsageRecord
 }
 
 // SubagentRunner executes a named agent from the same config as a

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/tools"
 )
@@ -397,5 +398,71 @@ func TestSubagentLogsFailureResult(t *testing.T) {
 	}
 	if !strings.Contains(string(recs[1].Body), "error:") || !strings.Contains(string(recs[1].Body), "boom") {
 		t.Errorf("result body = %q, want an error body mentioning boom", recs[1].Body)
+	}
+}
+
+func TestSubagentUsageEventForwarding(t *testing.T) {
+	t.Parallel()
+
+	// A SubagentUsage event relays through forward like any other event,
+	// with Depth bumped: it arrives with the runner's Depth 0 plus one.
+	fake := &fakeSubagentRunner{
+		result: tools.SubagentResult{Output: "done"},
+		events: []tools.SubagentEvent{
+			{Agent: "deepest", Depth: 0, Kind: tools.SubagentUsage,
+				Usage: llm.Usage{PromptTokens: 5, CompletionTokens: 6, TotalTokens: 11}},
+		},
+	}
+	var got []tools.SubagentEvent
+	r, err := tools.NewRegistry([]config.ToolEntry{subagentEntry("ask_x", "x", nil)},
+		tools.WithSubagentRunner(fake),
+		tools.WithSubagentEvents(func(ev tools.SubagentEvent) error {
+			got = append(got, ev)
+			return nil
+		}))
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+	if _, err := r.Run(context.Background(), "ask_x", json.RawMessage(`{"prompt":"go"}`)); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1", len(got))
+	}
+	if got[0].Kind != tools.SubagentUsage || got[0].Depth != 1 {
+		t.Errorf("event = %+v, want a SubagentUsage event at Depth 1", got[0])
+	}
+	if got[0].Usage != (llm.Usage{PromptTokens: 5, CompletionTokens: 6, TotalTokens: 11}) {
+		t.Errorf("event Usage = %+v, want it passed through unchanged", got[0].Usage)
+	}
+}
+
+func TestSubagentUsageRecordsPassThroughResult(t *testing.T) {
+	t.Parallel()
+
+	// The tool copies SubagentResult.Usage onto its own result path; the
+	// output text is unaffected.
+	want := []tools.SubagentUsageRecord{
+		{Agent: "x", Model: "m", Usage: llm.Usage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}},
+	}
+	fake := &fakeSubagentRunner{
+		result: tools.SubagentResult{Output: "the answer", Usage: want},
+	}
+	r, err := tools.NewRegistry([]config.ToolEntry{subagentEntry("ask_x", "x", nil)},
+		tools.WithSubagentRunner(fake))
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+
+	res, err := r.Run(context.Background(), "ask_x", json.RawMessage(`{"prompt":"go"}`))
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if res.Output != "the answer" {
+		t.Errorf("res.Output = %q, want the answer (usage records do not affect output)", res.Output)
+	}
+	if len(res.Usage) != 1 || res.Usage[0] != want[0] {
+		t.Errorf("res.Usage = %+v, want %+v copied through unchanged", res.Usage, want)
 	}
 }

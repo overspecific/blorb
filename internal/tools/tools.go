@@ -53,6 +53,9 @@ type longRunning interface {
 type ToolResult struct {
 	Output string
 	Err    bool
+	// Usage itemises a subagent run's own LLM calls when the tool is a
+	// subagent tool; empty for all other tool types.
+	Usage []SubagentUsageRecord
 }
 
 // Registry holds the configured tools.

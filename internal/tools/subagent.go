@@ -102,7 +102,7 @@ func (t *subagentTool) run(ctx context.Context, args json.RawMessage, sink loggi
 		return ToolResult{}, err
 	}
 
-	res = ToolResult{Output: trimSingleTrailingNewline(res2.Output), Err: res2.Err}
+	res = ToolResult{Output: trimSingleTrailingNewline(res2.Output), Err: res2.Err, Usage: res2.Usage}
 	writeResultRecord(sink, t.toolName, res.Output)
 	return res, nil
 }
