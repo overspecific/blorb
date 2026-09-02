@@ -16,7 +16,7 @@ Scope decisions (from the vision and user): chat-format output only for this pla
 - [x] Commit 4: footer rendering helpers in `internal/usage`
 - [x] Commit 5: chat per-turn footer and session totals
 - [x] Commit 6: run per-turn footer
-- [ ] Commit 7: docs
+- [x] Commit 7: docs
 
 ---
 
