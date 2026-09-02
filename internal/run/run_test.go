@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -142,6 +143,21 @@ func (s *runSyncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// runFailOnWriter wraps a writer and fails every write containing
+// marker; other writes pass through. Test fixture for failing a specific
+// line in a stream (e.g. the ndjson terminal event's write).
+type runFailOnWriter struct {
+	w      io.Writer
+	marker string
+}
+
+func (s *runFailOnWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), s.marker) {
+		return 0, errors.New("write refused")
+	}
+	return s.w.Write(p)
 }
 
 func TestRunPlainReply(t *testing.T) {
@@ -2679,6 +2695,98 @@ func TestRunFormatNDJSONNoHTMLEscaping(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no tool_result line in stream:\n%s", out)
+	}
+}
+
+// TestRunFormatNDJSONTracedTurnCompleteFailureStillFinishesSession pins
+// that the ndjson epilogue never strands a traced session: even when a
+// post-turn tracer failure fails the run, the session is still finished
+// (failed status) and the stream ends with an error event — done is never
+// the last word on a non-zero exit.
+func TestRunFormatNDJSONTracedTurnCompleteFailureStillFinishesSession(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	// The turn completes, but the turn-span finish (assistant_text
+	// payload) fails, failing the run after RunTurn returned nil.
+	f.setSpanFinishFail(http.StatusInternalServerError, "assistant_text")
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+	opts.Format = run.FormatNDJSON
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want the turn.Complete failure to surface")
+	}
+
+	// The session is finished as failed despite the post-turn failure.
+	var finished bool
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			finished = true
+			if c.Body["status"] != prefactor.InstanceFailed {
+				t.Errorf("instance finish status = %v, want %q", c.Body["status"], prefactor.InstanceFailed)
+			}
+		}
+	}
+	if !finished {
+		t.Error("no instance finish recorded, want the session finished even on the post-turn failure")
+	}
+
+	// The stream ends with error, not done: the outcome mapping and
+	// session finish run before the terminal event.
+	lines := parseNDJSONLines(t, stdout.String())
+	if got := ndjsonTypes(lines); got[len(got)-1] != "error" {
+		t.Fatalf("line types = %v, want the stream to end with error", got)
+	}
+	last := lines[len(lines)-1]
+	if last.Error == "" {
+		t.Errorf("error event = %+v, want the run error's message", last)
+	}
+}
+
+// TestRunFormatNDJSONFinishFailureStillFinishesSession pins the ndjson
+// sink's own failure handling: when emitting the terminal event fails
+// (marshal/write bug), the run surfaces the error, and the traced session
+// is still finished — not stranded. The instance records the agent's
+// work, which completed (the turn ran to completion; only the CLI's
+// output write failed), so it finishes complete; the run still exits
+// non-zero via the returned error.
+func TestRunFormatNDJSONFinishFailureStillFinishesSession(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+	opts.Format = run.FormatNDJSON
+	// The stdout writer fails only when the terminal event is emitted
+	// (after the per-event lines), so the turn itself runs to completion.
+	opts.Stdout = &runFailOnWriter{w: &stdout, marker: `"type":"done"`}
+
+	_, err := run.Run(context.Background(), opts, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want the ndjson finish failure to surface")
+	}
+
+	// The session is finished, not stranded: the instance records the
+	// agent's completed turn.
+	var finished bool
+	for _, c := range f.finishCalls() {
+		if strings.HasPrefix(c.Path, "/agent_instance/") {
+			finished = true
+			if c.Body["status"] != prefactor.InstanceComplete {
+				t.Errorf("instance finish status = %v, want %q (the agent's turn completed)", c.Body["status"], prefactor.InstanceComplete)
+			}
+		}
+	}
+	if !finished {
+		t.Error("no instance finish recorded, want the session finished even when the ndjson finish fails")
 	}
 }
 

@@ -36,8 +36,9 @@ import (
 //     reporting.
 //   - Success ends with done, carrying the final text (absent when empty)
 //     and the usage totals with the per-agent split.
-//   - Failure ends with error carrying the run error's message and no
-//     done; the exit codes are unchanged (main maps them).
+//   - Failure (the run failed, turn error or post-turn tracer failure)
+//     ends with error carrying the run error's message and no done; the
+//     exit codes are unchanged (main maps them).
 //   - Platform termination mid-turn exits 0, so the stream ends with done
 //     carrying no text and the usage totals; the human-readable reason
 //     goes to the diagnostics writer (stderr).
@@ -171,13 +172,13 @@ func (s *ndjsonSink) onSubagent(ev tools.SubagentEvent) error {
 
 // finish emits the terminal event: error on a failed run (no done),
 // otherwise done with the final text (absent on platform termination,
-// which exits 0) and the usage totals. Called iff RunTurn was entered.
+// which exits 0 with an empty final) and the usage totals. runErr is the
+// run's settled outcome error — after the outcome mapping and session
+// finish — so the terminal event is the stream's actual last word.
+// Called iff RunTurn was entered.
 func (s *ndjsonSink) finish(final string, runErr error) error {
 	if runErr != nil {
-		if !isTerminated(runErr) {
-			return s.emit(ndjsonEvent{Type: "error", Error: runErr.Error()})
-		}
-		final = ""
+		return s.emit(ndjsonEvent{Type: "error", Error: runErr.Error()})
 	}
 	total := s.account.Total()
 	done := ndjsonEvent{Type: "done", Text: final, Usage: &total}

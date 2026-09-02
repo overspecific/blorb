@@ -88,10 +88,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	// isTerminated). One run is one turn, so the turn footer is the run's
 	// whole summary; there is no session line.
 	account := &usage.Account{}
-	printEvent, onSubagent, flush, finishNDJSON, err := opts.events(account)
-	if err != nil {
-		return "", err
-	}
+	printEvent, onSubagent, flush, finishNDJSON := opts.events(account)
 	turnEvent := usageWrap(printEvent, account)
 	onSubagent = runUsageWrap(onSubagent, account)
 
@@ -159,14 +156,6 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	final, runErr := eng.RunTurn(ctx, prompt, turnEvent)
 	flush()
 
-	// The ndjson terminal event: emitted iff RunTurn was entered, before
-	// the outcome mapping so it carries the raw turn error's message.
-	if finishNDJSON != nil {
-		if err := finishNDJSON(final, runErr); err != nil {
-			return "", err
-		}
-	}
-
 	// The footer prints for the calls that completed even on the error
 	// paths (interrupt, provider failure mid-loop): partial usage, then
 	// the outcome. A run cancelled before any call has no records and
@@ -180,13 +169,30 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	err = mapTurnOutcome(turn, final, runErr, ctx)
 	if err == nil {
 		err = finishTracedRun(opts, nil)
-		if err != nil {
-			return "", err
-		}
-		return final, nil
+	} else {
+		err = finishTracedRun(opts, err)
 	}
 
-	return "", finishTracedRun(opts, err)
+	// The ndjson terminal event is the stream's last word, so it is
+	// emitted only after the outcome mapping and session finish have
+	// settled the run's result: done means the run exits 0 (platform
+	// termination arrives here as err nil with empty final, so it ends
+	// the stream with a textless done per the contract), error that it
+	// does not — carrying the final run error, which may be a
+	// post-turn failure rather than the raw turn error. Emitted iff
+	// RunTurn was entered. An emit failure (the sink's only failure
+	// mode: a marshal/write bug) becomes the run's error; any earlier
+	// error still wins, so it is not masked.
+	if finishNDJSON != nil {
+		if emitErr := finishNDJSON(final, err); emitErr != nil && err == nil {
+			err = emitErr
+		}
+	}
+
+	if err != nil {
+		return "", err
+	}
+	return final, nil
 }
 
 // mapTurnOutcome finishes the turn span to match the turn's outcome and

@@ -47,12 +47,13 @@ func (o Options) diagnostics() io.Writer {
 // events builds the run's event callbacks for the output format.
 // chat renders the chat-style stream on stdout; plain renders the same
 // chat-style stream on stderr and tees only assistant text to stdout;
-// ndjson streams flat typed JSON events on stdout.
-func (o Options) events(account *usage.Account) (printEvent func(engine.Event) error, onSubagent func(tools.SubagentEvent) error, flush func(), finish func(final string, runErr error) error, err error) {
+// ndjson streams flat typed JSON events on stdout. The returned finish
+// callback (ndjson only) emits the stream's terminal done/error event.
+func (o Options) events(account *usage.Account) (printEvent func(engine.Event) error, onSubagent func(tools.SubagentEvent) error, flush func(), finish func(final string, runErr error) error) {
 	switch o.Format {
 	case FormatNDJSON:
 		sink := newNDJSONSink(o.Stdout, account)
-		return sink.printEvent, sink.onSubagent, func() {}, sink.finish, nil
+		return sink.printEvent, sink.onSubagent, func() {}, sink.finish
 	case FormatPlain:
 		diagPrint, diagSubagent, flush := chat.Events(o.stderrOr(), o.ToolOutput)
 		printEvent = func(ev engine.Event) error {
@@ -69,10 +70,10 @@ func (o Options) events(account *usage.Account) (printEvent func(engine.Event) e
 			}
 			return nil
 		}
-		return printEvent, diagSubagent, flush, nil, nil
+		return printEvent, diagSubagent, flush, nil
 	default:
 		printEvent, onSubagent, flush := chat.Events(o.Stdout, o.ToolOutput)
-		return printEvent, onSubagent, flush, nil, nil
+		return printEvent, onSubagent, flush, nil
 	}
 }
 
