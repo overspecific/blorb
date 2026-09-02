@@ -74,6 +74,34 @@ func (f *runStreamingFakeClient) ChatStream(_ context.Context, req llm.Request, 
 	return &resp, nil
 }
 
+// fragmentingClient wraps a streaming client and splits each tool call's
+// arguments delta into two fragments, so consumers exercise client-side
+// assembly of arguments fragments.
+type fragmentingClient struct {
+	inner struct{ runStreamingFakeClient }
+}
+
+func (f *fragmentingClient) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	return f.inner.Chat(ctx, req)
+}
+
+func (f *fragmentingClient) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	return f.inner.ChatStream(ctx, req, func(d llm.Delta) error {
+		if tc := d.ToolCall; tc != nil && len(tc.Arguments) > 1 {
+			half := len(tc.Arguments) / 2
+			if err := onDelta(llm.Delta{ToolCall: &llm.ToolCallDelta{
+				Index: tc.Index, ID: tc.ID, Type: tc.Type, Name: tc.Name, Arguments: tc.Arguments[:half],
+			}}); err != nil {
+				return err
+			}
+			return onDelta(llm.Delta{ToolCall: &llm.ToolCallDelta{
+				Index: tc.Index, Arguments: tc.Arguments[half:],
+			}})
+		}
+		return onDelta(d)
+	})
+}
+
 // runTestAgent returns the canonical agent definition used by run tests.
 func runTestAgent() config.Agent {
 	return config.Agent{
@@ -1990,4 +2018,680 @@ func TestRunFormatUnknownFailsBeforeLLMCall(t *testing.T) {
 	if len(client.requests) != 0 {
 		t.Errorf("LLM calls = %d, want 0 (format validated before any call)", len(client.requests))
 	}
+}
+
+// --- ndjson format tests ---
+
+// ndjsonLine is one parsed line of an ndjson stream: the type plus the
+// per-type fields the tests care about.
+type ndjsonLine struct {
+	Type      string     `json:"type"`
+	Text      string     `json:"text"`
+	Thinking  string     `json:"thinking"`
+	Name      string     `json:"name"`
+	Index     *int       `json:"index"`
+	Arguments string     `json:"arguments"`
+	Output    string     `json:"output"`
+	Failed    bool       `json:"failed"`
+	Agent     string     `json:"agent"`
+	Model     string     `json:"model"`
+	Depth     *int       `json:"depth"`
+	Usage     *llm.Usage `json:"usage"`
+	Agents    []struct {
+		Agent string    `json:"agent"`
+		Usage llm.Usage `json:"usage"`
+	} `json:"agents"`
+	Error string `json:"error"`
+}
+
+// parseNDJSONLines parses every line of out into ndjsonLine values; it
+// fails the test on any invalid line.
+func parseNDJSONLines(t *testing.T, out string) []ndjsonLine {
+	t.Helper()
+	var lines []ndjsonLine
+	dec := json.NewDecoder(strings.NewReader(out))
+	for dec.More() {
+		var l ndjsonLine
+		if err := dec.Decode(&l); err != nil {
+			t.Fatalf("parsing ndjson line: %v\nstream:\n%s", err, out)
+		}
+		lines = append(lines, l)
+	}
+	return lines
+}
+
+// ndjsonTypes returns the type of each line.
+func ndjsonTypes(lines []ndjsonLine) []string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = l.Type
+	}
+	return out
+}
+
+// TestRunFormatNDJSONNonStreamedToolRound pins the exact line sequence of
+// a non-streamed run with a tool round, the done event's totals, and the
+// per-agent split.
+func TestRunFormatNDJSONNonStreamedToolRound(t *testing.T) {
+	t.Parallel()
+
+	cfg := runToolConfig(t)
+	responses := runToolResponses("echoer")
+	// The first round emits text alongside its tool call.
+	responses[0].Message.Content = "calling the tool now"
+	responses[0].Usage = llm.Usage{PromptTokens: 8, CompletionTokens: 2, TotalTokens: 10}
+	responses[1].Usage = llm.Usage{PromptTokens: 30, CompletionTokens: 4, TotalTokens: 34}
+
+	var stdout, stderr runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatNDJSON,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: responses}, nil
+		},
+	}, "run it")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	want := []string{"usage", "text", "tool_call", "tool_result", "usage", "text", "done"}
+	if got := ndjsonTypes(lines); !slicesEqual(got, want) {
+		t.Errorf("line types = %v, want %v", got, want)
+	}
+	if lines[1].Text != "calling the tool now" {
+		t.Errorf("lines[1] = %+v, want the first round's text event", lines[1])
+	}
+	if lines[2].Name != "echoer" || lines[2].Arguments != "{}" {
+		t.Errorf("lines[2] = %+v, want the tool_call event", lines[2])
+	}
+	if lines[3].Output != "one\ntwo" || lines[3].Failed {
+		t.Errorf("lines[3] = %+v, want the full tool result body", lines[3])
+	}
+	if lines[5].Text != "made it" {
+		t.Errorf("lines[5] = %+v, want the final text event", lines[5])
+	}
+
+	done := lines[6]
+	if done.Text != final {
+		t.Errorf("done.text = %q, want the run's return value %q", done.Text, final)
+	}
+	if done.Usage == nil || done.Usage.TotalTokens != 44 {
+		t.Errorf("done.usage = %+v, want total 44", done.Usage)
+	}
+	if len(done.Agents) != 1 || done.Agents[0].Agent != "tester" || done.Agents[0].Usage.TotalTokens != 44 {
+		t.Errorf("done.agents = %+v, want the tester split with total 44", done.Agents)
+	}
+
+	if diag := stderr.String(); diag != "" {
+		t.Errorf("stderr = %q, want ndjson diagnostics silent for this run", diag)
+	}
+}
+
+// TestRunFormatNDJSONStreamed pins that streamed text fragments go out
+// line-by-line, followed by usage then done (the engine's documented
+// ordering).
+func TestRunFormatNDJSONStreamed(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		Stream: true,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runStreamingFakeClient{responses: []llm.Response{
+				{
+					Message:      llm.NewTextMessage(llm.RoleAssistant, "streamed!"),
+					FinishReason: llm.FinishStop,
+					Usage:        llm.Usage{PromptTokens: 5, CompletionTokens: 6, TotalTokens: 11},
+				},
+			}}, nil
+		},
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	if got := ndjsonTypes(lines); !slicesEqual(got, []string{"text_delta", "usage", "done"}) {
+		t.Fatalf("line types = %v, want [text_delta usage done]", got)
+	}
+	if lines[0].Text != "streamed!" {
+		t.Errorf("text_delta = %+v, want the response content", lines[0])
+	}
+	if lines[2].Usage == nil || lines[2].Usage.TotalTokens != 11 {
+		t.Errorf("done.usage = %+v, want total 11", lines[2].Usage)
+	}
+}
+
+// TestRunFormatNDJSONThinking pins that thinking arrives in the thinking
+// field, separate from text, in both stream modes.
+func TestRunFormatNDJSONThinking(t *testing.T) {
+	t.Run("non-streamed", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := runTestConfig(runTestAgent())
+		var stdout runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Format: run.FormatNDJSON,
+			NewClient: func(config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: []llm.Response{
+					{Message: llm.Message{
+						Role:      llm.RoleAssistant,
+						Reasoning: "pondering",
+						Content:   "the answer",
+					}, FinishReason: llm.FinishStop},
+				}}, nil
+			},
+		}, "hello")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		lines := parseNDJSONLines(t, stdout.String())
+		if got := ndjsonTypes(lines); !slicesEqual(got, []string{"usage", "thinking", "text", "done"}) {
+			t.Fatalf("line types = %v, want [usage thinking text done]", got)
+		}
+		if lines[1].Thinking != "pondering" || lines[1].Text != "" {
+			t.Errorf("thinking event = %+v, want the reasoning in the thinking field", lines[1])
+		}
+	})
+
+	t.Run("streamed", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := runTestConfig(runTestAgent())
+		var stdout runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Format: run.FormatNDJSON,
+			Stream: true,
+			NewClient: func(config.Agent) (llm.Client, error) {
+				return &runStreamingFakeClient{responses: []llm.Response{
+					{Message: llm.Message{
+						Role:      llm.RoleAssistant,
+						Reasoning: "pondering",
+						Content:   "the answer",
+					}, FinishReason: llm.FinishStop},
+				}}, nil
+			},
+		}, "hello")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		lines := parseNDJSONLines(t, stdout.String())
+		if got := ndjsonTypes(lines); !slicesEqual(got, []string{"thinking_delta", "text_delta", "usage", "done"}) {
+			t.Fatalf("line types = %v, want [thinking_delta text_delta usage done]", got)
+		}
+		if lines[0].Thinking != "pondering" {
+			t.Errorf("thinking_delta = %+v, want the reasoning fragment", lines[0])
+		}
+	})
+}
+
+// TestRunFormatNDJSONStreamedToolCall pins the tool_call_delta contract:
+// indexed fragments, the name on the first, arguments concatenating.
+func TestRunFormatNDJSONStreamedToolCall(t *testing.T) {
+	t.Parallel()
+
+	cfg := runToolConfig(t)
+	streamingResponses := []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_1", Type: "function", FunctionName: "echoer", FunctionArgs: `{"x":1}`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+			Usage:        llm.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
+		},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "done"), FinishReason: llm.FinishStop,
+			Usage: llm.Usage{PromptTokens: 4, CompletionTokens: 5, TotalTokens: 9}},
+	}
+	// fragmentingClient splits each tool call's args into two fragments so
+	// the delta stream exercises client-side assembly.
+	fragmenting := struct{ runStreamingFakeClient }{runStreamingFakeClient{responses: streamingResponses}}
+	client := fragmentingClient{fragmenting}
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		Stream: true,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &client, nil
+		},
+	}, "run it")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	var deltas []ndjsonLine
+	for _, l := range lines {
+		if l.Type == "tool_call_delta" {
+			deltas = append(deltas, l)
+		}
+	}
+	if len(deltas) != 2 {
+		t.Fatalf("tool_call_delta count = %d, want 2 (name+args, then args)", len(deltas))
+	}
+	if deltas[0].Index == nil || *deltas[0].Index != 0 {
+		t.Errorf("first delta index = %v, want 0", deltas[0].Index)
+	}
+	if deltas[0].Name != "echoer" {
+		t.Errorf("first delta name = %q, want echoer", deltas[0].Name)
+	}
+	var args string
+	for _, d := range deltas {
+		args += d.Arguments
+	}
+	if args != `{"x":1}` {
+		t.Errorf("concatenated arguments = %q, want the full args", args)
+	}
+}
+
+// TestRunFormatNDJSONToolResultAlwaysFull pins that ndjson tool results
+// carry the full body regardless of ToolOutput, and carry failed=true on
+// a failed result.
+func TestRunFormatNDJSONToolResultAlwaysFull(t *testing.T) {
+	t.Run("full body with ToolOutput false", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := runToolConfig(t)
+		var stdout runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Format: run.FormatNDJSON,
+			NewClient: func(config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: runToolResponses("echoer")}, nil
+			},
+		}, "run it")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		for _, l := range parseNDJSONLines(t, stdout.String()) {
+			if l.Type == "tool_result" {
+				if l.Output != "one\ntwo" {
+					t.Errorf("tool_result output = %q, want the full body", l.Output)
+				}
+				if l.Failed {
+					t.Errorf("tool_result failed = true, want false")
+				}
+				return
+			}
+		}
+		t.Fatalf("no tool_result line in stream:\n%s", stdout.String())
+	})
+
+	t.Run("failed result", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := runTestConfig(runTestAgent(), config.ToolEntry{
+			Type:        config.ToolTypeCommand,
+			Name:        "failer",
+			Description: "Fails.",
+			Command:     []string{"sh", "-c", "echo boom >&2; exit 3"},
+		})
+		var stdout runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Format: run.FormatNDJSON,
+			NewClient: func(config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: runToolResponses("failer")}, nil
+			},
+		}, "run it")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		for _, l := range parseNDJSONLines(t, stdout.String()) {
+			if l.Type == "tool_result" {
+				if !l.Failed {
+					t.Errorf("tool_result failed = false, want true")
+				}
+				if !strings.Contains(l.Output, "failed with exit code 3") {
+					t.Errorf("tool_result output = %q, want the full failed body", l.Output)
+				}
+				return
+			}
+		}
+		t.Fatalf("no tool_result line in stream:\n%s", stdout.String())
+	})
+}
+
+// TestRunFormatNDJSONSubagentEvents pins the subagent_* contract: agent
+// and depth fields, nested usage attribution, and both agents in
+// done.agents.
+func TestRunFormatNDJSONSubagent(t *testing.T) {
+	t.Parallel()
+
+	cfg := runSubagentConfig(t)
+	parent := &runFakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_p", Type: "function", FunctionName: "ask_worker", FunctionArgs: `{"prompt":"do it"}`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+			Usage:        llm.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110},
+		},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "parent done"), FinishReason: llm.FinishStop,
+			Usage: llm.Usage{PromptTokens: 130, CompletionTokens: 20, TotalTokens: 150}},
+	}}
+	worker := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "worker result text"), FinishReason: llm.FinishStop,
+			Usage: llm.Usage{PromptTokens: 15, CompletionTokens: 3, TotalTokens: 18}},
+	}}
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	var sawText, sawUsage bool
+	for _, l := range lines {
+		if !strings.HasPrefix(l.Type, "subagent_") {
+			continue
+		}
+		if l.Agent != "worker" {
+			t.Errorf("%s agent = %q, want worker", l.Type, l.Agent)
+		}
+		if l.Depth == nil || *l.Depth != 1 {
+			t.Errorf("%s depth = %v, want 1", l.Type, l.Depth)
+		}
+		if l.Type == "subagent_text" && l.Text == "worker result text" {
+			sawText = true
+		}
+		if l.Type == "subagent_usage" {
+			sawUsage = true
+			if l.Usage == nil || l.Usage.TotalTokens != 18 {
+				t.Errorf("subagent_usage = %+v, want the nested call's usage", l.Usage)
+			}
+		}
+	}
+	if !sawText || !sawUsage {
+		t.Errorf("stream missing subagent_text or subagent_usage:\n%s", stdout.String())
+	}
+
+	// The parent's own events: usage carries the agent attribution (the
+	// engine sets AgentName on usage events); all other parent events
+	// carry no agent/depth.
+	for _, l := range lines {
+		if strings.HasPrefix(l.Type, "subagent_") || l.Type == "usage" {
+			continue
+		}
+		if l.Agent != "" || l.Depth != nil {
+			t.Errorf("parent event %s carries agent=%q depth=%v, want none", l.Type, l.Agent, l.Depth)
+		}
+	}
+
+	done := lines[len(lines)-1]
+	if done.Type != "done" {
+		t.Fatalf("last line type = %q, want done", done.Type)
+	}
+	if done.Text != "parent done" {
+		t.Errorf("done.text = %q, want %q", done.Text, "parent done")
+	}
+	if len(done.Agents) != 2 {
+		t.Fatalf("done.agents = %+v, want both agents", done.Agents)
+	}
+	if done.Agents[0].Agent != "parent" || done.Agents[0].Usage.TotalTokens != 260 {
+		t.Errorf("done.agents[0] = %+v, want parent total 260", done.Agents[0])
+	}
+	if done.Agents[1].Agent != "worker" || done.Agents[1].Usage.TotalTokens != 18 {
+		t.Errorf("done.agents[1] = %+v, want worker total 18", done.Agents[1])
+	}
+	if done.Usage == nil || done.Usage.TotalTokens != 278 {
+		t.Errorf("done.usage = %+v, want total 278", done.Usage)
+	}
+}
+
+// TestRunFormatNDJSONFailedRun pins that a provider failure after a
+// completed round ends the stream with error, no done.
+func TestRunFormatNDJSONFailedRun(t *testing.T) {
+	t.Parallel()
+
+	cfg := runToolConfig(t)
+	responses := runToolResponses("echoer")
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			// The first round completes, then the fake runs dry.
+			return &runFakeClient{responses: responses[:1]}, nil
+		},
+	}, "run it")
+	if err == nil {
+		t.Fatal("Run succeeded, want a turn error")
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	if got := ndjsonTypes(lines); !slicesEqual(got, []string{"usage", "tool_call", "tool_result", "error"}) {
+		t.Fatalf("line types = %v, want the completed round's events then error", got)
+	}
+	last := lines[len(lines)-1]
+	if last.Error == "" || !strings.Contains(last.Error, "no more canned responses") {
+		t.Errorf("error event = %+v, want the run error's message", last)
+	}
+}
+
+// TestRunFormatNDJSONCancelledSingleErrorLine pins that a run cancelled
+// before any call still ends the stream with a single error line (the
+// turn was entered).
+func TestRunFormatNDJSONCancelledSingleErrorLine(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := run.Run(ctx, run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runBlockingClient{started: make(chan struct{})}, nil
+		},
+	}, "hello")
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	if got := ndjsonTypes(lines); !slicesEqual(got, []string{"error"}) {
+		t.Fatalf("line types = %v, want exactly [error]", got)
+	}
+	if !strings.Contains(lines[0].Error, "context canceled") {
+		t.Errorf("error event = %+v, want the cancellation message", lines[0])
+	}
+}
+
+// TestRunFormatNDJSONNoLinesWhenTurnNeverStarted pins that a run failing
+// before the turn (registry build failure) emits no ndjson lines at all.
+func TestRunFormatNDJSONNoLinesWhenTurnNeverStarted(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent(), config.ToolEntry{
+		Type: config.ToolTypeCommand,
+		Name: "bad", Description: "Bad tool.", Command: []string{},
+	})
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config:    cfg,
+		Agent:     cfg.Agents[0],
+		Stdout:    &stdout,
+		Format:    run.FormatNDJSON,
+		NewClient: func(config.Agent) (llm.Client, error) { return &runFakeClient{}, nil },
+	}, "hello")
+	if err == nil || !strings.Contains(err.Error(), "build tools") {
+		t.Fatalf("error = %v, want a build-tools error", err)
+	}
+	if out := stdout.String(); out != "" {
+		t.Errorf("stdout = %q, want no ndjson lines", out)
+	}
+}
+
+// TestRunFormatNDJSONTracedTerminateMidRun pins the platform-termination
+// contract: done with no text, and the reason on stderr.
+func TestRunFormatNDJSONTracedTerminateMidRun(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	// StartTurn creates two spans (agent_turn + user_message); fire the
+	// terminate on the next create (the llm span), so the turn was
+	// entered and the stream carries its terminal done event.
+	f.setTerminateAfterSpanCreates(2, "operator stopped")
+	cfg := runTestConfig(runTestAgent())
+	var stdout, stderr runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+	opts.Stderr = &stderr
+	opts.Format = run.FormatNDJSON
+
+	final, err := run.Run(context.Background(), opts, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (terminate exits cleanly)", err)
+	}
+	if final != "" {
+		t.Errorf("final = %q, want empty", final)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	if got := ndjsonTypes(lines); len(got) == 0 || got[len(got)-1] != "done" {
+		t.Fatalf("line types = %v, want the stream to end with done", got)
+	}
+	done := lines[len(lines)-1]
+	if done.Text != "" {
+		t.Errorf("done.text = %q, want absent (terminated mid-run)", done.Text)
+	}
+	if diag := stderr.String(); !strings.Contains(diag, "stopped by platform") || !strings.Contains(diag, "operator stopped") {
+		t.Errorf("stderr = %q, want the termination reason", diag)
+	}
+	if out := stdout.String(); strings.Contains(out, "stopped by platform") {
+		t.Errorf("stdout = %q, want no human termination notice on the event stream", out)
+	}
+}
+
+// TestRunFormatNDJSONFooterSuppressed pins that stdout carries no
+// "tokens:" line; the totals live only in done.
+func TestRunFormatNDJSONFooterSuppressed(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: []llm.Response{
+				{
+					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
+					FinishReason: llm.FinishStop,
+					Usage:        llm.Usage{PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46},
+				},
+			}}, nil
+		},
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if out := stdout.String(); strings.Contains(out, "tokens:") {
+		t.Errorf("stdout = %q, want no human footer", out)
+	}
+}
+
+// TestRunFormatNDJSONNoHTMLEscaping pins that tool output containing <, >,
+// and & round-trips unescaped in the JSON line.
+func TestRunFormatNDJSONNoHTMLEscaping(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent(), config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "htmler",
+		Description: "Emits HTML-ish output.",
+		Command:     []string{"printf", "a < b & c > d"},
+	})
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: runToolResponses("htmler")}, nil
+		},
+	}, "run it")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if strings.Contains(out, "\\u003c") || strings.Contains(out, "\\u003e") || strings.Contains(out, "\\u0026") {
+		t.Errorf("stdout = %q, want no HTML-escaped sequences", out)
+	}
+	var found bool
+	for _, l := range parseNDJSONLines(t, out) {
+		if l.Type == "tool_result" {
+			found = true
+			if l.Output != "a < b & c > d" {
+				t.Errorf("tool_result output = %q, want %q", l.Output, "a < b & c > d")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no tool_result line in stream:\n%s", out)
+	}
+}
+
+// slicesEqual reports whether two string slices are equal (the run tests
+// target a pre-slices stdlib Go; kept local to avoid a helper import).
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

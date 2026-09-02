@@ -8,6 +8,7 @@ import (
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/engine"
 	"github.com/overspecific/blorb/internal/tools"
+	"github.com/overspecific/blorb/internal/usage"
 )
 
 // Output format values for Options.Format.
@@ -45,9 +46,13 @@ func (o Options) diagnostics() io.Writer {
 
 // events builds the run's event callbacks for the output format.
 // chat renders the chat-style stream on stdout; plain renders the same
-// chat-style stream on stderr and tees only assistant text to stdout.
-func (o Options) events() (printEvent func(engine.Event) error, onSubagent func(tools.SubagentEvent) error, flush func(), err error) {
+// chat-style stream on stderr and tees only assistant text to stdout;
+// ndjson streams flat typed JSON events on stdout.
+func (o Options) events(account *usage.Account) (printEvent func(engine.Event) error, onSubagent func(tools.SubagentEvent) error, flush func(), finish func(final string, runErr error) error, err error) {
 	switch o.Format {
+	case FormatNDJSON:
+		sink := newNDJSONSink(o.Stdout, account)
+		return sink.printEvent, sink.onSubagent, func() {}, sink.finish, nil
 	case FormatPlain:
 		diagPrint, diagSubagent, flush := chat.Events(o.stderrOr(), o.ToolOutput)
 		printEvent = func(ev engine.Event) error {
@@ -64,10 +69,10 @@ func (o Options) events() (printEvent func(engine.Event) error, onSubagent func(
 			}
 			return nil
 		}
-		return printEvent, diagSubagent, flush, nil
+		return printEvent, diagSubagent, flush, nil, nil
 	default:
 		printEvent, onSubagent, flush := chat.Events(o.Stdout, o.ToolOutput)
-		return printEvent, onSubagent, flush, nil
+		return printEvent, onSubagent, flush, nil, nil
 	}
 }
 

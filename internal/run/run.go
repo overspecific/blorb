@@ -83,16 +83,15 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		streaming = true
 	}
 
-	printEvent, onSubagent, flush, err := opts.events()
-	if err != nil {
-		return "", err
-	}
-
 	// Usage accounting: run deliberately mirrors chat's unexported
 	// wrappers rather than sharing them (same reasoning as newClient and
 	// isTerminated). One run is one turn, so the turn footer is the run's
 	// whole summary; there is no session line.
 	account := &usage.Account{}
+	printEvent, onSubagent, flush, finishNDJSON, err := opts.events(account)
+	if err != nil {
+		return "", err
+	}
 	turnEvent := usageWrap(printEvent, account)
 	onSubagent = runUsageWrap(onSubagent, account)
 
@@ -160,11 +159,21 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	final, runErr := eng.RunTurn(ctx, prompt, turnEvent)
 	flush()
 
+	// The ndjson terminal event: emitted iff RunTurn was entered, before
+	// the outcome mapping so it carries the raw turn error's message.
+	if finishNDJSON != nil {
+		if err := finishNDJSON(final, runErr); err != nil {
+			return "", err
+		}
+	}
+
 	// The footer prints for the calls that completed even on the error
 	// paths (interrupt, provider failure mid-loop): partial usage, then
 	// the outcome. A run cancelled before any call has no records and
-	// prints no footer.
-	if len(account.Records()) > 0 {
+	// prints no footer. ndjson suppresses it: the done/error event
+	// carries the usage, and a human footer would be noise for a machine
+	// consumer.
+	if len(account.Records()) > 0 && opts.Format != FormatNDJSON {
 		fmt.Fprintf(opts.diagnostics(), "%s\n", usage.FormatTurn(account))
 	}
 
