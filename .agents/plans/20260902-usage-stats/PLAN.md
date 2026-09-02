@@ -11,7 +11,7 @@ Scope decisions (from the vision and user): chat-format output only for this pla
 ## Todo
 
 - [x] Commit 1: `internal/usage` accounting package
-- [ ] Commit 2: engine `EventUsage` event
+- [x] Commit 2: engine `EventUsage` event
 - [ ] Commit 3: subagent usage propagation (`SubagentEvent` + `SubagentResult`)
 - [ ] Commit 4: footer rendering helpers in `internal/usage`
 - [ ] Commit 5: chat per-turn footer and session totals
