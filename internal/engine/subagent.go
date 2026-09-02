@@ -137,6 +137,7 @@ func (r *SubagentRunner) convert(agentName string, onEvent func(tools.SubagentEv
 			Index:  ev.Index,
 			Output: ev.Output,
 			Failed: ev.Failed,
+			Model:  ev.Model,
 			Usage:  ev.Usage,
 		}
 		switch ev.Kind {

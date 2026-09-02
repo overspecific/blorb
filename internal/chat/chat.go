@@ -20,6 +20,7 @@ import (
 	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/tools"
+	"github.com/overspecific/blorb/internal/usage"
 )
 
 // subagentPipe relays subagent activity events to the current turn's
@@ -147,6 +148,10 @@ func Run(ctx context.Context, opts Options) error {
 	// The holder lets per-turn tracing wrappers come and go without
 	// engine changes; the engine sees a stable llm.Client.
 	holder := &clientHolder{inner: client}
+
+	// sessAccount accumulates the session's usage: runTurn records each
+	// turn's account into it after printing the turn's footer.
+	sessAccount := &usage.Account{}
 
 	eng := engine.New(engine.EngineConfig{
 		Client:       holder,
@@ -297,7 +302,7 @@ func Run(ctx context.Context, opts Options) error {
 					return sessionGraceful, nil
 				}
 
-				res, err := runTurn(ctx, opts, eng, holder, pipe, takeInterrupted, setTurn, r.line)
+				res, err := runTurn(ctx, opts, eng, holder, pipe, takeInterrupted, setTurn, r.line, sessAccount)
 				needHeading = true
 				if res == sessionTerminate || res == sessionFailure {
 					return res, err
@@ -336,6 +341,12 @@ func Run(ctx context.Context, opts Options) error {
 			return fmt.Errorf("chat: %w", err)
 		}
 	}
+
+	// Session totals: best-effort output on the way out, printed for both
+	// exits — a failed session's completed calls still spent tokens.
+	if len(sessAccount.Records()) > 0 {
+		fmt.Fprintf(opts.Stdout, "%s\n", usage.FormatSession(sessAccount))
+	}
 	return runErr
 }
 
@@ -352,6 +363,7 @@ func runTurn(
 	takeInterrupted func() bool,
 	setTurn func(context.CancelFunc),
 	line string,
+	sessAccount *usage.Account,
 ) (sessionResult, error) {
 	turnCtx, cancel := context.WithCancel(ctx)
 	setTurn(cancel)
@@ -361,12 +373,17 @@ func runTurn(
 	}()
 
 	printEvent, onSubagent, flush := Events(opts.Stdout, opts.ToolOutput)
-	pipe.set(onSubagent)
+	// The turn account feeds the per-turn footer; the session account
+	// accumulates every turn's records after the footer prints.
+	turnAccount := &usage.Account{}
+	printWrapped := usageWrap(printEvent, turnAccount)
+	pipe.set(subagentUsageWrap(onSubagent, turnAccount))
 	defer pipe.set(nil)
 
 	if opts.Tracer == nil {
-		_, runErr := eng.RunTurn(turnCtx, line, printEvent)
+		_, runErr := eng.RunTurn(turnCtx, line, printWrapped)
 		flush()
+		printTurnFooter(opts.Stdout, turnAccount, sessAccount)
 		return classifyTurnOutcome(runErr, turnCtx, takeInterrupted(), opts.Stdout)
 	}
 
@@ -378,8 +395,10 @@ func runTurn(
 	holder.inner = NewTracingClient(holder.inner, turn, opts.Agent.Provider.Model)
 	defer func() { holder.inner = unwrapTracingClient(holder.inner) }()
 
-	finalText, runErr := eng.RunTurn(turnCtx, line, TraceEvent(turn, printEvent))
+	finalText, runErr := eng.RunTurn(turnCtx, line, TraceEvent(turn, printWrapped))
 	flush()
+
+	printTurnFooter(opts.Stdout, turnAccount, sessAccount)
 
 	interrupted := takeInterrupted()
 

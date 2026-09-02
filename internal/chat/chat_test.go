@@ -1994,3 +1994,249 @@ func TestRunSubagentNonStreamingWholeBlocks(t *testing.T) {
 		}
 	}
 }
+
+func TestRunUsageFooterPerTurnAndSession(t *testing.T) {
+	t.Parallel()
+
+	turnOne := llm.Response{
+		Message:      llm.NewTextMessage(llm.RoleAssistant, "first"),
+		FinishReason: llm.FinishStop,
+		Usage:        llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}
+	turnTwo := llm.Response{
+		Message:      llm.NewTextMessage(llm.RoleAssistant, "second"),
+		FinishReason: llm.FinishStop,
+		Usage:        llm.Usage{PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27},
+	}
+	o, stdout := newTestOptions(testConfig(testAgent()), "one\ntwo\nexit\n", turnOne, turnTwo)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	firstFooter := "tokens: 10 prompt, 5 completion, 15 total"
+	secondFooter := "tokens: 20 prompt, 7 completion, 27 total"
+	if !strings.Contains(out, firstFooter) {
+		t.Errorf("stdout = %q, want the first turn's footer %q", out, firstFooter)
+	}
+	if !strings.Contains(out, secondFooter) {
+		t.Errorf("stdout = %q, want the second turn's footer %q", out, secondFooter)
+	}
+	session := "session tokens: 30 prompt, 12 completion, 42 total"
+	if !strings.Contains(out, session) {
+		t.Errorf("stdout = %q, want the session totals line %q", out, session)
+	}
+	if strings.LastIndex(out, firstFooter) > strings.Index(out, secondFooter) {
+		t.Errorf("stdout = %q, want the first turn's footer before the second's", out)
+	}
+}
+
+func TestRunUsageFooterOncePerToolRoundTurn(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(testAgent(), config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "done_tool",
+		Description: "Does nothing.",
+		Command:     []string{"true"},
+	})
+	call := llm.Response{
+		Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{ID: "call_1", Type: "function", FunctionName: "done_tool", FunctionArgs: "{}"}},
+		},
+		FinishReason: llm.FinishToolCalls,
+		Usage:        llm.Usage{PromptTokens: 8, CompletionTokens: 2, TotalTokens: 10},
+	}
+	final := llm.Response{
+		Message:      llm.NewTextMessage(llm.RoleAssistant, "done"),
+		FinishReason: llm.FinishStop,
+		Usage:        llm.Usage{PromptTokens: 30, CompletionTokens: 4, TotalTokens: 34},
+	}
+	o, stdout := newTestOptions(cfg, "go\nexit\n", call, final)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	// One turn footer with the turn's summed usage, not one per call; the
+	// session line reuses the same totals, prefixed "session ".
+	if n := strings.Count(out, "\ntokens: 38 prompt, 6 completion, 44 total"); n != 1 {
+		t.Errorf("stdout = %q, want exactly one summed turn footer, got %d", out, n)
+	}
+	if !strings.Contains(out, "session tokens: 38 prompt, 6 completion, 44 total") {
+		t.Errorf("stdout = %q, want the session totals line", out)
+	}
+	if strings.Contains(out, "tokens: 8 prompt") {
+		t.Errorf("stdout = %q, want no per-call footer", out)
+	}
+}
+
+func TestRunUsageFooterWithSubagentSplit(t *testing.T) {
+	t.Parallel()
+
+	cfg := subagentTestConfig(t)
+	parent, worker := subagentClients("worker result text")
+	// The worker runs two LLM calls (tool round + final); the parent two.
+	parent.responses[0].Usage = llm.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110}
+	parent.responses[1].Usage = llm.Usage{PromptTokens: 130, CompletionTokens: 20, TotalTokens: 150}
+	worker.responses[0].Usage = llm.Usage{PromptTokens: 11, CompletionTokens: 2, TotalTokens: 13}
+	worker.responses[1].Usage = llm.Usage{PromptTokens: 15, CompletionTokens: 3, TotalTokens: 18}
+
+	var stdout syncBuffer
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("go\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	// The footer splits by agent: parent 230/30/260, worker 26/5/31.
+	want := "tokens: 256 prompt, 35 completion, 291 total (parent: 230/30/260, worker: 26/5/31)"
+	if !strings.Contains(out, want) {
+		t.Errorf("stdout = %q, want the per-agent footer split %q", out, want)
+	}
+}
+
+func TestRunUsageFooterForInterruptedPartialTurn(t *testing.T) {
+	t.Parallel()
+
+	sigs := make(chan os.Signal, 1)
+	cfg := subagentTestConfig(t)
+	_, worker := subagentClients("worker result text")
+	first := llm.Response{
+		Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{ID: "call_p", Type: "function", FunctionName: "ask_worker", FunctionArgs: `{"prompt":"do it"}`}},
+		},
+		FinishReason: llm.FinishToolCalls,
+		Usage:        llm.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110},
+	}
+
+	// The parent's second call blocks until cancelled: the turn is cut
+	// short after one usage-bearing response.
+	client := &usageBlockingClient{first: first, started: make(chan struct{})}
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:     cfg,
+		Agent:      cfg.Agents[0],
+		Version:    "test",
+		Stdin:      strings.NewReader("go\n"),
+		Stdout:     &stdout,
+		SigintChan: sigs,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return client, nil
+		},
+	}
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- chat.Run(context.Background(), o) }()
+
+	// Wait until the parent's second call is in flight, then interrupt.
+	select {
+	case <-client.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second parent call never started")
+	}
+	sigs <- syscall.SIGINT
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after interrupt")
+	}
+
+	out := stdout.String()
+	footerAt := strings.Index(out, "tokens: 100 prompt, 10 completion, 110 total")
+	interruptedAt := strings.Index(out, "(interrupted)")
+	if footerAt < 0 || interruptedAt < 0 {
+		t.Fatalf("stdout = %q, want the partial footer and the interrupted marker", out)
+	}
+	if footerAt > interruptedAt {
+		t.Errorf("stdout = %q, want the footer before the (interrupted) line", out)
+	}
+}
+
+// usageBlockingClient serves one canned response, then blocks on the next
+// call until its context is cancelled, like an in-flight request cut short
+// by SIGINT.
+type usageBlockingClient struct {
+	mu      sync.Mutex
+	calls   int
+	first   llm.Response
+	started chan struct{}
+}
+
+func (c *usageBlockingClient) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	c.mu.Lock()
+	c.calls++
+	first := c.calls == 1
+	c.mu.Unlock()
+	if first {
+		return &c.first, nil
+	}
+	close(c.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestRunNoUsageNoFooter(t *testing.T) {
+	t.Parallel()
+
+	// The fake has no responses: no call completes, so no footer and no
+	// session line print.
+	o, stdout := newTestOptions(testConfig(testAgent()), "hello\nexit\n")
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	out := stdout.String()
+	if strings.Contains(out, "tokens:") {
+		t.Errorf("stdout = %q, want no usage footer", out)
+	}
+	if strings.Contains(out, "session tokens:") {
+		t.Errorf("stdout = %q, want no session totals line", out)
+	}
+}
+
+func TestRunZeroUsageStillPrintsFooter(t *testing.T) {
+	t.Parallel()
+
+	zero := llm.Response{
+		Message:      llm.NewTextMessage(llm.RoleAssistant, "answer"),
+		FinishReason: llm.FinishStop,
+		Usage:        llm.Usage{},
+	}
+	o, stdout := newTestOptions(testConfig(testAgent()), "hi\nexit\n", zero)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "tokens: 0 prompt, 0 completion, 0 total") {
+		t.Errorf("stdout = %q, want the zero-usage footer", out)
+	}
+	if !strings.Contains(out, "session tokens: 0 prompt, 0 completion, 0 total") {
+		t.Errorf("stdout = %q, want the zero-usage session line", out)
+	}
+}

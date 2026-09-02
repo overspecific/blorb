@@ -24,7 +24,9 @@ const (
 
 // SubagentEvent is one observable moment of a subagent run. Agent is
 // the name of the agent that produced it and Depth its nesting level
-// below the caller (1 for a directly invoked subagent).
+// below the caller (1 for a directly invoked subagent). Model is the
+// producing agent's configured provider model, set on SubagentUsage
+// events and empty for all other kinds.
 type SubagentEvent struct {
 	Agent  string
 	Depth  int
@@ -35,6 +37,7 @@ type SubagentEvent struct {
 	Index  int
 	Output string
 	Failed bool
+	Model  string
 	// Usage is set on SubagentUsage events: the token usage of one
 	// completed LLM call by the named agent.
 	Usage llm.Usage
