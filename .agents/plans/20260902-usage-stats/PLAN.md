@@ -15,7 +15,7 @@ Scope decisions (from the vision and user): chat-format output only for this pla
 - [x] Commit 3: subagent usage propagation (`SubagentEvent` + `SubagentResult`)
 - [x] Commit 4: footer rendering helpers in `internal/usage`
 - [x] Commit 5: chat per-turn footer and session totals
-- [ ] Commit 6: run per-turn footer
+- [x] Commit 6: run per-turn footer
 - [ ] Commit 7: docs
 
 ---
