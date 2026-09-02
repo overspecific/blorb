@@ -14,7 +14,7 @@ Tools are plain executables declared in the config, built-ins implemented inside
 
 - One `blorb.json` defines any number of named agents, each with its own system prompt, provider, and tool grants
 - Interactive chat REPL with multi-turn tool calling, running a chosen agent per invocation
-- One-shot `run` mode: one prompt in, one agent turn out, for scripting — the prompt comes from a quoted argument, a file, or stdin
+- One-shot `run` mode: one prompt in, one agent turn out, for scripting — the prompt comes from a quoted argument, a file, or stdin, with `--format plain` (agent text only on stdout, progress on stderr) and `--format ndjson` (streaming JSON events) alongside the chat-style default
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
 - Tool results summarize by default in chat (a character and line count); `--tool-output` shows the full output, and failed results and subagent output always show in full
 - Token usage stats: every turn ends with a token footer (prompt/completion/total), chat prints session totals at exit, and subagent usage is itemised by agent in the footer's per-agent split
@@ -112,7 +112,36 @@ git diff | ./blorb run @-
 
 The prompt argument is required and exactly one is accepted: omitting it or passing extra arguments is a usage error (a scripting tool must not appear to hang when its arguments are forgotten, so stdin is only read when explicitly requested with `-` or `@-`).
 
-`run` takes the same flags as `chat` (`-c | --config <path>`, `--agent <name>`, `--no-stream`, `--tool-output`). The output format is currently identical to chat (including the `>>>` headings); additional output formats are planned. The run's output ends with the same per-turn token footer as a chat turn.
+`run` takes the same flags as `chat` (`-c | --config <path>`, `--agent <name>`, `--no-stream`, `--tool-output`) plus `--format <chat|plain|ndjson>`.
+
+**`chat`** (the default) is identical to chat output — everything on stdout, `>>>` headings, streamed fragments, and the per-turn token footer.
+
+**`plain`** puts just the agent's output on stdout — no headings, no decorations, no trailing newline — so it composes in pipelines (`./blorb run --format plain "..." | jq`). Everything else goes to stderr: the chat-style progress (headings, tool activity, streamed fragments) and the token footer. The agent's output is the assistant's text events spliced exactly as they arrived, with nothing added between them.
+
+**`ndjson`** streams the run's full event stream to stdout as one JSON object per line, as it happens: assistant text, reasoning, tool calls and results, token usage, and subagent activity. Each line is a flat object discriminated by its `type` field; ignore unknown types for forward compatibility. The stream ends with a `done` event carrying the final text and usage totals, or an `error` event on failure. A run that fails before the turn starts (bad config, unknown format) emits no events.
+
+Event types (subagent activity uses the same vocabulary prefixed `subagent_`, with `agent` and `depth` fields added):
+
+```
+text_delta      {type, text}                       assistant text fragment (streaming)
+thinking_delta  {type, thinking}                   reasoning fragment (streaming)
+tool_call_delta {type, index, name?, arguments}    tool call fragment; assemble by index, concatenating arguments
+text            {type, text}                       whole assistant message (with --no-stream)
+thinking        {type, thinking}                   whole reasoning (with --no-stream)
+tool_call       {type, name, arguments}            whole tool call (with --no-stream)
+tool_result     {type, name, output, failed}       tool result; output is always the full body
+usage           {type, agent, model, usage}        one LLM call's token usage
+done            {type, text?, usage, agents}       terminal on success
+error           {type, error}                      terminal on failure
+```
+
+For example, to print just the assistant's text as it streams:
+
+```sh
+./blorb run --format ndjson "..." | jq -r 'select(.type=="text_delta") | .text'
+```
+
+Streaming applies across all formats: `--no-stream` switches to whole-message events (in ndjson, the `text`/`thinking`/`tool_call` types instead of deltas; in plain, whole blocks on stderr instead of live fragments). `--tool-output` applies to the chat and plain result blocks; ndjson always carries full tool result bodies. The exit codes are unchanged — ndjson's `done`/`error` event is the machine-readable outcome, not a changed exit contract. A run that fails before the turn emits no ndjson events; the error goes to stderr.
 
 Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
 

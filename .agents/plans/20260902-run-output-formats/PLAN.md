@@ -23,7 +23,7 @@ Structure (each stage a commit):
 - [x] Commit 1: `plain` format and the Stderr/Format plumbing
 - [x] Commit 2: `ndjson` format
 - [x] Commit 3: `--format` flag
-- [ ] Commit 4: docs
+- [x] Commit 4: docs
 
 ---
 
