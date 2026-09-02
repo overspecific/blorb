@@ -25,6 +25,11 @@ type Options struct {
 	// prompt, provider, and max turns drive the engine and client.
 	Agent  config.Agent
 	Stdout io.Writer
+	// Stderr receives diagnostics for the plain and ndjson formats:
+	// progress, tool activity, and the usage footer. Nil falls back
+	// to Stdout, preserving the single-stream behavior. The chat
+	// format ignores it and always uses Stdout.
+	Stderr io.Writer
 	// NewClient overrides the LLM client construction. Tests only; nil
 	// builds the real client from the agent's provider. It mirrors
 	// chat.Options.NewClient.
@@ -46,12 +51,20 @@ type Options struct {
 	// containing one turn span. Tracing is a hard dependency: a tracer
 	// error fails the run. Nil disables tracing.
 	Tracer *prefactor.Tracer
+	// Format selects the run's output format: "chat" (the zero
+	// value and default), "plain", or "ndjson". An unknown value
+	// fails the run before any LLM call is made.
+	Format string
 }
 
 // Run executes exactly one agent turn for prompt and returns the final
 // assistant text. It builds the client, registry, and engine exactly like
 // a chat session would, runs the turn, and releases resources.
 func Run(ctx context.Context, opts Options, prompt string) (string, error) {
+	if err := opts.validateFormat(); err != nil {
+		return "", err
+	}
+
 	sink, err := chat.ResolveSink(opts.ConfigPath, opts.Config)
 	if err != nil {
 		return "", err
@@ -70,7 +83,10 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		streaming = true
 	}
 
-	printEvent, onSubagent, flush := chat.Events(opts.Stdout, opts.ToolOutput)
+	printEvent, onSubagent, flush, err := opts.events()
+	if err != nil {
+		return "", err
+	}
 
 	// Usage accounting: run deliberately mirrors chat's unexported
 	// wrappers rather than sharing them (same reasoning as newClient and
@@ -102,7 +118,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		schema := prefactor.DefaultAgentSchemaVersion(opts.Agent.Name, registry)
 		if err := opts.Tracer.StartSession(ctx, schema); err != nil {
 			if isTerminated(err) {
-				fmt.Fprintf(opts.Stdout, "stopped by platform: %v\n", terminationReason(err))
+				fmt.Fprintf(opts.diagnostics(), "stopped by platform: %v\n", terminationReason(err))
 				return "", nil
 			}
 			return "", fmt.Errorf("run: %w", err)
@@ -111,7 +127,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		turn, err = opts.Tracer.StartTurn(ctx, prompt)
 		if err != nil {
 			if isTerminated(err) {
-				fmt.Fprintf(opts.Stdout, "stopped by platform: %v\n", terminationReason(err))
+				fmt.Fprintf(opts.diagnostics(), "stopped by platform: %v\n", terminationReason(err))
 				return "", nil
 			}
 			return "", finishTracedRun(opts, fmt.Errorf("run: %w", err))
@@ -149,7 +165,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	// the outcome. A run cancelled before any call has no records and
 	// prints no footer.
 	if len(account.Records()) > 0 {
-		fmt.Fprintf(opts.Stdout, "%s\n", usage.FormatTurn(account))
+		fmt.Fprintf(opts.diagnostics(), "%s\n", usage.FormatTurn(account))
 	}
 
 	err = mapTurnOutcome(turn, final, runErr, ctx)
@@ -219,7 +235,7 @@ func finishTracedRun(opts Options, runErr error) error {
 		return runErr
 	}
 	if term, ok := runErr.(errTerminated); ok {
-		fmt.Fprintf(opts.Stdout, "stopped by platform: %s\n", term.reason)
+		fmt.Fprintf(opts.diagnostics(), "stopped by platform: %s\n", term.reason)
 		return nil
 	}
 	status := prefactor.InstanceComplete

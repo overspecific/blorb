@@ -20,7 +20,7 @@ Structure (each stage a commit):
 
 ## Todo
 
-- [ ] Commit 1: `plain` format and the Stderr/Format plumbing
+- [x] Commit 1: `plain` format and the Stderr/Format plumbing
 - [ ] Commit 2: `ndjson` format
 - [ ] Commit 3: `--format` flag
 - [ ] Commit 4: docs

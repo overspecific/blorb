@@ -1521,3 +1521,473 @@ func TestRunNoUsageNoFooterWhenCancelledBeforeAnyCall(t *testing.T) {
 		t.Errorf("stdout = %q, want no footer for a run cancelled before any call", out)
 	}
 }
+
+// --- plain format tests ---
+
+// TestRunFormatPlainWholeMessageToolRound pins the plain stdout contract:
+// exactly the concatenation of the assistant text events with no
+// separator (deliberately unlike Run's return value, which the engine
+// joins with a newline between rounds), and all diagnostics on stderr.
+func TestRunFormatPlainWholeMessageToolRound(t *testing.T) {
+	t.Parallel()
+
+	cfg := runToolConfig(t)
+	// The first round emits text alongside its tool call; the second
+	// round's text is the final answer.
+	responses := runToolResponses("echoer")
+	responses[0].Message.Content = "calling the tool now"
+	responses[0].Usage = llm.Usage{PromptTokens: 8, CompletionTokens: 2, TotalTokens: 10}
+	responses[1].Usage = llm.Usage{PromptTokens: 30, CompletionTokens: 4, TotalTokens: 34}
+
+	var stdout, stderr runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatPlain,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: responses}, nil
+		},
+	}, "run it")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	// Run's return joins the rounds with a newline; plain's stdout
+	// splices them exactly as they came, no separator.
+	if final != "calling the tool now\nmade it" {
+		t.Errorf("final = %q, want the engine-joined text", final)
+	}
+	if got, want := stdout.String(), "calling the tool nowmade it"; got != want {
+		t.Errorf("stdout = %q, want exactly %q (agent text spliced, no separator)", got, want)
+	}
+
+	diag := stderr.String()
+	if !strings.Contains(diag, ">>> Assistant:") {
+		t.Errorf("stderr = %q, want the assistant headings", diag)
+	}
+	if !strings.Contains(diag, ">>> Tool: echoer") || !strings.Contains(diag, ">>> Result: Tool: echoer") {
+		t.Errorf("stderr = %q, want the tool activity blocks", diag)
+	}
+	if !strings.Contains(diag, "tokens: 38 prompt, 6 completion, 44 total") {
+		t.Errorf("stderr = %q, want the usage footer", diag)
+	}
+	// The spliced stdout text must not appear verbatim on stderr: the
+	// diagnostic stream renders the same words under headings, never as
+	// one continuous splice.
+	if strings.Contains(diag, "calling the tool nowmade it") {
+		t.Errorf("stderr = %q, want no spliced agent text on the diagnostics stream", diag)
+	}
+}
+
+// TestRunFormatPlainStreamed pins that plain's stdout receives the text
+// fragments as they arrive, while stderr renders the chat-style streamed
+// output.
+func TestRunFormatPlainStreamed(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout, stderr runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatPlain,
+		Stream: true,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runStreamingFakeClient{responses: []llm.Response{
+				{Message: llm.NewTextMessage(llm.RoleAssistant, "streamed!"), FinishReason: llm.FinishStop},
+			}}, nil
+		},
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "streamed!" {
+		t.Errorf("final = %q, want %q", final, "streamed!")
+	}
+	if got, want := stdout.String(), "streamed!"; got != want {
+		t.Errorf("stdout = %q, want exactly %q (fragments written through)", got, want)
+	}
+	diag := stderr.String()
+	if !strings.Contains(diag, ">>> Assistant:\nstreamed!\n") {
+		t.Errorf("stderr = %q, want the chat-style streamed rendering", diag)
+	}
+}
+
+// TestRunFormatPlainThinkingOnStderrOnly pins that thinking is diagnostic:
+// it renders on stderr and never reaches plain's stdout.
+func TestRunFormatPlainThinkingOnStderrOnly(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout, stderr runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatPlain,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: []llm.Response{
+				{
+					Message: llm.Message{
+						Role:      llm.RoleAssistant,
+						Reasoning: "let me think",
+						Content:   "the answer",
+					},
+					FinishReason: llm.FinishStop,
+				},
+			}}, nil
+		},
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if got, want := stdout.String(), "the answer"; got != want {
+		t.Errorf("stdout = %q, want exactly %q (no thinking)", got, want)
+	}
+	diag := stderr.String()
+	if !strings.Contains(diag, ">>> Assistant (thinking):\nlet me think") {
+		t.Errorf("stderr = %q, want the thinking block", diag)
+	}
+}
+
+// TestRunFormatPlainSubagentOnStderr pins that subagent activity
+// (including its assistant text) stays on stderr; stdout carries only the
+// parent's text.
+func TestRunFormatPlainSubagentOnStderr(t *testing.T) {
+	t.Parallel()
+
+	cfg := runSubagentConfig(t)
+	parent := &runFakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_p", Type: "function", FunctionName: "ask_worker", FunctionArgs: `{"prompt":"do it"}`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "parent done"), FinishReason: llm.FinishStop},
+	}}
+	worker := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "worker result text"), FinishReason: llm.FinishStop},
+	}}
+
+	var stdout, stderr runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatPlain,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "parent done" {
+		t.Errorf("final = %q, want %q", final, "parent done")
+	}
+	if got, want := stdout.String(), "parent done"; got != want {
+		t.Errorf("stdout = %q, want exactly %q (only the parent's text)", got, want)
+	}
+	diag := stderr.String()
+	if !strings.Contains(diag, "[worker] >>> Assistant:") || !strings.Contains(diag, "worker result text") {
+		t.Errorf("stderr = %q, want the worker's activity", diag)
+	}
+}
+
+// TestRunFormatPlainToolOutputSuppression pins that plain's stderr tool
+// blocks honor ToolOutput exactly like chat: summary without the flag,
+// full body with it, failures always in full.
+func TestRunFormatPlainToolOutputSuppression(t *testing.T) {
+	t.Run("suppressed by default", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := runToolConfig(t)
+		var stdout, stderr runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Stderr: &stderr,
+			Format: run.FormatPlain,
+			NewClient: func(config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: runToolResponses("echoer")}, nil
+			},
+		}, "run it")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		diag := stderr.String()
+		if !strings.Contains(diag, "7 characters, 2 lines") {
+			t.Errorf("stderr = %q, want the count summary", diag)
+		}
+		if strings.Contains(diag, "\none\n") {
+			t.Errorf("stderr = %q, want no raw tool output body", diag)
+		}
+	})
+
+	t.Run("full body with ToolOutput", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := runToolConfig(t)
+		var stdout, stderr runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config:     cfg,
+			Agent:      cfg.Agents[0],
+			Stdout:     &stdout,
+			Stderr:     &stderr,
+			Format:     run.FormatPlain,
+			ToolOutput: true,
+			NewClient: func(config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: runToolResponses("echoer")}, nil
+			},
+		}, "run it")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if diag := stderr.String(); !strings.Contains(diag, ">>> Result: Tool: echoer\none\ntwo") {
+			t.Errorf("stderr = %q, want the full tool output body", diag)
+		}
+	})
+
+	t.Run("failed result always full", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := runTestConfig(runTestAgent(), config.ToolEntry{
+			Type:        config.ToolTypeCommand,
+			Name:        "failer",
+			Description: "Fails.",
+			Command:     []string{"sh", "-c", "echo boom >&2; exit 3"},
+		})
+		var stdout, stderr runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Stderr: &stderr,
+			Format: run.FormatPlain,
+			NewClient: func(config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: runToolResponses("failer")}, nil
+			},
+		}, "run it")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		diag := stderr.String()
+		if !strings.Contains(diag, ">>> Error: Tool: failer") {
+			t.Errorf("stderr = %q, want the error result heading", diag)
+		}
+		if !strings.Contains(diag, "failed with exit code 3") {
+			t.Errorf("stderr = %q, want the full failed body", diag)
+		}
+	})
+}
+
+// TestRunFormatPlainFooterOnStderr pins that the usage footer goes to the
+// injected Stderr, not stdout, in plain format.
+func TestRunFormatPlainFooterOnStderr(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout, stderr runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatPlain,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: []llm.Response{
+				{
+					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
+					FinishReason: llm.FinishStop,
+					Usage:        llm.Usage{PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46},
+				},
+			}}, nil
+		},
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if out := stdout.String(); strings.Contains(out, "tokens:") {
+		t.Errorf("stdout = %q, want no footer", out)
+	}
+	if diag := stderr.String(); !strings.HasSuffix(diag, "tokens: 12 prompt, 34 completion, 46 total\n") {
+		t.Errorf("stderr = %q, want it to end with the usage footer", diag)
+	}
+}
+
+// TestRunFormatPlainTerminateOnStderr pins that the "stopped by platform"
+// notice goes to Stderr in plain format.
+func TestRunFormatPlainTerminateOnStderr(t *testing.T) {
+	t.Parallel()
+
+	f, srv := newRunPFServer(t)
+	f.setSpanTerminate("operator stopped")
+	cfg := runTestConfig(runTestAgent())
+	var stdout, stderr runSyncBuffer
+	opts := runTracedOptions(cfg, srv, &stdout,
+		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
+	)
+	opts.Stderr = &stderr
+	opts.Format = run.FormatPlain
+
+	final, err := run.Run(context.Background(), opts, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (terminate exits cleanly)", err)
+	}
+	if final != "" {
+		t.Errorf("final = %q, want empty", final)
+	}
+	if out := stdout.String(); strings.Contains(out, "stopped by platform") {
+		t.Errorf("stdout = %q, want no termination notice", out)
+	}
+	if diag := stderr.String(); !strings.Contains(diag, "stopped by platform") || !strings.Contains(diag, "operator stopped") {
+		t.Errorf("stderr = %q, want the termination reason", diag)
+	}
+}
+
+// TestRunFormatPlainFailedRunStdoutKeepsRoundText pins that a provider
+// failure mid-loop leaves the completed round's text on stdout, the error
+// is returned (not printed by run), and stdout carries no error text.
+func TestRunFormatPlainFailedRunStdoutKeepsRoundText(t *testing.T) {
+	t.Parallel()
+
+	cfg := runToolConfig(t)
+	responses := runToolResponses("echoer")
+	responses[0].Message.Content = "calling the tool now"
+
+	var stdout, stderr runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatPlain,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			// Two responses only: the turn fails on the third call.
+			return &runFakeClient{responses: responses[:1]}, nil
+		},
+	}, "run it")
+	if err == nil {
+		t.Fatal("Run succeeded, want a turn error")
+	}
+	if !strings.HasPrefix(err.Error(), "run: ") {
+		t.Errorf("error = %v, want the run: prefix", err)
+	}
+	if got, want := stdout.String(), "calling the tool now"; got != want {
+		t.Errorf("stdout = %q, want exactly the completed round's text %q", got, want)
+	}
+	if out := stdout.String(); strings.Contains(out, "no more canned responses") || strings.Contains(out, "error") {
+		t.Errorf("stdout = %q, want no error text on stdout", out)
+	}
+}
+
+// TestRunFormatPlainNilStderrFallsBackToStdout pins the single-stream
+// fallback: with Stderr unset, plain's diagnostics land on Stdout.
+func TestRunFormatPlainNilStderrFallsBackToStdout(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatPlain,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: []llm.Response{
+				{
+					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
+					FinishReason: llm.FinishStop,
+					Usage:        llm.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
+				},
+			}}, nil
+		},
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, ">>> Assistant:") {
+		t.Errorf("stdout = %q, want the headings on the fallback stream", out)
+	}
+	if !strings.Contains(out, "tokens: 1 prompt, 2 completion, 3 total") {
+		t.Errorf("stdout = %q, want the footer on the fallback stream", out)
+	}
+	if !strings.Contains(out, "the answer") {
+		t.Errorf("stdout = %q, want the agent text", out)
+	}
+}
+
+// TestRunFormatChatIgnoresStderr pins that chat keeps the footer and
+// termination notices on stdout even when Stderr is set.
+func TestRunFormatChatIgnoresStderr(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout, stderr runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: []llm.Response{
+				{
+					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
+					FinishReason: llm.FinishStop,
+					Usage:        llm.Usage{PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46},
+				},
+			}}, nil
+		},
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	out := stdout.String()
+	if !strings.HasSuffix(out, "tokens: 12 prompt, 34 completion, 46 total\n") {
+		t.Errorf("stdout = %q, want the footer still on stdout for chat", out)
+	}
+	if diag := stderr.String(); diag != "" {
+		t.Errorf("stderr = %q, want chat to ignore Stderr entirely", diag)
+	}
+}
+
+// TestRunFormatUnknownFailsBeforeLLMCall pins that an unknown format
+// fails the run with the supported-list error and makes no LLM call.
+func TestRunFormatUnknownFailsBeforeLLMCall(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	client := &runFakeClient{}
+	var stdout, stderr runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: "yaml",
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return client, nil
+		},
+	}, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want an unknown-format error")
+	}
+	if !strings.Contains(err.Error(), `unknown format "yaml"`) || !strings.Contains(err.Error(), "chat, plain, ndjson") {
+		t.Errorf("error = %v, want the value and the supported formats", err)
+	}
+	if len(client.requests) != 0 {
+		t.Errorf("LLM calls = %d, want 0 (format validated before any call)", len(client.requests))
+	}
+}
