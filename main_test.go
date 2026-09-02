@@ -17,6 +17,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/run"
 )
 
 func TestRunVersionCommand(t *testing.T) {
@@ -317,10 +318,10 @@ func runChatCommand(t *testing.T, cfgPath string, args ...string) (string, error
 }
 
 // runRunCommand runs `blorb run -c cfgPath [args...]` over pipe-backed
-// stdio with the given stdin payload, and returns the captured stdout plus
-// the session error. Errors handed to the ExitErrHandler (cli.Exit) are
-// returned with the cli formatting stripped.
-func runRunCommand(t *testing.T, cfgPath string, stdin string, args ...string) (string, error) {
+// stdio with the given stdin payload, and returns the captured stdout and
+// stderr plus the session error. Errors handed to the ExitErrHandler
+// (cli.Exit) are returned with the cli formatting stripped.
+func runRunCommand(t *testing.T, cfgPath string, stdin string, args ...string) (string, string, error) {
 	t.Helper()
 
 	stdinR, stdinW, err := os.Pipe()
@@ -338,10 +339,14 @@ func runRunCommand(t *testing.T, cfgPath string, stdin string, args ...string) (
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
 
-	oldStdin, oldStdout := os.Stdin, os.Stdout
-	os.Stdin, os.Stdout = stdinR, stdoutW
-	defer func() { os.Stdin, os.Stdout = oldStdin, oldStdout }()
+	oldStdin, oldStdout, oldStderr := os.Stdin, os.Stdout, os.Stderr
+	os.Stdin, os.Stdout, os.Stderr = stdinR, stdoutW, stderrW
+	defer func() { os.Stdin, os.Stdout, os.Stderr = oldStdin, oldStdout, oldStderr }()
 
 	cmd := rootCommand()
 	cmd.Writer = io.Discard
@@ -355,18 +360,27 @@ func runRunCommand(t *testing.T, cfgPath string, stdin string, args ...string) (
 	if err := stdoutW.Close(); err != nil {
 		t.Fatalf("close stdout: %v", err)
 	}
-	var out bytes.Buffer
+	if err := stderrW.Close(); err != nil {
+		t.Fatalf("close stderr: %v", err)
+	}
+	var out, errBuf bytes.Buffer
 	if _, err := io.Copy(&out, stdoutR); err != nil {
 		t.Fatalf("read stdout: %v", err)
 	}
 	if err := stdoutR.Close(); err != nil {
 		t.Fatalf("close stdout: %v", err)
 	}
+	if _, err := io.Copy(&errBuf, stderrR); err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if err := stderrR.Close(); err != nil {
+		t.Fatalf("close stderr: %v", err)
+	}
 
 	if errOut.Len() > 0 {
-		return out.String(), errors.New(errOut.String())
+		return out.String(), errBuf.String(), errors.New(errOut.String())
 	}
-	return out.String(), runErr
+	return out.String(), errBuf.String(), runErr
 }
 
 // TestRunOneTurnCommand is the happy path: a literal prompt runs one turn
@@ -375,7 +389,7 @@ func TestRunOneTurnCommand(t *testing.T) {
 	srv := newFakeProviderServer(t)
 	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
 
-	out, err := runRunCommand(t, cfgPath, "", "say hi")
+	out, _, err := runRunCommand(t, cfgPath, "", "say hi")
 	if err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
@@ -400,7 +414,7 @@ func TestRunPromptFromFileCommand(t *testing.T) {
 	}
 	cfgPath := writeAgentConfig(t, dir, []string{"helper"}, "helper", srv.URL)
 
-	if _, err := runRunCommand(t, cfgPath, "", "@"+promptFile); err != nil {
+	if _, _, err := runRunCommand(t, cfgPath, "", "@"+promptFile); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 	if !strings.Contains(gotContent, `"content":"hello file"`) {
@@ -416,7 +430,7 @@ func TestRunPromptFromStdinCommand(t *testing.T) {
 		srv := requestCapturingProvider(t, &gotContent)
 		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
 
-		if _, err := runRunCommand(t, cfgPath, "piped prompt\n", "-"); err != nil {
+		if _, _, err := runRunCommand(t, cfgPath, "piped prompt\n", "-"); err != nil {
 			t.Fatalf("Run error = %v, want nil", err)
 		}
 		if !strings.Contains(gotContent, `"content":"piped prompt"`) {
@@ -429,7 +443,7 @@ func TestRunPromptFromStdinCommand(t *testing.T) {
 		srv := requestCapturingProvider(t, &gotContent)
 		cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
 
-		if _, err := runRunCommand(t, cfgPath, "piped prompt\n", "@-"); err != nil {
+		if _, _, err := runRunCommand(t, cfgPath, "piped prompt\n", "@-"); err != nil {
 			t.Fatalf("Run error = %v, want nil", err)
 		}
 		if !strings.Contains(gotContent, `"content":"piped prompt"`) {
@@ -458,7 +472,7 @@ func TestRunDoubleAtEscapeCommand(t *testing.T) {
 	srv := requestCapturingProvider(t, &gotContent)
 	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
 
-	if _, err := runRunCommand(t, cfgPath, "", "@@ @at-start"); err != nil {
+	if _, _, err := runRunCommand(t, cfgPath, "", "@@ @at-start"); err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 	if !strings.Contains(gotContent, `"content":"@ @at-start"`) {
@@ -472,7 +486,7 @@ func TestRunNoPromptArgIsUsageError(t *testing.T) {
 	srv := newFakeProviderServer(t)
 	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
 
-	_, err := runRunCommand(t, cfgPath, "")
+	_, _, err := runRunCommand(t, cfgPath, "")
 	if err == nil {
 		t.Fatal("run with no prompt succeeded, want a usage error")
 	}
@@ -488,7 +502,7 @@ func TestRunExtraArgsIsUsageError(t *testing.T) {
 	srv := requestCapturingProvider(t, &gotContent)
 	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
 
-	_, err := runRunCommand(t, cfgPath, "", "a", "b")
+	_, _, err := runRunCommand(t, cfgPath, "", "a", "b")
 	if err == nil {
 		t.Fatal("run with extra args succeeded, want a usage error")
 	}
@@ -506,7 +520,7 @@ func TestRunMissingPromptFileCommand(t *testing.T) {
 	srv := newFakeProviderServer(t)
 	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
 
-	_, err := runRunCommand(t, cfgPath, "", "@/no/such/prompt.txt")
+	_, _, err := runRunCommand(t, cfgPath, "", "@/no/such/prompt.txt")
 	if err == nil || !strings.Contains(err.Error(), "run: read prompt file") {
 		t.Errorf("error = %v, want the file read failure", err)
 	}
@@ -520,7 +534,7 @@ func TestRunNoStreamCommand(t *testing.T) {
 	srv := requestCapturingProvider(t, &gotContent)
 	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
 
-	out, err := runRunCommand(t, cfgPath, "", "--no-stream", "say hi")
+	out, _, err := runRunCommand(t, cfgPath, "", "--no-stream", "say hi")
 	if err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
@@ -546,7 +560,7 @@ func TestRunAgentFlagCommand(t *testing.T) {
 	srv := requestCapturingProvider(t, &gotContent)
 	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"alpha", "beta"}, "beta", srv.URL)
 
-	out, err := runRunCommand(t, cfgPath, "", "--agent", "alpha", "--no-stream", "hello")
+	out, _, err := runRunCommand(t, cfgPath, "", "--agent", "alpha", "--no-stream", "hello")
 	if err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
@@ -603,7 +617,7 @@ func TestRunToolOutputFlagCommand(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	out, runErr := runRunCommand(t, cfgPath, "", "--no-stream", "--tool-output", "run the tool")
+	out, _, runErr := runRunCommand(t, cfgPath, "", "--no-stream", "--tool-output", "run the tool")
 	if runErr != nil {
 		t.Fatalf("Run error = %v, want nil", runErr)
 	}
@@ -763,5 +777,106 @@ func TestRunPrefactorMissingEnvVarExits(t *testing.T) {
 	}
 	if got := errOut.String(); !strings.Contains(got, "prefactor") || !strings.Contains(got, "BLORB_TEST_PF_RUN_TOKEN") {
 		t.Errorf("error output %q missing the prefactor env-var mention", got)
+	}
+}
+
+// --- run --format flag tests ---
+
+// TestRunFormatFlagDefaults pins that the run command has a --format flag
+// defaulting to chat.
+func TestRunFormatFlagDefaults(t *testing.T) {
+	cmd := runCommand()
+
+	var format *cli.StringFlag
+	for _, f := range cmd.Flags {
+		if sf, ok := f.(*cli.StringFlag); ok && f.Names()[0] == "format" {
+			format = sf
+			break
+		}
+	}
+	if format == nil {
+		t.Fatalf("run has no format flag; flags = %+v", cmd.Flags)
+	}
+	if format.Value != run.FormatChat {
+		t.Errorf("format default = %q, want %q", format.Value, run.FormatChat)
+	}
+}
+
+// TestRunCommandHasNoNewFlags pins run's flag set: exactly 5 flags
+// (config, no-stream, tool-output, agent, format), so the set stays
+// deliberate.
+func TestRunCommandHasNoNewFlags(t *testing.T) {
+	cmd := runCommand()
+	if len(cmd.Flags) != 5 {
+		t.Errorf("run has %d flags, want 5 (config, no-stream, tool-output, agent, format): %+v", len(cmd.Flags), cmd.Flags)
+	}
+	var names []string
+	for _, f := range cmd.Flags {
+		names = append(names, f.Names()[0])
+	}
+	joined := strings.Join(names, ",")
+	for _, want := range []string{"config", "no-stream", "tool-output", "agent", "format"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("run flags = %q, want %q present", joined, want)
+		}
+	}
+}
+
+// TestRunFormatPlainCommand pins the CLI-level plain contract: stdout
+// carries only agent text; stderr carries headings, tool blocks, and the
+// footer.
+func TestRunFormatPlainCommand(t *testing.T) {
+	srv := newFakeProviderServer(t)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+	out, stderr, err := runRunCommand(t, cfgPath, "", "--format", "plain", "say hi")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if out != "hi" {
+		t.Errorf("stdout = %q, want exactly the agent text", out)
+	}
+	if !strings.Contains(stderr, ">>> Assistant:") {
+		t.Errorf("stderr = %q, want the heading on stderr", stderr)
+	}
+}
+
+// TestRunFormatNDJSONCommand pins the CLI-level ndjson contract: stdout
+// lines parse as the event stream ending in done.
+func TestRunFormatNDJSONCommand(t *testing.T) {
+	srv := newFakeProviderServer(t)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+	out, _, err := runRunCommand(t, cfgPath, "", "--format", "ndjson", "say hi")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	var last map[string]any
+	dec := json.NewDecoder(strings.NewReader(out))
+	for dec.More() {
+		var line map[string]any
+		if err := dec.Decode(&line); err != nil {
+			t.Fatalf("parsing ndjson line: %v\nstream:\n%s", err, out)
+		}
+		last = line
+	}
+	if last == nil || last["type"] != "done" {
+		t.Errorf("last line = %v, want the done event", last)
+	}
+}
+
+// TestRunFormatUnknownCommand pins that an unknown --format value fails
+// the run naming the value and the supported formats.
+func TestRunFormatUnknownCommand(t *testing.T) {
+	srv := newFakeProviderServer(t)
+	cfgPath := writeAgentConfig(t, t.TempDir(), []string{"helper"}, "helper", srv.URL)
+
+	_, _, err := runRunCommand(t, cfgPath, "", "--format", "yaml", "say hi")
+	if err == nil {
+		t.Fatal("run with an unknown format succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), `unknown format "yaml"`) || !strings.Contains(err.Error(), "chat, plain, ndjson") {
+		t.Errorf("error = %v, want the value and the supported formats", err)
 	}
 }

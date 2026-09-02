@@ -142,6 +142,11 @@ func runCommand() *cli.Command {
 				Name:  "agent",
 				Usage: "Name of the agent to run; defaults to the config's default_agent",
 			},
+			&cli.StringFlag{
+				Name:  "format",
+				Usage: "Output format: chat (default), plain, or ndjson",
+				Value: run.FormatChat,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			prompt, err := run.ResolvePrompt(cmd.Args().First(), os.Stdin)
@@ -185,10 +190,12 @@ func runCommand() *cli.Command {
 				Config:     cfg,
 				Agent:      agent,
 				Stdout:     os.Stdout,
+				Stderr:     os.Stderr,
 				Stream:     !cmd.Bool("no-stream"),
 				ToolOutput: cmd.Bool("tool-output"),
 				ConfigPath: cmd.String("config"),
 				Tracer:     tracer,
+				Format:     cmd.String("format"),
 			}, prompt)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
