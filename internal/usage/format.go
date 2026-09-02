@@ -5,27 +5,29 @@ import (
 	"strings"
 )
 
-// FormatTurn renders a per-turn footer line: the turn's total usage
-// with per-agent split when the account holds more than one agent.
-// The shape is:
+// FormatTurn renders a per-turn footer block: a horizontal-rule delimiter
+// followed by the turn's total usage, with per-agent split when the
+// account holds more than one agent. The shape is:
 //
-//	"tokens: 123 prompt, 456 completion, 579 total"
+//	---
+//	tokens: 123 prompt, 456 completion, 579 total
 //
 // and with multiple agents, one parenthesised item per agent:
 //
-//	"tokens: 123 prompt, 456 completion, 579 total (main: 100/300/400, worker: 23/156/179)"
+//	---
+//	tokens: 123 prompt, 456 completion, 579 total (main: 100/300/400, worker: 23/156/179)
 //
 // where each agent item is "name: prompt/completion/total". A zero total
 // still renders: it means the provider did not report usage, not that no
 // call happened.
 func FormatTurn(a *Account) string {
-	return "tokens: " + formatTotals(a)
+	return "---\ntokens: " + formatTotals(a)
 }
 
-// FormatSession renders the session totals line, same shape as
+// FormatSession renders the session totals block, same shape as
 // FormatTurn but prefixed "session tokens:" (chat prints it at exit).
 func FormatSession(a *Account) string {
-	return "session " + FormatTurn(a)
+	return "---\nsession tokens: " + formatTotals(a)
 }
 
 // formatTotals renders the shared "N prompt, N completion, N total" body,
