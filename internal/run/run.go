@@ -15,6 +15,7 @@ import (
 	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/tools"
+	"github.com/overspecific/blorb/internal/usage"
 )
 
 // Options configure a single run.
@@ -70,6 +71,14 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	}
 
 	printEvent, onSubagent, flush := chat.Events(opts.Stdout, opts.ToolOutput)
+
+	// Usage accounting: run deliberately mirrors chat's unexported
+	// wrappers rather than sharing them (same reasoning as newClient and
+	// isTerminated). One run is one turn, so the turn footer is the run's
+	// whole summary; there is no session line.
+	account := &usage.Account{}
+	turnEvent := usageWrap(printEvent, account)
+	onSubagent = runUsageWrap(onSubagent, account)
 
 	// One turn, no per-turn printer swap: onSubagent is wired directly.
 	registry, err := tools.NewRegistry(opts.Config.AgentTools(opts.Agent),
@@ -128,13 +137,20 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 
 	// With tracing, engine events map onto the turn's spans before
 	// printing; onSubagent stays the registry callback as without tracing.
-	turnEvent := printEvent
 	if turn != nil {
-		turnEvent = chat.TraceEvent(turn, printEvent)
+		turnEvent = chat.TraceEvent(turn, turnEvent)
 	}
 
 	final, runErr := eng.RunTurn(ctx, prompt, turnEvent)
 	flush()
+
+	// The footer prints for the calls that completed even on the error
+	// paths (interrupt, provider failure mid-loop): partial usage, then
+	// the outcome. A run cancelled before any call has no records and
+	// prints no footer.
+	if len(account.Records()) > 0 {
+		fmt.Fprintf(opts.Stdout, "%s\n", usage.FormatTurn(account))
+	}
 
 	err = mapTurnOutcome(turn, final, runErr, ctx)
 	if err == nil {

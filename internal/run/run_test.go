@@ -1338,3 +1338,186 @@ func TestResolveSinkMkdirFailure(t *testing.T) {
 		t.Errorf("error = %v, want a create-log-dir failure", err)
 	}
 }
+
+func TestRunUsageFooterHappyPath(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: []llm.Response{
+				{
+					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
+					FinishReason: llm.FinishStop,
+					Usage:        llm.Usage{PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46},
+				},
+			}}, nil
+		},
+	}, "hello there")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "the answer" {
+		t.Errorf("final = %q, want it unaffected by the footer", final)
+	}
+
+	out := stdout.String()
+	if !strings.HasSuffix(out, "tokens: 12 prompt, 34 completion, 46 total\n") {
+		t.Errorf("stdout = %q, want it to end with the usage footer", out)
+	}
+	if strings.Contains(out, "session tokens:") {
+		t.Errorf("stdout = %q, want no session line (run has no session totals)", out)
+	}
+}
+
+func TestRunUsageFooterToolRoundSummed(t *testing.T) {
+	t.Parallel()
+
+	cfg := runToolConfig(t)
+	responses := runToolResponses("echoer")
+	responses[0].Usage = llm.Usage{PromptTokens: 8, CompletionTokens: 2, TotalTokens: 10}
+	responses[1].Usage = llm.Usage{PromptTokens: 30, CompletionTokens: 4, TotalTokens: 34}
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: responses}, nil
+		},
+	}, "run it")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	// One footer with the turn's summed usage, not one per call.
+	if n := strings.Count(out, "tokens: 38 prompt, 6 completion, 44 total"); n != 1 {
+		t.Errorf("stdout = %q, want exactly one summed footer, got %d", out, n)
+	}
+	if strings.Contains(out, "tokens: 8 prompt") {
+		t.Errorf("stdout = %q, want no per-call footer", out)
+	}
+}
+
+func TestRunUsageFooterSubagentSplit(t *testing.T) {
+	t.Parallel()
+
+	cfg := runSubagentConfig(t)
+	parent := &runFakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_p", Type: "function", FunctionName: "ask_worker", FunctionArgs: `{"prompt":"do it"}`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+			Usage:        llm.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110},
+		},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "parent done"), FinishReason: llm.FinishStop,
+			Usage: llm.Usage{PromptTokens: 130, CompletionTokens: 20, TotalTokens: 150}},
+	}}
+	worker := &runFakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_w", Type: "function", FunctionName: "worker_tool", FunctionArgs: "{}"}},
+			},
+			FinishReason: llm.FinishToolCalls,
+			Usage:        llm.Usage{PromptTokens: 11, CompletionTokens: 2, TotalTokens: 13},
+		},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "worker result text"), FinishReason: llm.FinishStop,
+			Usage: llm.Usage{PromptTokens: 15, CompletionTokens: 3, TotalTokens: 18}},
+	}}
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		NewClient: func(agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	want := "tokens: 256 prompt, 35 completion, 291 total (parent: 230/30/260, worker: 26/5/31)"
+	if !strings.Contains(out, want) {
+		t.Errorf("stdout = %q, want the per-agent footer split %q", out, want)
+	}
+}
+
+func TestRunUsageFooterOnFailingRun(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent(), config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "echoer",
+		Description: "Echoes.",
+		Command:     []string{"true"},
+	})
+	responses := []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_1", Type: "function", FunctionName: "echoer", FunctionArgs: "{}"}},
+			},
+			FinishReason: llm.FinishToolCalls,
+			Usage:        llm.Usage{PromptTokens: 5, CompletionTokens: 6, TotalTokens: 11},
+		},
+		// The second call never arrives: the fake runs dry and the turn
+		// fails mid-loop after one usage-bearing call.
+	}
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			// One usage-bearing response, then the fake runs dry and the
+			// turn fails mid-loop.
+			return &runFakeClient{responses: responses}, nil
+		},
+	}, "hello")
+	if err == nil {
+		t.Fatal("Run succeeded, want a turn error")
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "tokens: 5 prompt, 6 completion, 11 total") {
+		t.Errorf("stdout = %q, want the partial footer for the call that completed", out)
+	}
+}
+
+func TestRunNoUsageNoFooterWhenCancelledBeforeAnyCall(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := run.Run(ctx, run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		NewClient: func(config.Agent) (llm.Client, error) {
+			return &runBlockingClient{started: make(chan struct{})}, nil
+		},
+	}, "hello")
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if out := stdout.String(); strings.Contains(out, "tokens:") {
+		t.Errorf("stdout = %q, want no footer for a run cancelled before any call", out)
+	}
+}
