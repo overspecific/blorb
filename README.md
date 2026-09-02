@@ -17,6 +17,7 @@ Tools are plain executables declared in the config, built-ins implemented inside
 - One-shot `run` mode: one prompt in, one agent turn out, for scripting — the prompt comes from a quoted argument, a file, or stdin
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
 - Tool results summarize by default in chat (a character and line count); `--tool-output` shows the full output, and failed results and subagent output always show in full
+- Token usage stats: every turn ends with a token footer (prompt/completion/total), chat prints session totals at exit, and subagent usage is itemised by agent in the footer's per-agent split
 - Full wire logging: every LLM request/response and tool call/result is written to a timestamped file per session, so a plain sort of the filenames replays a turn in order (see [Logging](#logging))
 - Tools as local subprocesses, built-ins (`read`, `grep`), or subagents — one agent delegating to another defined in the same config, with JSON Schema argument declarations
 - Any OpenAI-compatible chat completions endpoint as the LLM backend
@@ -86,6 +87,8 @@ Flags: `-c | --config <path>`, `--agent <name>`, `--no-stream` (disable streamed
 
 Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C while idle exits the session.
 
+Each turn ends with a token usage footer, e.g. `tokens: 123 prompt, 456 completion, 579 total` — with a per-agent split when subagents ran (see [Subagent tools](#tools)). When the session ends, chat prints the cumulative totals on a `session tokens: ...` line. A zero count means the provider did not report usage.
+
 ### One-shot runs
 
 `blorb run` executes exactly one agent turn and exits — the scripting counterpart to `chat`:
@@ -109,7 +112,7 @@ git diff | ./blorb run @-
 
 The prompt argument is required and exactly one is accepted: omitting it or passing extra arguments is a usage error (a scripting tool must not appear to hang when its arguments are forgotten, so stdin is only read when explicitly requested with `-` or `@-`).
 
-`run` takes the same flags as `chat` (`-c | --config <path>`, `--agent <name>`, `--no-stream`, `--tool-output`). The output format is currently identical to chat (including the `>>>` headings); additional output formats are planned.
+`run` takes the same flags as `chat` (`-c | --config <path>`, `--agent <name>`, `--no-stream`, `--tool-output`). The output format is currently identical to chat (including the `>>>` headings); additional output formats are planned. The run's output ends with the same per-turn token footer as a chat turn.
 
 Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
 
@@ -266,6 +269,7 @@ Execution semantics:
 - Subagent tools are exempt from the 30s per-tool timeout: the run is bounded by the subagent's own `max_turns` (and context cancellation).
 - Subagents can themselves use subagent tools (acyclically), so deep delegation is possible.
 - The chat interface shows the subagent's activity live — its assistant messages and tool calls — indented and labeled with the subagent's name, so you watch it work.
+- Subagent LLM calls are attributed to the subagent in the token footer's per-agent split (and in chat's session totals), so a turn's usage shows how much each agent spent.
 - Limitation: nested LLM calls inside subagents are not traced to Prefactor; only the parent agent's spans are recorded.
 
 ### Logging
