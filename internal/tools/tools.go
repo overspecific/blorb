@@ -54,7 +54,11 @@ type ToolResult struct {
 	Output string
 	Err    bool
 	// Usage itemises a subagent run's own LLM calls when the tool is a
-	// subagent tool; empty for all other tool types.
+	// subagent tool; empty for all other tool types. Session-level
+	// accounting consumes the SubagentUsage event path instead (the
+	// registry callback sees each nested call live); this field is for
+	// callers with no event callback, who would otherwise have no way
+	// to learn what the run spent.
 	Usage []SubagentUsageRecord
 }
 

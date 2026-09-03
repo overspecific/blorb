@@ -242,7 +242,10 @@ func (e *Engine) call(ctx context.Context, onEvent func(Event) error) (resp *llm
 		if sc, ok := e.cfg.Client.(llm.StreamingClient); ok {
 			resp, err := e.streamCall(ctx, sc, req, onEvent)
 			if err != nil {
-				return nil, true, err
+				// streamed is meaningless on failure (the caller
+				// discards resp), but false keeps the flag honest:
+				// no complete streamed response was produced.
+				return nil, false, err
 			}
 			// EventUsage is emitted once per completed LLM call; for
 			// streamed calls it arrives after the call's deltas, since

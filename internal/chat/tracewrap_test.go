@@ -33,6 +33,13 @@ type fakePFServer struct {
 	spanTerminate   bool
 	terminateReason string
 	terminated      bool
+	// terminateOnSchema, when non-empty, terminates on the span create
+	// whose schema_name matches, letting a test terminate at a chosen
+	// point mid-turn (usage recorded before it stays recorded).
+	terminateOnSchema string
+	// instanceFinishStatus, when non-zero, is served for the instance
+	// finish call, making the session exit fail after span recording.
+	instanceFinishStatus int
 }
 
 type pfCall struct {
@@ -53,16 +60,29 @@ func (f *fakePFServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	f.mu.Lock()
 	f.calls = append(f.calls, pfCall{Path: r.URL.Path, Body: body})
+	schema, _ := pfDetail(pfCall{Path: r.URL.Path, Body: body})["schema_name"].(string)
 	fail := f.spanFailStatus != 0 && r.URL.Path == "/agent_spans"
 	terminate := f.spanTerminate && !f.terminated && (r.URL.Path == "/agent_spans")
+	if !terminate && f.terminateOnSchema != "" && !f.terminated &&
+		r.URL.Path == "/agent_spans" && schema == f.terminateOnSchema {
+		terminate = true
+	}
 	if terminate {
 		f.terminated = true
 	}
+	instanceFinishFail := f.instanceFinishStatus != 0 &&
+		strings.HasPrefix(r.URL.Path, "/agent_instance/") && strings.HasSuffix(r.URL.Path, "/finish")
 	f.mu.Unlock()
 
 	if fail {
 		writeJSONPF(w, f.spanFailStatus, map[string]any{
 			"error": map[string]any{"code": "boom", "message": "nope"},
+		})
+		return
+	}
+	if instanceFinishFail {
+		writeJSONPF(w, f.instanceFinishStatus, map[string]any{
+			"error": map[string]any{"code": "boom", "message": "finish failed"},
 		})
 		return
 	}
@@ -142,6 +162,23 @@ func (f *fakePFServer) setSpanTerminate(reason string) {
 	defer f.mu.Unlock()
 	f.spanTerminate = true
 	f.terminateReason = reason
+}
+
+// setTerminateOnSchema terminates on the span create whose schema_name
+// matches, so a test can stop the session at a chosen point mid-turn.
+func (f *fakePFServer) setTerminateOnSchema(schema, reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminateOnSchema = schema
+	f.terminateReason = reason
+}
+
+// setInstanceFinishStatus fails the instance finish call with the given
+// HTTP status, so the session exits through the finish-failure path.
+func (f *fakePFServer) setInstanceFinishStatus(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.instanceFinishStatus = status
 }
 
 func itoa(i int) string {
@@ -705,6 +742,110 @@ func TestRunTracedTerminateMidTurn(t *testing.T) {
 		if strings.HasPrefix(c.Path, "/agent_instance/") {
 			t.Errorf("unexpected instance finish %v after termination", c.Body)
 		}
+	}
+}
+
+// TestRunTracedSessionTotalsBeforeTracerFinish verifies the session totals
+// line prints before the tracer finish: a platform terminate arriving
+// mid-turn — after the turn's LLM call completed and its usage was
+// recorded — still shows what the session spent.
+func TestRunTracedSessionTotalsBeforeTracerFinish(t *testing.T) {
+	f, srv := newFakePFServer(t)
+
+	cfg := testConfig(testAgent())
+	// Terminate on the blorb:assistant_message span create, which
+	// TraceEvent records after the LLM call (and its EventUsage) already
+	// completed: the session spent tokens before the platform stopped it.
+	f.setTerminateOnSchema("blorb:assistant_message", "operator stopped")
+
+	var stdout syncBuffer
+	o := chat.Options{Stdout: &stdout}
+	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
+		llm.Response{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "hi!"),
+			FinishReason: llm.FinishStop,
+			Usage:        llm.Usage{PromptTokens: 30, CompletionTokens: 12, TotalTokens: 42},
+		},
+	)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	session := "session tokens: 30 prompt, 12 completion, 42 total"
+	if !strings.Contains(out, session) {
+		t.Errorf("stdout = %q, want the session totals line %q", out, session)
+	}
+	if !strings.Contains(out, "stopped by platform") || !strings.Contains(out, "operator stopped") {
+		t.Errorf("stdout = %q, want the termination reason", out)
+	}
+	// The totals print before the termination notice: the exit lines are
+	// the stream's last words, in order.
+	if strings.Index(out, session) > strings.Index(out, "stopped by platform") {
+		t.Errorf("stdout = %q, want the session totals before the termination notice", out)
+	}
+}
+
+// TestRunTracedSessionTotalsOnFinishFailure verifies the session totals
+// line still prints when the tracer's FinishSession call fails: the tokens
+// were spent regardless of the tracer's IO.
+func TestRunTracedSessionTotalsOnFinishFailure(t *testing.T) {
+	f, srv := newFakePFServer(t)
+
+	cfg := testConfig(testAgent())
+	f.setInstanceFinishStatus(http.StatusInternalServerError)
+
+	var stdout syncBuffer
+	o := chat.Options{Stdout: &stdout}
+	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
+		llm.Response{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "hi!"),
+			FinishReason: llm.FinishStop,
+			Usage:        llm.Usage{PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14},
+		},
+	)
+
+	if err := chat.Run(context.Background(), o); err == nil {
+		t.Fatal("Run succeeded, want the FinishSession failure to surface")
+	}
+
+	out := stdout.String()
+	session := "session tokens: 10 prompt, 4 completion, 14 total"
+	if !strings.Contains(out, session) {
+		t.Errorf("stdout = %q, want the session totals line %q despite the tracer failure", out, session)
+	}
+}
+
+// TestRunTracedUsageFooterPerTurn verifies the per-turn footer prints in a
+// traced session: TraceEvent composes with the usage wrapper, and EventUsage
+// passes through tracing untouched to the recorder.
+func TestRunTracedUsageFooterPerTurn(t *testing.T) {
+	_, srv := newFakePFServer(t)
+
+	cfg := testConfig(testAgent())
+	var stdout syncBuffer
+	o := chat.Options{Stdout: &stdout}
+	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n",
+		llm.Response{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "hi!"),
+			FinishReason: llm.FinishStop,
+			Usage:        llm.Usage{PromptTokens: 25, CompletionTokens: 9, TotalTokens: 34},
+		},
+	)
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	footer := "tokens: 25 prompt, 9 completion, 34 total"
+	if !strings.Contains(out, footer) {
+		t.Errorf("stdout = %q, want the turn footer %q in traced chat", out, footer)
+	}
+	session := "session tokens: 25 prompt, 9 completion, 34 total"
+	if !strings.Contains(out, session) {
+		t.Errorf("stdout = %q, want the session totals line %q", out, session)
 	}
 }
 

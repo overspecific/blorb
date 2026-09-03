@@ -317,6 +317,14 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
+	// Session totals: best-effort output on the way out, printed on every
+	// exit — platform termination and failed sessions spent real tokens
+	// too — and before the tracer finish so a FinishSession failure
+	// cannot suppress it.
+	if len(sessAccount.Records()) > 0 {
+		fmt.Fprintf(opts.Stdout, "%s\n", usage.FormatSession(sessAccount))
+	}
+
 	// Finish the Prefactor instance to match the session outcome. On
 	// platform termination the instance is already marked server-side and
 	// a second finish would 409, so it is skipped.
@@ -340,12 +348,6 @@ func Run(ctx context.Context, opts Options) error {
 			}
 			return fmt.Errorf("chat: %w", err)
 		}
-	}
-
-	// Session totals: best-effort output on the way out, printed for both
-	// exits — a failed session's completed calls still spent tokens.
-	if len(sessAccount.Records()) > 0 {
-		fmt.Fprintf(opts.Stdout, "%s\n", usage.FormatSession(sessAccount))
 	}
 	return runErr
 }
