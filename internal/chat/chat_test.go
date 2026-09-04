@@ -1263,7 +1263,7 @@ func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
 		"system_prompt": "You are helpful.",
 		"max_turns":     5,
 		"provider": map[string]any{
-			"type":     "openai",
+			"type":     "openai-compatible",
 			"model":    "gpt-test",
 			"base_url": "placeholder",
 		},
@@ -1413,7 +1413,7 @@ func TestRunWritesLogFilesForToolRound(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeBlorbConfig(t, dir, map[string]any{
 		"provider": map[string]any{
-			"type":     "openai",
+			"type":     "openai-compatible",
 			"model":    "gpt-test",
 			"base_url": srv.URL,
 		},
@@ -1470,7 +1470,7 @@ func TestRunLoggingDisabledWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeBlorbConfig(t, dir, map[string]any{
 		"provider": map[string]any{
-			"type":     "openai",
+			"type":     "openai-compatible",
 			"model":    "gpt-test",
 			"base_url": srv.URL,
 		},
@@ -1503,7 +1503,7 @@ func TestRunCustomLogPath(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeBlorbConfig(t, dir, map[string]any{
 		"provider": map[string]any{
-			"type":     "openai",
+			"type":     "openai-compatible",
 			"model":    "gpt-test",
 			"base_url": srv.URL,
 		},
@@ -1550,7 +1550,7 @@ func TestRunSequentialSessionsGetDistinctLogDirs(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeBlorbConfig(t, dir, map[string]any{
 		"provider": map[string]any{
-			"type":     "openai",
+			"type":     "openai-compatible",
 			"model":    "gpt-test",
 			"base_url": srv.URL,
 		},

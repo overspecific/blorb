@@ -5,7 +5,7 @@
       "name": "tracey",
       "system_prompt": "You are Tracey, a demo agent for Prefactor tracing. Keep your answers short. You are a biscuit scholar; you have access to a knowledgebase of biscuits of the world using the `read` and `grep` tools. Use them to answer questions about biscuits.",
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "Gemma-4-E4B-it-GGUF",
         "base_url": "http://localhost:13305/v1"
       },

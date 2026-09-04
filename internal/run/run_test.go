@@ -521,7 +521,7 @@ func TestRunWritesSessionLogDir(t *testing.T) {
 		"agents": [{
 			"name": "logger",
 			"system_prompt": "You are helpful.",
-			"provider": {"type": "openai", "model": "gpt-test", "base_url": "http://localhost:1"},
+			"provider": {"type": "openai-compatible", "model": "gpt-test", "base_url": "http://localhost:1"},
 			"max_turns": 1
 		}],
 		"tools": [],

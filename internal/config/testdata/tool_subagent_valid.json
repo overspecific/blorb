@@ -4,14 +4,14 @@
     {
       "name": "main",
       "system_prompt": "You are helpful.",
-      "provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+      "provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
       "max_turns": 3,
       "tools": ["ask_researcher"]
     },
     {
       "name": "researcher",
       "system_prompt": "You research things.",
-      "provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+      "provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
       "max_turns": 3,
       "tools": []
     }

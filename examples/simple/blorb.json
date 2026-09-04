@@ -5,7 +5,7 @@
       "name": "simple",
       "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short. You love using your echo tool. You have no direct access to the biscuit knowledgebase or the clock: delegate biscuit questions to the biscuit scholar using the `ask_scholar` tool, and any time, date, or calendar question to the horologist using the `ask_horologist` tool. Relay their answers.",
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "Gemma-4-E4B-it-GGUF",
         "base_url": "http://localhost:13305/v1"
       },
@@ -18,7 +18,7 @@
       "max_turns": 10,
       "tools": ["read", "search"],
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "Gemma-4-E4B-it-GGUF",
         "base_url": "http://localhost:13305/v1"
       }
@@ -29,7 +29,7 @@
       "max_turns": 10,
       "tools": ["read", "grep"],
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "Gemma-4-E4B-it-GGUF",
         "base_url": "http://localhost:13305/v1"
       }
@@ -40,7 +40,7 @@
       "max_turns": 10,
       "tools": ["current_time", "calendar", "days_until"],
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "Gemma-4-E4B-it-GGUF",
         "base_url": "http://localhost:13305/v1"
       }

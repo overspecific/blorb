@@ -157,7 +157,7 @@ A `blorb.json` defines the agents and their shared tool vocabulary:
       "name": "simple",
       "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short.",
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "Gemma-4-E4B-it-GGUF",
         "base_url": "http://localhost:13305/v1",
         "api_key_env": "MY_API_KEY"
@@ -169,7 +169,7 @@ A `blorb.json` defines the agents and their shared tool vocabulary:
       "name": "quiet",
       "system_prompt": "You answer in one short sentence.",
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "Gemma-4-E4B-it-GGUF",
         "base_url": "http://localhost:13305/v1"
       },
@@ -233,11 +233,11 @@ Tools are shared vocabulary: they are declared once at the top level, and each a
 
 The `provider` object selects the LLM backend. The `type` discriminator determines which fields are recognized; this is the extension point for future backend types.
 
-Currently supported: `openai` — any OpenAI-compatible chat completions API (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...).
+Currently supported: `openai-compatible` — any OpenAI-compatible chat completions API (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...).
 
 | Field         | Required | Description                                                                                         |
 | ------------- | -------- | --------------------------------------------------------------------------------------------------- |
-| `type`        | yes      | Must be `openai`.                                                                                   |
+| `type`        | yes      | Must be `openai-compatible`.                                                                                   |
 | `model`       | yes      | Model name passed to the API.                                                                       |
 | `base_url`    | yes      | Base URL of the chat completions endpoint, e.g. `http://localhost:13305/v1`. Must be http or https. |
 | `api_key_env` | no       | Name of the environment variable containing the API key, if the endpoint needs one.                 |

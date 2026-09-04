@@ -237,7 +237,7 @@ func writeAgentConfig(t *testing.T, dir string, names []string, defaultAgent str
 			"name":          name,
 			"system_prompt": fmt.Sprintf("You are %s.", name),
 			"provider": map[string]any{
-				"type":     "openai",
+				"type":     "openai-compatible",
 				"model":    "model-" + name,
 				"base_url": baseURL,
 			},
@@ -598,7 +598,7 @@ func TestRunToolOutputFlagCommand(t *testing.T) {
 		"agents": []map[string]any{{
 			"name":          "helper",
 			"system_prompt": "You are helpful.",
-			"provider":      map[string]any{"type": "openai", "model": "m", "base_url": srv.URL},
+			"provider":      map[string]any{"type": "openai-compatible", "model": "m", "base_url": srv.URL},
 			"max_turns":     3,
 			"tools":         []string{"echo"},
 		}},
@@ -715,7 +715,7 @@ func TestChatPrefactorMissingEnvVarExits(t *testing.T) {
 			{
 				"name": "helper",
 				"system_prompt": "You are helpful.",
-				"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+				"provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
 				"max_turns": 1
 			}
 		],
@@ -754,7 +754,7 @@ func TestRunPrefactorMissingEnvVarExits(t *testing.T) {
 			{
 				"name": "helper",
 				"system_prompt": "You are helpful.",
-				"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+				"provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
 				"max_turns": 1
 			}
 		],

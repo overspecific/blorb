@@ -372,7 +372,7 @@ func TestLoadRejects(t *testing.T) {
 		{"agent_bad_name.json", []string{`agent name "has space" must match`}},
 		{"duplicate_agent_names.json", []string{"duplicate agent name"}},
 		{"agent_missing_system_prompt.json", []string{`agent "helper": system_prompt is required`}},
-		{"agent_invalid_provider.json", []string{"unknown type", "anthropic", "openai"}},
+		{"agent_invalid_provider.json", []string{"unknown type", "anthropic", "openai-compatible"}},
 		{"agent_bad_max_turns.json", []string{`agent "helper": max_turns must be at least 1 (got 0)`}},
 		{"agent_unknown_tool.json", []string{`agent "helper": unknown tool "nope"`}},
 		{"agent_duplicate_tool.json", []string{`agent "helper": duplicate tool "echo"`}},
@@ -538,7 +538,7 @@ func TestLoadBuiltinBaseDirRelativeToConfig(t *testing.T) {
 			"agents": [{
 				"name": "helper",
 				"system_prompt": "s",
-				"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+				"provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
 				"max_turns": 1
 			}],
 			"tools": [{
@@ -567,7 +567,7 @@ func TestLoadBuiltinBaseDirRelativeToConfig(t *testing.T) {
 			"agents": [{
 				"name": "helper",
 				"system_prompt": "s",
-				"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+				"provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
 				"max_turns": 1
 			}],
 			"tools": [{
@@ -617,7 +617,7 @@ func TestLoadErrors(t *testing.T) {
 
 	t.Run("trailing garbage", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "garbage.json")
-		if err := os.WriteFile(path, []byte(`{"agents":[{"name":"x","system_prompt":"s","provider":{"type":"openai","model":"m","base_url":"http://x"}}]} xyz`), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(`{"agents":[{"name":"x","system_prompt":"s","provider":{"type":"openai-compatible","model":"m","base_url":"http://x"}}]} xyz`), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 
@@ -657,7 +657,7 @@ func loggingConfig(t *testing.T, logging json.RawMessage) (config.Config, error)
 				{
 					"name": "helper",
 					"system_prompt": "You are helpful.",
-					"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+					"provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
 					"max_turns": 1
 				}
 			],
@@ -669,7 +669,7 @@ func loggingConfig(t *testing.T, logging json.RawMessage) (config.Config, error)
 				{
 					"name": "helper",
 					"system_prompt": "You are helpful.",
-					"provider": {"type": "openai", "model": "m", "base_url": "http://localhost:1"},
+					"provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
 					"max_turns": 1
 				}
 			]

@@ -4,7 +4,7 @@
       "name": "helper",
       "system_prompt": "You are helpful.",
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "gpt-4o-mini",
         "base_url": "https://api.example.com/v1"
       },

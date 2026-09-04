@@ -5,7 +5,7 @@
       "name": "main",
       "system_prompt": "You are helpful.",
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "m2",
         "base_url": "http://localhost:1"
       },
@@ -16,7 +16,7 @@
       "name": "quiet",
       "system_prompt": "You are helpful.",
       "provider": {
-        "type": "openai",
+        "type": "openai-compatible",
         "model": "gpt-4o-mini",
         "base_url": "https://api.example.com/v1"
       },

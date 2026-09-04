@@ -49,7 +49,7 @@ const (
 	DefaultLogDir = ".logs"
 
 	// ProviderTypeOpenAI selects an OpenAI-compatible chat completions API.
-	ProviderTypeOpenAI = "openai"
+	ProviderTypeOpenAI = "openai-compatible"
 
 	// DefaultPrefactorAPIURL is the Prefactor API base URL used when
 	// api_url is unset in the prefactor config block.
@@ -208,7 +208,7 @@ func (p *PrefactorConfig) validate() error {
 type Provider struct {
 	Type string `json:"type"`
 
-	// Fields for type "openai".
+	// Fields for type "openai-compatible".
 	Model   string `json:"model,omitempty"`
 	BaseURL string `json:"base_url,omitempty"`
 	// APIKeyEnv names the environment variable holding the API key. It is
