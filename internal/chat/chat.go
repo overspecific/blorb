@@ -55,16 +55,16 @@ func (p *subagentPipe) emit(ev tools.SubagentEvent) error {
 type Options struct {
 	Config config.Config
 	// Agent is the resolved agent definition the session runs: its
-	// system prompt, provider, and max turns drive the engine and client,
-	// and its name names the banner and the Prefactor agent.
+	// system prompt, named model, and max turns drive the engine and
+	// client, and its name names the banner and the Prefactor agent.
 	Agent      config.Agent
 	Version    string
 	Stdin      io.Reader
 	Stdout     io.Writer
-	NewClient  func(agent config.Agent) (llm.Client, error)
+	NewClient  func(cfg config.Config, agent config.Agent) (llm.Client, error)
 	SigintChan <-chan os.Signal
-	// Getenv overrides the environment lookup used to resolve
-	// provider.api_key_env; os.Getenv when nil. Tests only.
+	// Getenv overrides the environment lookup used to resolve the
+	// model's api_key_env; os.Getenv when nil. Tests only.
 	Getenv func(string) string
 	// Stream enables incremental rendering of assistant responses: when
 	// true and the client supports it, text, reasoning, and tool call
@@ -117,6 +117,13 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
+	// The resolved top-level model entry backs the agent's identity in
+	// banners and usage records below; the client is built from it.
+	model, ok := opts.Config.Model(opts.Agent.Model)
+	if !ok {
+		return fmt.Errorf("agent %q: model %q is not a defined model", opts.Agent.Name, opts.Agent.Model)
+	}
+
 	// The engine suppresses whole-message events when it streams; only
 	// claim streaming when the real (inner) client can stream — the
 	// holder implements ChatStream unconditionally, so asserting on it
@@ -160,7 +167,7 @@ func Run(ctx context.Context, opts Options) error {
 		MaxTurns:     opts.Agent.MaxTurnsOrDefault(),
 		Stream:       opts.Stream && streaming,
 		AgentName:    opts.Agent.Name,
-		Model:        opts.Agent.Provider.Model,
+		Model:        model.ModelName,
 	})
 
 	// Session-level tracing: register and start the Prefactor instance
@@ -260,7 +267,7 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
-	fmt.Fprintf(opts.Stdout, "blorb %s (%s, %s)\n", opts.Version, opts.Agent.Name, opts.Agent.Provider.Model)
+	fmt.Fprintf(opts.Stdout, "blorb %s (%s, %s)\n", opts.Version, opts.Agent.Name, model.ModelName)
 
 	input := make(chan inputResult, 1)
 	go readLines(opts.Stdin, input, done)
@@ -302,7 +309,7 @@ func Run(ctx context.Context, opts Options) error {
 					return sessionGraceful, nil
 				}
 
-				res, err := runTurn(ctx, opts, eng, holder, pipe, takeInterrupted, setTurn, r.line, sessAccount)
+				res, err := runTurn(ctx, opts, eng, holder, pipe, model, takeInterrupted, setTurn, r.line, sessAccount)
 				needHeading = true
 				if res == sessionTerminate || res == sessionFailure {
 					return res, err
@@ -362,6 +369,7 @@ func runTurn(
 	eng *engine.Engine,
 	holder *clientHolder,
 	pipe *subagentPipe,
+	model config.Model,
 	takeInterrupted func() bool,
 	setTurn func(context.CancelFunc),
 	line string,
@@ -394,7 +402,7 @@ func runTurn(
 		return tracerFailure(err)
 	}
 
-	holder.inner = NewTracingClient(holder.inner, turn, opts.Agent.Provider.Model)
+	holder.inner = NewTracingClient(holder.inner, turn, model.ModelName)
 	defer func() { holder.inner = unwrapTracingClient(holder.inner) }()
 
 	finalText, runErr := eng.RunTurn(turnCtx, line, TraceEvent(turn, printWrapped))
@@ -732,36 +740,40 @@ func resolveSink(opts Options) (logging.Sink, error) {
 	return opts.resolveSink()
 }
 
-// NewClient builds the LLM client described by an agent's provider,
-// switching on provider.type. When a second provider lands this graduates
-// to a registry map. getenv is the environment lookup, injectable for
-// tests; pass os.Getenv in production. sink receives LLM wire logs; nil
-// disables them.
-func NewClientWithGetenv(agent config.Agent, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
-	switch agent.Provider.Type {
-	case config.ProviderTypeOpenAI:
+// NewClientWithGetenv builds the LLM client described by the named
+// top-level model entry, switching on the model's type. When a second
+// model type lands this graduates to a registry map. getenv is the
+// environment lookup, injectable for tests; pass os.Getenv in
+// production. sink receives LLM wire logs; nil disables them.
+func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+	model, ok := cfg.Model(agent.Model)
+	if !ok {
+		return nil, fmt.Errorf("agent %q: model %q is not a defined model", agent.Name, agent.Model)
+	}
+	switch model.Type {
+	case config.ModelTypeOpenAI:
 		apiKey := ""
-		if envName := agent.Provider.APIKeyEnvOrDefault(); envName != "" {
+		if envName := model.APIKeyEnvOrDefault(); envName != "" {
 			apiKey = getenv(envName)
 			if apiKey == "" {
 				return nil, fmt.Errorf("api_key_env %q is set but the environment variable is empty", envName)
 			}
 		}
 		return openai.New(openai.Config{
-			BaseURL: agent.Provider.BaseURL,
-			Model:   agent.Provider.Model,
+			BaseURL: model.BaseURL,
+			Model:   model.ModelName,
 			APIKey:  apiKey,
 			Sink:    sink,
 		})
 	default:
-		return nil, fmt.Errorf("provider type %q is not supported (supported: %v)", agent.Provider.Type, config.SupportedProviderTypes())
+		return nil, fmt.Errorf("model type %q is not supported (supported: %v)", model.Type, config.SupportedModelTypes())
 	}
 }
 
-// NewClient builds the LLM client described by an agent's provider using
-// os.Getenv.
-func NewClient(agent config.Agent) (llm.Client, error) {
-	return NewClientWithGetenv(agent, os.Getenv, logging.NewNop())
+// NewClient builds the LLM client described by the named top-level model
+// entry using os.Getenv.
+func NewClient(cfg config.Config, agent config.Agent) (llm.Client, error) {
+	return NewClientWithGetenv(cfg, agent, os.Getenv, logging.NewNop())
 }
 
 func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
@@ -769,16 +781,16 @@ func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
 }
 
 // newClientFor builds the LLM client for any agent: the injected NewClient
-// factory when set, else the real provider path with the injected getenv.
+// factory when set, else the real model path with the injected getenv.
 func (o Options) newClientFor(agent config.Agent, sink logging.Sink) (llm.Client, error) {
 	if o.NewClient != nil {
-		return o.NewClient(agent)
+		return o.NewClient(o.Config, agent)
 	}
 	getenv := o.Getenv
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	return NewClientWithGetenv(agent, getenv, sink)
+	return NewClientWithGetenv(o.Config, agent, getenv, sink)
 }
 
 // subagentRunner builds the engine-backed runner for the session's config.
@@ -788,7 +800,7 @@ func (o Options) newClientFor(agent config.Agent, sink logging.Sink) (llm.Client
 func (o Options) subagentRunner(sink logging.Sink, streaming bool) *engine.SubagentRunner {
 	return engine.NewSubagentRunner(engine.SubagentRunnerConfig{
 		Config: o.Config,
-		NewClient: func(agent config.Agent) (llm.Client, error) {
+		NewClient: func(cfg config.Config, agent config.Agent) (llm.Client, error) {
 			return o.newClientFor(agent, sink)
 		},
 		Stream: o.Stream && streaming,

@@ -1,27 +1,36 @@
 {
   "default_agent": "main",
+  "models": [
+    {
+      "name": "m2",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "model_name": "m2"
+    },
+    {
+      "name": "gpt-4o-mini",
+      "type": "openai-compatible",
+      "base_url": "https://api.example.com/v1",
+      "model_name": "gpt-4o-mini"
+    }
+  ],
   "agents": [
     {
       "name": "main",
       "system_prompt": "You are helpful.",
-      "provider": {
-        "type": "openai-compatible",
-        "model": "m2",
-        "base_url": "http://localhost:1"
-      },
       "max_turns": 3,
-      "tools": ["echo", "read_fixture"]
+      "tools": [
+        "echo",
+        "read_fixture"
+      ],
+      "model": "m2"
     },
     {
       "name": "quiet",
       "system_prompt": "You are helpful.",
-      "provider": {
-        "type": "openai-compatible",
-        "model": "gpt-4o-mini",
-        "base_url": "https://api.example.com/v1"
-      },
       "max_turns": 1,
-      "tools": []
+      "tools": [],
+      "model": "gpt-4o-mini"
     }
   ],
   "tools": [
@@ -29,15 +38,22 @@
       "type": "command",
       "name": "echo",
       "description": "Return a greeting.",
-      "command": ["echo", "hello"],
-      "args_schema": {"type": "object"}
+      "command": [
+        "echo",
+        "hello"
+      ],
+      "args_schema": {
+        "type": "object"
+      }
     },
     {
       "type": "builtin",
       "name": "read_fixture",
       "description": "Read a fixture file.",
       "builtin": "read",
-      "config": {"base_dir": "."}
+      "config": {
+        "base_dir": "."
+      }
     }
   ]
 }

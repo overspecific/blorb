@@ -48,8 +48,8 @@ const (
 	// .logs directory next to the config file.
 	DefaultLogDir = ".logs"
 
-	// ProviderTypeOpenAI selects an OpenAI-compatible chat completions API.
-	ProviderTypeOpenAI = "openai-compatible"
+	// ModelTypeOpenAI selects an OpenAI-compatible chat completions API.
+	ModelTypeOpenAI = "openai-compatible"
 
 	// DefaultPrefactorAPIURL is the Prefactor API base URL used when
 	// api_url is unset in the prefactor config block.
@@ -60,9 +60,13 @@ const (
 	DefaultPrefactorTokenEnv = "PREFACTOR_API_TOKEN"
 )
 
-// Config is the top-level blorb.json schema. It declares the shared tool
-// vocabulary once and a set of named agents that reference those tools.
+// Config is the top-level blorb.json schema. It declares the shared
+// model and tool vocabularies once and a set of named agents that
+// reference them by name.
 type Config struct {
+	// Models is the required, non-empty list of named LLM backends.
+	// Agents reference them by name; the declarations live here, once.
+	Models []Model `json:"models"`
 	// Agents is the required, non-empty list of agent definitions. Agent
 	// names carry identity: commands resolve an agent by name, the chat
 	// banner and Prefactor registrations use it.
@@ -85,8 +89,8 @@ type Config struct {
 
 // Agent is one named agent definition inside a config. It owns the
 // agent-scoped settings and lists, by name, the top-level tools it may
-// use; tool definitions themselves live once at the top level and are
-// shared.
+// use and the top-level model it talks to; the model and tool
+// definitions themselves live once at the top level and are shared.
 type Agent struct {
 	// Name identifies the agent within the config. It feeds the chat
 	// banner, the chat command's agent argument, and Prefactor's agent
@@ -94,8 +98,9 @@ type Agent struct {
 	Name string `json:"name"`
 	// SystemPrompt is the agent's system prompt.
 	SystemPrompt string `json:"system_prompt"`
-	// Provider describes the LLM backend for this agent.
-	Provider Provider `json:"provider"`
+	// Model names the top-level model entry this agent talks to. It must
+	// be a defined model in the same config (see Config.AgentModel).
+	Model string `json:"model"`
 	// MaxTurns bounds the agent's per-turn tool round trips; 0 means
 	// DefaultMaxTurns (see MaxTurnsOrDefault).
 	MaxTurns int `json:"max_turns,omitempty"`
@@ -201,16 +206,23 @@ func (p *PrefactorConfig) validate() error {
 	return nil
 }
 
-// Provider is the provider object, the extension point for multiple LLM
-// backends. The Type discriminator determines which other fields are
-// recognized; per-type parsing and validation lives here rather than being
-// flattened onto Config so future provider types can add their own fields.
-type Provider struct {
-	Type string `json:"type"`
+// Model is one named LLM backend declaration in blorb.json. The Type
+// discriminator determines which other fields are recognized; per-type
+// parsing and validation lives here rather than being flattened onto
+// Config so future model types can add their own fields. Agents
+// reference models by name; the declarations live once at the top level
+// and are shared.
+type Model struct {
+	// Name identifies the model within the config: what agents put in
+	// their model field. It is free-form to the config author —
+	// it does not feed the API or the agent identity — and must be
+	// unique within the config.
+	Name string `json:"name"`
 
 	// Fields for type "openai-compatible".
-	Model   string `json:"model,omitempty"`
-	BaseURL string `json:"base_url,omitempty"`
+	Type      string `json:"type"`
+	ModelName string `json:"model_name,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
 	// APIKeyEnv names the environment variable holding the API key. It is
 	// a pointer so an explicit "api_key_env": "" is distinguishable from
 	// an absent field: empty is a config error, absent means no key.
@@ -218,11 +230,11 @@ type Provider struct {
 }
 
 // APIKeyEnvOrDefault returns the configured api_key_env, or "" when unset.
-func (p *Provider) APIKeyEnvOrDefault() string {
-	if p.APIKeyEnv == nil {
+func (m *Model) APIKeyEnvOrDefault() string {
+	if m.APIKeyEnv == nil {
 		return ""
 	}
-	return *p.APIKeyEnv
+	return *m.APIKeyEnv
 }
 
 // ToolEntry is a tool declaration in blorb.json. The Type discriminator
@@ -277,9 +289,9 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// SupportedProviderTypes lists the provider types this build recognizes.
-func SupportedProviderTypes() []string {
-	return []string{ProviderTypeOpenAI}
+// SupportedModelTypes lists the model types this build recognizes.
+func SupportedModelTypes() []string {
+	return []string{ModelTypeOpenAI}
 }
 
 // MaxTurnsOrDefault returns MaxTurns, or DefaultMaxTurns when unset (zero).
@@ -299,6 +311,18 @@ func (c Config) Agent(name string) (Agent, bool) {
 		}
 	}
 	return Agent{}, false
+}
+
+// Model returns the named model definition and whether it exists in the
+// config. Agents reference models by name; callers resolve the named
+// entry before building an LLM client.
+func (c Config) Model(name string) (Model, bool) {
+	for _, m := range c.Models {
+		if m.Name == name {
+			return m, true
+		}
+	}
+	return Model{}, false
 }
 
 // DefaultAgentName returns the configured default agent name and whether
@@ -331,6 +355,20 @@ func (c Config) AgentTools(a Agent) []ToolEntry {
 
 // Validate checks all required fields and value constraints.
 func (c *Config) Validate() error {
+	if c.Models == nil {
+		return fmt.Errorf("models is required")
+	}
+	if len(c.Models) == 0 {
+		return fmt.Errorf("models must not be empty")
+	}
+	for _, m := range c.Models {
+		if err := m.validate(); err != nil {
+			return fmt.Errorf("model %q: %w", m.Name, err)
+		}
+	}
+	if err := validateUniqueModelNames(c.Models); err != nil {
+		return err
+	}
 	if c.Agents == nil {
 		return fmt.Errorf("agents is required")
 	}
@@ -347,7 +385,7 @@ func (c *Config) Validate() error {
 	}
 	seen := make(map[string]struct{}, len(c.Agents))
 	for _, a := range c.Agents {
-		if err := a.validate(c.Tools); err != nil {
+		if err := a.validate(c.Models, c.Tools); err != nil {
 			return err
 		}
 		if _, ok := seen[a.Name]; ok {
@@ -466,10 +504,11 @@ func (c *Config) validateSubagentCycles() error {
 	return nil
 }
 
-// validate checks one agent definition: its name, settings, and that every
-// tool it lists exists in the config's top-level tool declarations. tools
-// are the already-validated top-level entries the agent references by name.
-func (a *Agent) validate(tools []ToolEntry) error {
+// validate checks one agent definition: its name, settings, and that the
+// model it names and every tool it lists exist in the config's top-level
+// declarations. models and tools are the already-validated top-level
+// entries the agent references by name.
+func (a *Agent) validate(models []Model, tools []ToolEntry) error {
 	if a.Name == "" {
 		return fmt.Errorf("agent name is required")
 	}
@@ -479,8 +518,11 @@ func (a *Agent) validate(tools []ToolEntry) error {
 	if a.SystemPrompt == "" {
 		return fmt.Errorf("agent %q: system_prompt is required", a.Name)
 	}
-	if err := a.Provider.validate(); err != nil {
-		return fmt.Errorf("agent %q: provider: %w", a.Name, err)
+	if a.Model == "" {
+		return fmt.Errorf("agent %q: model is required", a.Name)
+	}
+	if !slices.ContainsFunc(models, func(m Model) bool { return m.Name == a.Model }) {
+		return fmt.Errorf("agent %q: model %q is not a defined model", a.Name, a.Model)
 	}
 	if a.MaxTurns < 1 {
 		return fmt.Errorf("agent %q: max_turns must be at least 1 (got %d)", a.Name, a.MaxTurns)
@@ -511,27 +553,30 @@ func (l *LogConfig) validate() error {
 	return nil
 }
 
-func (p *Provider) validate() error {
-	switch p.Type {
-	case ProviderTypeOpenAI:
-		if p.Model == "" {
-			return fmt.Errorf("model is required")
+func (m *Model) validate() error {
+	if m.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	switch m.Type {
+	case ModelTypeOpenAI:
+		if m.ModelName == "" {
+			return fmt.Errorf("model_name is required")
 		}
-		u, err := url.Parse(p.BaseURL)
+		u, err := url.Parse(m.BaseURL)
 		if err != nil {
-			return fmt.Errorf("base_url %q: %w", p.BaseURL, err)
+			return fmt.Errorf("base_url %q: %w", m.BaseURL, err)
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("base_url %q must use http or https scheme", p.BaseURL)
+			return fmt.Errorf("base_url %q must use http or https scheme", m.BaseURL)
 		}
 		if u.Host == "" {
-			return fmt.Errorf("base_url %q must include a host", p.BaseURL)
+			return fmt.Errorf("base_url %q must include a host", m.BaseURL)
 		}
-		if p.APIKeyEnv != nil && *p.APIKeyEnv == "" {
+		if m.APIKeyEnv != nil && *m.APIKeyEnv == "" {
 			return fmt.Errorf("api_key_env must not be empty when set")
 		}
 	default:
-		return fmt.Errorf("unknown type %q (supported: %v)", p.Type, SupportedProviderTypes())
+		return fmt.Errorf("unknown type %q (supported: %v)", m.Type, SupportedModelTypes())
 	}
 	return nil
 }
@@ -622,6 +667,17 @@ func validateUniqueToolNames(tools []ToolEntry) error {
 			return fmt.Errorf("duplicate tool name %q", t.Name)
 		}
 		seen[t.Name] = struct{}{}
+	}
+	return nil
+}
+
+func validateUniqueModelNames(models []Model) error {
+	seen := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		if _, ok := seen[m.Name]; ok {
+			return fmt.Errorf("duplicate model name %q", m.Name)
+		}
+		seen[m.Name] = struct{}{}
 	}
 	return nil
 }

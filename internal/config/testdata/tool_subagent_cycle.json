@@ -1,19 +1,31 @@
 {
   "default_agent": "a",
+  "models": [
+    {
+      "name": "m",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "model_name": "m"
+    }
+  ],
   "agents": [
     {
       "name": "a",
       "system_prompt": "Agent a.",
-      "provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
       "max_turns": 3,
-      "tools": ["ask_b"]
+      "tools": [
+        "ask_b"
+      ],
+      "model": "m"
     },
     {
       "name": "b",
       "system_prompt": "Agent b.",
-      "provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
       "max_turns": 3,
-      "tools": ["ask_a"]
+      "tools": [
+        "ask_a"
+      ],
+      "model": "m"
     }
   ],
   "tools": [

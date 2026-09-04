@@ -7,5 +7,11 @@
       "model_name": "m"
     }
   ],
-  "agents": []
+  "agents": [
+    {
+      "name": "helper",
+      "system_prompt": "You are helpful.",
+      "max_turns": 1
+    }
+  ]
 }

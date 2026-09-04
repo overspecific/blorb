@@ -19,7 +19,16 @@ import (
 func subagentConfig(t *testing.T, agents map[string]string, delegations map[string]string, grants map[string][]string, maxTurns map[string]int) config.Config {
 	t.Helper()
 
-	cfg := config.Config{Agents: []config.Agent{}, Tools: []config.ToolEntry{}}
+	cfg := config.Config{
+		Models: []config.Model{{
+			Name:      "m",
+			Type:      config.ModelTypeOpenAI,
+			ModelName: "m",
+			BaseURL:   "http://localhost:1",
+		}},
+		Agents: []config.Agent{},
+		Tools:  []config.ToolEntry{},
+	}
 	for name, prompt := range agents {
 		maxTurnsFor := maxTurns[name]
 		if maxTurnsFor == 0 {
@@ -28,13 +37,9 @@ func subagentConfig(t *testing.T, agents map[string]string, delegations map[stri
 		cfg.Agents = append(cfg.Agents, config.Agent{
 			Name:         name,
 			SystemPrompt: prompt,
-			Provider: config.Provider{
-				Type:    config.ProviderTypeOpenAI,
-				Model:   "m",
-				BaseURL: "http://localhost:1",
-			},
-			MaxTurns: maxTurnsFor,
-			Tools:    grants[name],
+			Model:        "m",
+			MaxTurns:     maxTurnsFor,
+			Tools:        grants[name],
 		})
 	}
 	for toolName, target := range delegations {
@@ -84,7 +89,7 @@ type clientFactory struct {
 	err     error
 }
 
-func (f *clientFactory) newClient(agent config.Agent) (llm.Client, error) {
+func (f *clientFactory) newClient(_ config.Config, agent config.Agent) (llm.Client, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

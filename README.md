@@ -12,7 +12,7 @@ Tools are plain executables declared in the config, built-ins implemented inside
 
 ## Features
 
-- One `blorb.json` defines any number of named agents, each with its own system prompt, provider, and tool grants
+- One `blorb.json` defines any number of named agents, each with its own system prompt, named model, and tool grants
 - Interactive chat REPL with multi-turn tool calling, running a chosen agent per invocation
 - One-shot `run` mode: one prompt in, one agent turn out, for scripting — the prompt comes from a quoted argument, a file, or stdin, with `--format plain` (agent text only on stdout, progress on stderr) and `--format ndjson` (streaming JSON events) alongside the chat-style default
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
@@ -44,7 +44,7 @@ Tools are plain executables declared in the config, built-ins implemented inside
 
    This produces the `blorb` binary in the repo root.
 
-4. Run the example agent. It talks to whatever OpenAI-compatible chat completions endpoint you point it at, so adjust `base_url` and `model` in [examples/simple/blorb.json](examples/simple/blorb.json) to match yours (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...):
+4. Run the example agent. It talks to whatever OpenAI-compatible chat completions endpoint you point it at, so adjust `base_url` and `model_name` in the `models` list in [examples/simple/blorb.json](examples/simple/blorb.json) to match yours (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...):
 
    ```sh
    ./blorb chat --config examples/simple/blorb.json
@@ -147,32 +147,32 @@ Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
 
 ## Configuration
 
-A `blorb.json` defines the agents and their shared tool vocabulary:
+A `blorb.json` defines the shared model and tool vocabularies and the agents that use them:
 
 ```json
 {
   "default_agent": "simple",
+  "models": [
+    {
+      "name": "local-gemma",
+      "type": "openai-compatible",
+      "model": "Gemma-4-E4B-it-GGUF",
+      "base_url": "http://localhost:13305/v1",
+      "api_key_env": "MY_API_KEY"
+    }
+  ],
   "agents": [
     {
       "name": "simple",
       "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short.",
-      "provider": {
-        "type": "openai-compatible",
-        "model": "Gemma-4-E4B-it-GGUF",
-        "base_url": "http://localhost:13305/v1",
-        "api_key_env": "MY_API_KEY"
-      },
+      "model": "local-gemma",
       "max_turns": 10,
       "tools": ["echo", "read"]
     },
     {
       "name": "quiet",
       "system_prompt": "You answer in one short sentence.",
-      "provider": {
-        "type": "openai-compatible",
-        "model": "Gemma-4-E4B-it-GGUF",
-        "base_url": "http://localhost:13305/v1"
-      },
+      "model": "local-gemma",
       "tools": ["echo"]
     }
   ],
@@ -207,40 +207,50 @@ With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb c
 
 | Field           | Required | Description                                                                        |
 | --------------- | -------- | ------------------------------------------------------------------------------------ |
+| `models`        | yes      | The named LLM backend declarations (see below).                                       |
 | `agents`        | yes      | The agent definitions (see below).                                                   |
 | `default_agent` | no       | Name of the agent commands use when none is given; must name a defined agent.        |
 | `tools`         | no       | Top-level tool declarations, shared across agents (see below).                       |
 | `logging`       | no       | Wire logging config (see below).                                                     |
 | `prefactor`     | no       | Prefactor tracing config (see below).                                                |
 
-### Agents
+### Models
 
-Each agent definition carries its own settings and the names of the top-level tools it may use:
+Each model entry declares one named LLM backend. Agents reference it by name in their `model` field; the declarations live once at the top level and are shared.
 
-| Field           | Required | Description                                                                                    |
-| --------------- | -------- | ----------------------------------------------------------------------------------------------- |
-| `name`          | yes      | Unique within the config; must match `^[a-zA-Z0-9_-]+$`. Shown in the chat banner, registered with Prefactor, and what the `--agent` flag of `blorb chat` takes. |
-| `system_prompt` | yes      | The agent's system prompt.                                                                       |
-| `provider`      | yes      | LLM backend config (see below).                                                                  |
-| `max_turns`     | yes      | Max model turns per user message; must be at least 1.                                            |
-| `tools`         | no       | The *names* of the top-level tools this agent may use. Absent or empty means no tools.           |
-
-Tools are shared vocabulary: they are declared once at the top level, and each agent lists, by name, the ones it may use. An agent listing an unknown tool is a config error, and listing the same tool twice within one agent is an error too. The listed order is the agent's — that is the order the tools are presented to the model. Agent names must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
-
-`default_agent` is optional; when set it must name a defined agent, and when absent `blorb chat` requires an explicit `--agent`.
-
-### Provider
-
-The `provider` object selects the LLM backend. The `type` discriminator determines which fields are recognized; this is the extension point for future backend types.
+The `type` discriminator determines which fields are recognized; this is the extension point for future backend types.
 
 Currently supported: `openai-compatible` — any OpenAI-compatible chat completions API (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...).
 
 | Field         | Required | Description                                                                                         |
 | ------------- | -------- | --------------------------------------------------------------------------------------------------- |
-| `type`        | yes      | Must be `openai-compatible`.                                                                                   |
-| `model`       | yes      | Model name passed to the API.                                                                       |
-| `base_url`    | yes      | Base URL of the chat completions endpoint, e.g. `http://localhost:13305/v1`. Must be http or https. |
-| `api_key_env` | no       | Name of the environment variable containing the API key, if the endpoint needs one.                 |
+| `name`        | yes      | Identifier agents reference; unique within the config, and free-form to the config author.           |
+| `type`        | yes      | Must be `openai-compatible`.                                                                         |
+| `model_name`  | yes      | Model name passed to the API.                                                                        |
+| `base_url`    | yes      | Base URL of the chat completions endpoint, e.g. `http://localhost:13305/v1`. Must be http or https.  |
+| `api_key_env` | no       | Name of the environment variable containing the API key, if the endpoint needs one.                  |
+
+### Agents
+
+Each agent definition carries its own settings and the names of the top-level model and tools it uses:
+
+| Field           | Required | Description                                                                                    |
+| --------------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `name`          | yes      | Unique within the config; must match `^[a-zA-Z0-9_-]+$`. Shown in the chat banner, registered with Prefactor, and what the `--agent` flag of `blorb chat` takes. |
+| `system_prompt` | yes      | The agent's system prompt.                                                                       |
+| `model`         | yes      | Name of the top-level model entry this agent talks to.                                          |
+| `max_turns`     | yes      | Max model turns per user message; must be at least 1.                                            |
+| `tools`         | no       | The *names* of the top-level tools this agent may use. Absent or empty means no tools.           |
+
+Tools are shared vocabulary: they are declared once at the top level, and each agent lists, by name, the ones it may use. An agent listing an unknown tool is a config error, and listing the same tool twice within one agent is an error too. The listed order is the agent's — that is the order the tools are presented to the model. Agent names must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
+
+Models work the same way: an agent's `model` must name a defined top-level model entry.
+
+`default_agent` is optional; when set it must name a defined agent, and when absent `blorb chat` requires an explicit `--agent`.
+
+### Provider
+
+Removed in favor of the top-level `models` list (see [Models](#models)).
 
 ### Tools
 
@@ -364,7 +374,7 @@ blorb chat
 
 ## Examples
 
-See [examples/simple](examples/simple) for a two-agent config sharing one tool set: `echo` and `current_time` command tools and `read`/`grep` builtins (pointed at the example's `knowledgebase/` directory), with `scholar` granted only the knowledgebase builtins, including notes on pointing the provider at different OpenAI-compatible servers.
+See [examples/simple](examples/simple) for a two-agent config sharing one tool set: `echo` and `current_time` command tools and `read`/`grep` builtins (pointed at the example's `knowledgebase/` directory), with `scholar` granted only the knowledgebase builtins, including notes on pointing the model at different OpenAI-compatible servers.
 
 See [examples/prefactor-tracing](examples/prefactor-tracing) for a single-agent variant with just the `read`/`grep` builtins (sharing simple's `knowledgebase/`) and Prefactor tracing enabled.
 

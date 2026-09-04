@@ -1,1 +1,10 @@
-{}
+{
+  "models": [
+    {
+      "name": "m",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "model_name": "m"
+    }
+  ]
+}

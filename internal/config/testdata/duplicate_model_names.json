@@ -1,0 +1,24 @@
+{
+  "models": [
+    {
+      "name": "m",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "model_name": "m"
+    },
+    {
+      "name": "m",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "model_name": "m2"
+    }
+  ],
+  "agents": [
+    {
+      "name": "helper",
+      "system_prompt": "You are helpful.",
+      "max_turns": 1,
+      "model": "m"
+    }
+  ]
+}

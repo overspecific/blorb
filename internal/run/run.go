@@ -22,7 +22,7 @@ import (
 type Options struct {
 	Config config.Config
 	// Agent is the resolved agent definition the run executes: its system
-	// prompt, provider, and max turns drive the engine and client.
+	// prompt, named model, and max turns drive the engine and client.
 	Agent  config.Agent
 	Stdout io.Writer
 	// Stderr receives diagnostics for the plain and ndjson formats:
@@ -31,11 +31,11 @@ type Options struct {
 	// format ignores it and always uses Stdout.
 	Stderr io.Writer
 	// NewClient overrides the LLM client construction. Tests only; nil
-	// builds the real client from the agent's provider. It mirrors
+	// builds the real client from the agent's named model. It mirrors
 	// chat.Options.NewClient.
-	NewClient func(agent config.Agent) (llm.Client, error)
-	// Getenv overrides the environment lookup used to resolve
-	// provider.api_key_env; os.Getenv when nil. Tests only.
+	NewClient func(cfg config.Config, agent config.Agent) (llm.Client, error)
+	// Getenv overrides the environment lookup used to resolve the
+	// model's api_key_env; os.Getenv when nil. Tests only.
 	Getenv func(string) string
 	// Stream enables incremental rendering of assistant responses: when
 	// true and the client supports it, text, reasoning, and tool call
@@ -73,6 +73,13 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	client, err := opts.newClient(sink)
 	if err != nil {
 		return "", err
+	}
+
+	// The resolved top-level model entry backs the tracing wrapper and
+	// engine below; the client is built from it.
+	model, ok := opts.Config.Model(opts.Agent.Model)
+	if !ok {
+		return "", fmt.Errorf("agent %q: model %q is not a defined model", opts.Agent.Name, opts.Agent.Model)
 	}
 
 	// The engine suppresses whole-message events when it streams; only
@@ -131,7 +138,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		// The streaming check above ran on the raw client; re-asserting on
 		// the wrapper would always succeed because tracingClient
 		// implements ChatStream unconditionally.
-		client = chat.NewTracingClient(client, turn, opts.Agent.Provider.Model)
+		client = chat.NewTracingClient(client, turn, model.ModelName)
 	}
 
 	// The engine is built here (not before the tracing block) so the
@@ -144,7 +151,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		MaxTurns:     opts.Agent.MaxTurnsOrDefault(),
 		Stream:       opts.Stream && streaming,
 		AgentName:    opts.Agent.Name,
-		Model:        opts.Agent.Provider.Model,
+		Model:        model.ModelName,
 	})
 
 	// With tracing, engine events map onto the turn's spans before
@@ -271,17 +278,17 @@ func finishTracedRun(opts Options, runErr error) error {
 }
 
 // newClient builds the LLM client for the run's agent: the injected
-// NewClient factory when set, else the real provider path with the
-// injected getenv.
+// NewClient factory when set, else the real model path with the injected
+// getenv.
 func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
 	if o.NewClient != nil {
-		return o.NewClient(o.Agent)
+		return o.NewClient(o.Config, o.Agent)
 	}
 	getenv := o.Getenv
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	return chat.NewClientWithGetenv(o.Agent, getenv, sink)
+	return chat.NewClientWithGetenv(o.Config, o.Agent, getenv, sink)
 }
 
 // subagentRunner builds the engine-backed runner for the run's config,
@@ -291,15 +298,15 @@ func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
 func (o Options) subagentRunner(sink logging.Sink, streaming bool) *engine.SubagentRunner {
 	return engine.NewSubagentRunner(engine.SubagentRunnerConfig{
 		Config: o.Config,
-		NewClient: func(agent config.Agent) (llm.Client, error) {
+		NewClient: func(cfg config.Config, agent config.Agent) (llm.Client, error) {
 			if o.NewClient != nil {
-				return o.NewClient(agent)
+				return o.NewClient(cfg, agent)
 			}
 			getenv := o.Getenv
 			if getenv == nil {
 				getenv = os.Getenv
 			}
-			return chat.NewClientWithGetenv(agent, getenv, sink)
+			return chat.NewClientWithGetenv(cfg, agent, getenv, sink)
 		},
 		Stream: o.Stream && streaming,
 		Sink:   sink,

@@ -226,25 +226,30 @@ func sseData(w io.Writer, payloads ...string) {
 }
 
 // writeAgentConfig writes a config with the given agent names, an optional
-// default_agent (empty means none), and each agent's provider pointing at
-// baseURL with model-<name>. Returns the config path.
+// default_agent (empty means none), and one top-level model entry per
+// agent (named after the agent, wire model model-<name>) pointing at
+// baseURL. Returns the config path.
 func writeAgentConfig(t *testing.T, dir string, names []string, defaultAgent string, baseURL string) string {
 	t.Helper()
 
+	models := make([]map[string]any, len(names))
 	agents := make([]map[string]any, len(names))
 	for i, name := range names {
+		models[i] = map[string]any{
+			"name":       name,
+			"type":       "openai-compatible",
+			"model_name": "model-" + name,
+			"base_url":   baseURL,
+		}
 		agents[i] = map[string]any{
 			"name":          name,
 			"system_prompt": fmt.Sprintf("You are %s.", name),
-			"provider": map[string]any{
-				"type":     "openai-compatible",
-				"model":    "model-" + name,
-				"base_url": baseURL,
-			},
-			"max_turns": 1,
+			"model":         name,
+			"max_turns":     1,
 		}
 	}
 	base := map[string]any{
+		"models": models,
 		"agents": agents,
 	}
 	if defaultAgent != "" {
@@ -595,10 +600,16 @@ func TestRunToolOutputFlagCommand(t *testing.T) {
 	dir := t.TempDir()
 	data, err := json.Marshal(map[string]any{
 		"default_agent": "helper",
+		"models": []map[string]any{{
+			"name":       "m",
+			"type":       "openai-compatible",
+			"model_name": "m",
+			"base_url":   srv.URL,
+		}},
 		"agents": []map[string]any{{
 			"name":          "helper",
 			"system_prompt": "You are helpful.",
-			"provider":      map[string]any{"type": "openai-compatible", "model": "m", "base_url": srv.URL},
+			"model":         "m",
 			"max_turns":     3,
 			"tools":         []string{"echo"},
 		}},
@@ -711,11 +722,12 @@ func TestChatPrefactorMissingEnvVarExits(t *testing.T) {
 	path := filepath.Join(dir, "blorb.json")
 	cfgJSON := `{
 		"default_agent": "helper",
+		"models": [{"name": "m", "type": "openai-compatible", "model_name": "m", "base_url": "http://localhost:1"}],
 		"agents": [
 			{
 				"name": "helper",
 				"system_prompt": "You are helpful.",
-				"provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
+				"model": "m",
 				"max_turns": 1
 			}
 		],
@@ -750,11 +762,12 @@ func TestRunPrefactorMissingEnvVarExits(t *testing.T) {
 	path := filepath.Join(dir, "blorb.json")
 	cfgJSON := `{
 		"default_agent": "helper",
+		"models": [{"name": "m", "type": "openai-compatible", "model_name": "m", "base_url": "http://localhost:1"}],
 		"agents": [
 			{
 				"name": "helper",
 				"system_prompt": "You are helpful.",
-				"provider": {"type": "openai-compatible", "model": "m", "base_url": "http://localhost:1"},
+				"model": "m",
 				"max_turns": 1
 			}
 		],

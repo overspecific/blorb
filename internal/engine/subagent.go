@@ -13,10 +13,10 @@ import (
 // SubagentRunnerConfig configures a SubagentRunner.
 type SubagentRunnerConfig struct {
 	// Config is the whole loaded config: subagents, their tool grants,
-	// and their providers are resolved from it.
+	// and their models are resolved from it.
 	Config config.Config
-	// NewClient builds the LLM client for a subagent's provider.
-	NewClient func(agent config.Agent) (llm.Client, error)
+	// NewClient builds the LLM client for a subagent's named model.
+	NewClient func(cfg config.Config, agent config.Agent) (llm.Client, error)
 	// Stream enables streaming in subagent engines; clients that do not
 	// implement llm.StreamingClient fall back to whole messages.
 	Stream bool
@@ -62,6 +62,13 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 	// them when the subagent run ends.
 	defer registry.Close()
 
+	// The agent's named model resolves against the config and drives the
+	// engine's model field (usage records, tracing) below.
+	model, ok := r.cfg.Config.Model(agent.Model)
+	if !ok {
+		return tools.SubagentResult{}, fmt.Errorf("subagent %q: model %q is not a defined model", agentName, agent.Model)
+	}
+
 	client, err := r.newClient(agent)
 	if err != nil {
 		return tools.SubagentResult{}, err
@@ -74,7 +81,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 		MaxTurns:     agent.MaxTurnsOrDefault(),
 		Stream:       r.cfg.Stream,
 		AgentName:    agent.Name,
-		Model:        agent.Provider.Model,
+		Model:        model.ModelName,
 	})
 
 	// Usage records are always collected — even when the caller wants no
@@ -114,7 +121,7 @@ func (r *SubagentRunner) newClient(agent config.Agent) (llm.Client, error) {
 	if r.cfg.NewClient == nil {
 		return nil, fmt.Errorf("subagent %q: no client factory configured", agent.Name)
 	}
-	client, err := r.cfg.NewClient(agent)
+	client, err := r.cfg.NewClient(r.cfg.Config, agent)
 	if err != nil {
 		return nil, fmt.Errorf("build subagent %q client: %w", agent.Name, err)
 	}

@@ -1,10 +1,11 @@
 {
   "models": [
     {
-      "name": "gpt-4o-mini",
+      "name": "m",
       "type": "openai-compatible",
-      "base_url": "https://api.example.com/v1",
-      "model_name": "gpt-4o-mini"
+      "base_url": "http://localhost:1",
+      "no_such_field": true,
+      "model_name": "m"
     }
   ],
   "agents": [
@@ -12,10 +13,7 @@
       "name": "helper",
       "system_prompt": "You are helpful.",
       "max_turns": 1,
-      "tools": [
-        "nope"
-      ],
-      "model": "gpt-4o-mini"
+      "model": "m"
     }
   ]
 }

@@ -213,7 +213,7 @@ func newTracedTestOptions(cfg config.Config, o *chat.Options, srv *httptest.Serv
 		o.Stdin = strings.NewReader(input)
 	}
 	if o.NewClient == nil {
-		o.NewClient = func(config.Agent) (llm.Client, error) {
+		o.NewClient = func(config.Config, config.Agent) (llm.Client, error) {
 			return &fakeClient{responses: responses}, nil
 		}
 	}
@@ -253,7 +253,7 @@ func TestRunTracedPlainTurn(t *testing.T) {
 		llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 	)
 	o.Stream = true
-	o.NewClient = func(config.Agent) (llm.Client, error) {
+	o.NewClient = func(config.Config, config.Agent) (llm.Client, error) {
 		return &streamingFakeClient{
 			responses: []llm.Response{
 				{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
@@ -458,9 +458,10 @@ func TestRunNonStreamingClientRendersWithStreamRequested(t *testing.T) {
 	var stdout syncBuffer
 	o := chat.Options{Stream: true, Stdout: &stdout}
 	o.Config = testConfig(testAgent())
+	o.Agent = o.Config.Agents[0]
 	o.Version = "test"
 	o.Stdin = strings.NewReader("hello\nexit\n")
-	o.NewClient = func(config.Agent) (llm.Client, error) {
+	o.NewClient = func(config.Config, config.Agent) (llm.Client, error) {
 		return &fakeClient{responses: []llm.Response{
 			{Message: llm.NewTextMessage(llm.RoleAssistant, "hi!"), FinishReason: llm.FinishStop},
 		}}, nil
@@ -564,7 +565,7 @@ func TestRunTracedInterruptedTurn(t *testing.T) {
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout, SigintChan: sigint}
 	newTracedTestOptions(cfg, &o, srv, "hello\nexit\n")
-	o.NewClient = func(config.Agent) (llm.Client, error) { return slow, nil }
+	o.NewClient = func(config.Config, config.Agent) (llm.Client, error) { return slow, nil }
 
 	done := make(chan error, 1)
 	go func() { done <- chat.Run(context.Background(), o) }()
@@ -675,7 +676,7 @@ func TestRunTracedInterruptLandsAsTurnFinishes(t *testing.T) {
 	var stdout syncBuffer
 	o := chat.Options{Stdout: &stdout, SigintChan: sigint}
 	newTracedTestOptions(cfg, &o, srv, "hello\n")
-	o.NewClient = func(config.Agent) (llm.Client, error) { return client, nil }
+	o.NewClient = func(config.Config, config.Agent) (llm.Client, error) { return client, nil }
 
 	done := make(chan error, 1)
 	go func() { done <- chat.Run(context.Background(), o) }()

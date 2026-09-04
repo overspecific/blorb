@@ -4,6 +4,7 @@
       "name": "gpt-4o-mini",
       "type": "openai-compatible",
       "base_url": "https://api.example.com/v1",
+      "api_key_env": "",
       "model_name": "gpt-4o-mini"
     }
   ],
@@ -11,10 +12,7 @@
     {
       "name": "helper",
       "system_prompt": "You are helpful.",
-      "max_turns": 1,
-      "tools": [
-        "nope"
-      ],
+      "max_turns": 5,
       "model": "gpt-4o-mini"
     }
   ]

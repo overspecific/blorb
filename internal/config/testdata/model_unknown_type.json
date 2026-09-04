@@ -1,0 +1,18 @@
+{
+  "models": [
+    {
+      "name": "claude",
+      "type": "anthropic",
+      "base_url": "https://api.example.com",
+      "model_name": "claude-3"
+    }
+  ],
+  "agents": [
+    {
+      "name": "helper",
+      "system_prompt": "You are helpful.",
+      "max_turns": 1,
+      "model": "claude"
+    }
+  ]
+}

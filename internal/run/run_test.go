@@ -103,16 +103,23 @@ func (f *fragmentingClient) ChatStream(ctx context.Context, req llm.Request, onD
 	})
 }
 
+// runTestModel returns the canonical top-level model entry the run test
+// agents reference.
+func runTestModel() config.Model {
+	return config.Model{
+		Name:      "gpt-test",
+		Type:      config.ModelTypeOpenAI,
+		ModelName: "gpt-test",
+		BaseURL:   "http://localhost:1",
+	}
+}
+
 // runTestAgent returns the canonical agent definition used by run tests.
 func runTestAgent() config.Agent {
 	return config.Agent{
 		Name:         "tester",
 		SystemPrompt: "You are helpful.",
-		Provider: config.Provider{
-			Type:    config.ProviderTypeOpenAI,
-			Model:   "gpt-test",
-			BaseURL: "http://localhost:1",
-		},
+		Model:        runTestModel().Name,
 	}
 }
 
@@ -124,7 +131,7 @@ func runTestConfig(agent config.Agent, tools ...config.ToolEntry) config.Config 
 		names[i] = t.Name
 	}
 	agent.Tools = names
-	return config.Config{Agents: []config.Agent{agent}, Tools: tools}
+	return config.Config{Models: []config.Model{runTestModel()}, Agents: []config.Agent{agent}, Tools: tools}
 }
 
 // syncBuffer is a mutex-guarded strings.Builder.
@@ -169,7 +176,7 @@ func TestRunPlainReply(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: []llm.Response{
 				{Message: llm.NewTextMessage(llm.RoleAssistant, "the answer"), FinishReason: llm.FinishStop},
 			}}, nil
@@ -200,7 +207,7 @@ func TestRunStreamedReply(t *testing.T) {
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
 		Stream: true,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runStreamingFakeClient{responses: []llm.Response{
 				{Message: llm.NewTextMessage(llm.RoleAssistant, "streamed!"), FinishReason: llm.FinishStop},
 			}}, nil
@@ -254,7 +261,7 @@ func TestRunToolOutputSuppressedByDefault(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: runToolResponses("echoer")}, nil
 		},
 	}, "run it")
@@ -288,7 +295,7 @@ func TestRunToolOutputFlagShowsOutput(t *testing.T) {
 		Agent:      cfg.Agents[0],
 		Stdout:     &stdout,
 		ToolOutput: true,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: runToolResponses("echoer")}, nil
 		},
 	}, "run it")
@@ -318,6 +325,7 @@ func runSubagentConfig(t *testing.T) config.Config {
 	worker.MaxTurns = 3
 
 	cfg := config.Config{
+		Models: []config.Model{runTestModel()},
 		Agents: []config.Agent{parent, worker},
 		Tools: []config.ToolEntry{
 			{Type: config.ToolTypeSubagent, Name: "ask_worker", Description: "Ask the worker.", Agent: "worker"},
@@ -362,7 +370,7 @@ func TestRunSubagentRendersActivity(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
-		NewClient: func(agent config.Agent) (llm.Client, error) {
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
 			if agent.Name == "worker" {
 				return worker, nil
 			}
@@ -395,7 +403,7 @@ func TestRunClientError(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &runSyncBuffer{},
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return nil, errors.New("no provider available")
 		},
 	}, "hello")
@@ -412,7 +420,7 @@ func TestRunTurnErrorWrapped(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &runSyncBuffer{},
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{}, nil // no responses: turn fails
 		},
 	}, "hello")
@@ -452,7 +460,7 @@ func TestRunCancelledContext(t *testing.T) {
 			Config: cfg,
 			Agent:  cfg.Agents[0],
 			Stdout: &runSyncBuffer{},
-			NewClient: func(config.Agent) (llm.Client, error) {
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 				return client, nil
 			},
 		}, "hello")
@@ -491,7 +499,7 @@ func TestRunRegistryClosedCleanly(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: runToolResponses("touch")}, nil
 		},
 	}, "make the marker")
@@ -518,10 +526,11 @@ func TestRunWritesSessionLogDir(t *testing.T) {
 	cfgPath := filepath.Join(dir, "blorb.json")
 	cfgJSON := `{
 		"default_agent": "logger",
+		"models": [{"name": "gpt-test", "type": "openai-compatible", "model_name": "gpt-test", "base_url": "http://localhost:1"}],
 		"agents": [{
 			"name": "logger",
 			"system_prompt": "You are helpful.",
-			"provider": {"type": "openai-compatible", "model": "gpt-test", "base_url": "http://localhost:1"},
+			"model": "gpt-test",
 			"max_turns": 1
 		}],
 		"tools": [],
@@ -542,7 +551,7 @@ func TestRunWritesSessionLogDir(t *testing.T) {
 		Agent:      cfg.Agents[0],
 		Stdout:     &stdout,
 		ConfigPath: cfgPath,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: srvLogDirResponses}, nil
 		},
 	}, "hello")
@@ -574,7 +583,7 @@ func TestRunRegistryBuildFailure(t *testing.T) {
 		Config:    cfg,
 		Agent:     cfg.Agents[0],
 		Stdout:    &runSyncBuffer{},
-		NewClient: func(config.Agent) (llm.Client, error) { return &runFakeClient{}, nil },
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) { return &runFakeClient{}, nil },
 	}, "hello")
 	if err == nil || !strings.Contains(err.Error(), "build tools") {
 		t.Errorf("error = %v, want a build-tools error", err)
@@ -587,8 +596,10 @@ func TestRunGetenvInjected(t *testing.T) {
 	t.Parallel()
 
 	agent := runTestAgent()
-	agent.Provider.APIKeyEnv = ptr("INJECTED_MISSING_VAR")
 	cfg := runTestConfig(agent)
+	m := runTestModel()
+	m.APIKeyEnv = ptr("INJECTED_MISSING_VAR")
+	cfg.Models = []config.Model{m}
 
 	_, err := run.Run(context.Background(), run.Options{
 		Config: cfg,
@@ -902,7 +913,7 @@ func runTracedOptions(cfg config.Config, srv *httptest.Server, stdout *runSyncBu
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: stdout,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: responses}, nil
 		},
 		Tracer: prefactor.NewTracer(prefactor.TracerConfig{
@@ -1041,7 +1052,7 @@ func TestRunTracedCancelledContext(t *testing.T) {
 	client := &runBlockingClient{started: make(chan struct{})}
 	var stdout runSyncBuffer
 	opts := runTracedOptions(cfg, srv, &stdout)
-	opts.NewClient = func(config.Agent) (llm.Client, error) { return client, nil }
+	opts.NewClient = func(config.Config, config.Agent) (llm.Client, error) { return client, nil }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -1392,7 +1403,7 @@ func TestRunUsageFooterHappyPath(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: []llm.Response{
 				{
 					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
@@ -1431,7 +1442,7 @@ func TestRunUsageFooterToolRoundSummed(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: responses}, nil
 		},
 	}, "run it")
@@ -1483,7 +1494,7 @@ func TestRunUsageFooterSubagentSplit(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
-		NewClient: func(agent config.Agent) (llm.Client, error) {
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
 			if agent.Name == "worker" {
 				return worker, nil
 			}
@@ -1527,7 +1538,7 @@ func TestRunUsageFooterOnFailingRun(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			// One usage-bearing response, then the fake runs dry and the
 			// turn fails mid-loop.
 			return &runFakeClient{responses: responses}, nil
@@ -1554,7 +1565,7 @@ func TestRunNoUsageNoFooterWhenCancelledBeforeAnyCall(t *testing.T) {
 		Config: cfg,
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runBlockingClient{started: make(chan struct{})}, nil
 		},
 	}, "hello")
@@ -1590,7 +1601,7 @@ func TestRunFormatPlainWholeMessageToolRound(t *testing.T) {
 		Stdout: &stdout,
 		Stderr: &stderr,
 		Format: run.FormatPlain,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: responses}, nil
 		},
 	}, "run it")
@@ -1639,7 +1650,7 @@ func TestRunFormatPlainStreamed(t *testing.T) {
 		Stderr: &stderr,
 		Format: run.FormatPlain,
 		Stream: true,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runStreamingFakeClient{responses: []llm.Response{
 				{Message: llm.NewTextMessage(llm.RoleAssistant, "streamed!"), FinishReason: llm.FinishStop},
 			}}, nil
@@ -1673,7 +1684,7 @@ func TestRunFormatPlainThinkingOnStderrOnly(t *testing.T) {
 		Stdout: &stdout,
 		Stderr: &stderr,
 		Format: run.FormatPlain,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: []llm.Response{
 				{
 					Message: llm.Message{
@@ -1726,7 +1737,7 @@ func TestRunFormatPlainSubagentOnStderr(t *testing.T) {
 		Stdout: &stdout,
 		Stderr: &stderr,
 		Format: run.FormatPlain,
-		NewClient: func(agent config.Agent) (llm.Client, error) {
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
 			if agent.Name == "worker" {
 				return worker, nil
 			}
@@ -1763,7 +1774,7 @@ func TestRunFormatPlainToolOutputSuppression(t *testing.T) {
 			Stdout: &stdout,
 			Stderr: &stderr,
 			Format: run.FormatPlain,
-			NewClient: func(config.Agent) (llm.Client, error) {
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 				return &runFakeClient{responses: runToolResponses("echoer")}, nil
 			},
 		}, "run it")
@@ -1791,7 +1802,7 @@ func TestRunFormatPlainToolOutputSuppression(t *testing.T) {
 			Stderr:     &stderr,
 			Format:     run.FormatPlain,
 			ToolOutput: true,
-			NewClient: func(config.Agent) (llm.Client, error) {
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 				return &runFakeClient{responses: runToolResponses("echoer")}, nil
 			},
 		}, "run it")
@@ -1819,7 +1830,7 @@ func TestRunFormatPlainToolOutputSuppression(t *testing.T) {
 			Stdout: &stdout,
 			Stderr: &stderr,
 			Format: run.FormatPlain,
-			NewClient: func(config.Agent) (llm.Client, error) {
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 				return &runFakeClient{responses: runToolResponses("failer")}, nil
 			},
 		}, "run it")
@@ -1849,7 +1860,7 @@ func TestRunFormatPlainFooterOnStderr(t *testing.T) {
 		Stdout: &stdout,
 		Stderr: &stderr,
 		Format: run.FormatPlain,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: []llm.Response{
 				{
 					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
@@ -1917,7 +1928,7 @@ func TestRunFormatPlainFailedRunStdoutKeepsRoundText(t *testing.T) {
 		Stdout: &stdout,
 		Stderr: &stderr,
 		Format: run.FormatPlain,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			// Two responses only: the turn fails on the third call.
 			return &runFakeClient{responses: responses[:1]}, nil
 		},
@@ -1948,7 +1959,7 @@ func TestRunFormatPlainNilStderrFallsBackToStdout(t *testing.T) {
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
 		Format: run.FormatPlain,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: []llm.Response{
 				{
 					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
@@ -1985,7 +1996,7 @@ func TestRunFormatChatIgnoresStderr(t *testing.T) {
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
 		Stderr: &stderr,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: []llm.Response{
 				{
 					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
@@ -2021,7 +2032,7 @@ func TestRunFormatUnknownFailsBeforeLLMCall(t *testing.T) {
 		Stdout: &stdout,
 		Stderr: &stderr,
 		Format: "yaml",
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return client, nil
 		},
 	}, "hello")
@@ -2105,7 +2116,7 @@ func TestRunFormatNDJSONNonStreamedToolRound(t *testing.T) {
 		Stdout: &stdout,
 		Stderr: &stderr,
 		Format: run.FormatNDJSON,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: responses}, nil
 		},
 	}, "run it")
@@ -2161,7 +2172,7 @@ func TestRunFormatNDJSONStreamed(t *testing.T) {
 		Stdout: &stdout,
 		Format: run.FormatNDJSON,
 		Stream: true,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runStreamingFakeClient{responses: []llm.Response{
 				{
 					Message:      llm.NewTextMessage(llm.RoleAssistant, "streamed!"),
@@ -2200,7 +2211,7 @@ func TestRunFormatNDJSONThinking(t *testing.T) {
 			Agent:  cfg.Agents[0],
 			Stdout: &stdout,
 			Format: run.FormatNDJSON,
-			NewClient: func(config.Agent) (llm.Client, error) {
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 				return &runFakeClient{responses: []llm.Response{
 					{Message: llm.Message{
 						Role:      llm.RoleAssistant,
@@ -2233,7 +2244,7 @@ func TestRunFormatNDJSONThinking(t *testing.T) {
 			Stdout: &stdout,
 			Format: run.FormatNDJSON,
 			Stream: true,
-			NewClient: func(config.Agent) (llm.Client, error) {
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 				return &runStreamingFakeClient{responses: []llm.Response{
 					{Message: llm.Message{
 						Role:      llm.RoleAssistant,
@@ -2286,7 +2297,7 @@ func TestRunFormatNDJSONStreamedToolCall(t *testing.T) {
 		Stdout: &stdout,
 		Format: run.FormatNDJSON,
 		Stream: true,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &client, nil
 		},
 	}, "run it")
@@ -2333,7 +2344,7 @@ func TestRunFormatNDJSONToolResultAlwaysFull(t *testing.T) {
 			Agent:  cfg.Agents[0],
 			Stdout: &stdout,
 			Format: run.FormatNDJSON,
-			NewClient: func(config.Agent) (llm.Client, error) {
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 				return &runFakeClient{responses: runToolResponses("echoer")}, nil
 			},
 		}, "run it")
@@ -2369,7 +2380,7 @@ func TestRunFormatNDJSONToolResultAlwaysFull(t *testing.T) {
 			Agent:  cfg.Agents[0],
 			Stdout: &stdout,
 			Format: run.FormatNDJSON,
-			NewClient: func(config.Agent) (llm.Client, error) {
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 				return &runFakeClient{responses: runToolResponses("failer")}, nil
 			},
 		}, "run it")
@@ -2421,7 +2432,7 @@ func TestRunFormatNDJSONSubagent(t *testing.T) {
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
 		Format: run.FormatNDJSON,
-		NewClient: func(agent config.Agent) (llm.Client, error) {
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
 			if agent.Name == "worker" {
 				return worker, nil
 			}
@@ -2505,7 +2516,7 @@ func TestRunFormatNDJSONFailedRun(t *testing.T) {
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
 		Format: run.FormatNDJSON,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			// The first round completes, then the fake runs dry.
 			return &runFakeClient{responses: responses[:1]}, nil
 		},
@@ -2539,7 +2550,7 @@ func TestRunFormatNDJSONCancelledSingleErrorLine(t *testing.T) {
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
 		Format: run.FormatNDJSON,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runBlockingClient{started: make(chan struct{})}, nil
 		},
 	}, "hello")
@@ -2572,7 +2583,7 @@ func TestRunFormatNDJSONNoLinesWhenTurnNeverStarted(t *testing.T) {
 		Agent:     cfg.Agents[0],
 		Stdout:    &stdout,
 		Format:    run.FormatNDJSON,
-		NewClient: func(config.Agent) (llm.Client, error) { return &runFakeClient{}, nil },
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) { return &runFakeClient{}, nil },
 	}, "hello")
 	if err == nil || !strings.Contains(err.Error(), "build tools") {
 		t.Fatalf("error = %v, want a build-tools error", err)
@@ -2636,7 +2647,7 @@ func TestRunFormatNDJSONFooterSuppressed(t *testing.T) {
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
 		Format: run.FormatNDJSON,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: []llm.Response{
 				{
 					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
@@ -2672,7 +2683,7 @@ func TestRunFormatNDJSONNoHTMLEscaping(t *testing.T) {
 		Agent:  cfg.Agents[0],
 		Stdout: &stdout,
 		Format: run.FormatNDJSON,
-		NewClient: func(config.Agent) (llm.Client, error) {
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return &runFakeClient{responses: runToolResponses("htmler")}, nil
 		},
 	}, "run it")
