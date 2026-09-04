@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,6 +257,156 @@ func TestChat500HTMLBodyTruncated(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "truncated") {
 		t.Errorf("error = %q, want a truncation marker", err)
+	}
+}
+
+// TestChatRetriesEOFBeforeResponse pins the keep-alive recovery: a server
+// that closes the connection without responding (a connection the server
+// FINs after its previous response, handed to the next request by the
+// transport's idle pool) surfaces as io.EOF from the POST. The client
+// retries once — the request never reached the server — and succeeds.
+func TestChatRetriesEOFBeforeResponse(t *testing.T) {
+	t.Parallel()
+
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			// Simulate a pooled connection the server already closed:
+			// take over the socket and drop it without responding.
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("test server does not support hijacking")
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "resp-1",
+			"choices": [{
+				"message": {"role": "assistant", "content": "recovered"},
+				"finish_reason": "stop"
+			}]
+		}`))
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).Chat(context.Background(), sampleRequest())
+	if err != nil {
+		t.Fatalf("Chat error = %v, want the EOF retry to recover", err)
+	}
+	if resp.Message.Content != "recovered" {
+		t.Errorf("content = %q, want %q", resp.Message.Content, "recovered")
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Errorf("requests = %d, want 2 (dropped connection retried once)", got)
+	}
+}
+
+// TestChatStreamRetriesEOFBeforeResponse is the streaming variant of the
+// keep-alive recovery test: the same dropped-then-retried connection, but
+// the recovering response is an SSE body.
+func TestChatStreamRetriesEOFBeforeResponse(t *testing.T) {
+	t.Parallel()
+
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("test server does not support hijacking")
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"role":"assistant","content":"recovered"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: [DONE]` + "\n\n"))
+	}))
+	defer srv.Close()
+
+	var got strings.Builder
+	resp, err := newTestClient(t, srv.URL).ChatStream(context.Background(), sampleRequest(), func(d llm.Delta) error {
+		got.WriteString(d.Content)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want the EOF retry to recover", err)
+	}
+	if resp.Message.Content != "recovered" {
+		t.Errorf("content = %q, want %q", resp.Message.Content, "recovered")
+	}
+	if got.String() != "recovered" {
+		t.Errorf("streamed text = %q, want %q", got.String(), "recovered")
+	}
+	if n := atomic.LoadInt32(&requests); n != 2 {
+		t.Errorf("requests = %d, want 2 (dropped connection retried once)", n)
+	}
+}
+
+// TestChatDoesNotRetryNonEOF pins that only io.EOF triggers the retry: a
+// request that reaches the server and gets a real error response must not
+// be sent twice.
+func TestChatDoesNotRetryNonEOF(t *testing.T) {
+	t.Parallel()
+
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error": "boom"}`))
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), sampleRequest())
+	if err == nil || !strings.Contains(err.Error(), "unexpected status 500") {
+		t.Fatalf("Chat error = %v, want an unexpected-status error", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Errorf("requests = %d, want 1 (no retry for a delivered error)", got)
+	}
+}
+
+// TestChatRetriesEOFOnlyOnce pins that the retry is a single attempt: a
+// server that drops every connection fails after exactly two requests.
+func TestChatRetriesEOFOnlyOnce(t *testing.T) {
+	t.Parallel()
+
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("test server does not support hijacking")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), sampleRequest())
+	if err == nil || !errors.Is(err, io.EOF) {
+		t.Fatalf("Chat error = %v, want the EOF to surface after one retry", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Errorf("requests = %d, want 2 (one attempt plus one retry)", got)
 	}
 }
 

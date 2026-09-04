@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -533,7 +534,23 @@ func (c *Client) post(ctx context.Context, body wireRequest) (*http.Response, st
 
 	httpResp, err := c.httpClient().Do(httpReq)
 	if err != nil {
-		return nil, "", fmt.Errorf("chat completions: %w", err)
+		// A keep-alive connection the server closed right after its
+		// previous response — before the transport noticed while it sat
+		// idle — surfaces as io.EOF here, and Go only auto-retries its
+		// own server-closed-idle sentinel, not this in-flight close.
+		// The request never reached the server, so send it once more.
+		if !errors.Is(err, io.EOF) {
+			return nil, "", fmt.Errorf("chat completions: %w", err)
+		}
+		body, getErr := httpReq.GetBody()
+		if getErr != nil {
+			return nil, "", fmt.Errorf("chat completions: retry unavailable: %w", err)
+		}
+		httpReq.Body = body
+		httpResp, err = c.httpClient().Do(httpReq)
+		if err != nil {
+			return nil, "", fmt.Errorf("chat completions: %w", err)
+		}
 	}
 	return httpResp, endpoint, nil
 }
