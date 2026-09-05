@@ -3,7 +3,9 @@ package llm_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/overspecific/blorb/internal/llm"
 )
@@ -189,6 +191,140 @@ func TestToolMarshalJSON(t *testing.T) {
 	if string(got) != want {
 		t.Errorf("Marshal = %s, want %s", got, want)
 	}
+}
+
+func TestMessageOutputBytes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		msg  llm.Message
+		want llm.OutputBytes
+	}{
+		{
+			name: "empty message",
+			msg:  llm.Message{},
+			want: llm.OutputBytes{},
+		},
+		{
+			name: "content only",
+			msg:  llm.NewTextMessage(llm.RoleAssistant, "hello"),
+			want: llm.OutputBytes{Content: 5},
+		},
+		{
+			name: "content and reasoning",
+			msg: llm.Message{
+				Content:   "hi",
+				Reasoning: "thinking hard",
+			},
+			want: llm.OutputBytes{Content: 2, Reasoning: 13},
+		},
+		{
+			name: "two tool calls",
+			msg: llm.Message{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Type: "function", FunctionName: "ls", FunctionArgs: `{"path":"."}`},
+					{ID: "", FunctionName: "pwd", FunctionArgs: `{}`},
+				},
+			},
+			// Name+args lengths only: ls(2)+12 + pwd(3)+2 = 19.
+			// The id on the first call is server-generated and
+			// excluded.
+			want: llm.OutputBytes{ToolCalls: 19},
+		},
+		{
+			name: "everything",
+			msg: llm.Message{
+				Content:   "abc",
+				Reasoning: "zz",
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Type: "function", FunctionName: "ls", FunctionArgs: `{}`},
+				},
+			},
+			want: llm.OutputBytes{Content: 3, Reasoning: 2, ToolCalls: 4},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tc.msg.OutputBytes()
+			if got != tc.want {
+				t.Errorf("OutputBytes = %+v, want %+v", got, tc.want)
+			}
+			if total := got.Total(); total != tc.want.Content+tc.want.Reasoning+tc.want.ToolCalls {
+				t.Errorf("Total() = %d, want %d", total, tc.want.Content+tc.want.Reasoning+tc.want.ToolCalls)
+			}
+		})
+	}
+}
+
+func TestResponseCallStatsJSON(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-zero stats round-trip", func(t *testing.T) {
+		t.Parallel()
+
+		resp := llm.Response{
+			Stats: llm.CallStats{
+				Output:  llm.OutputBytes{Content: 11, Reasoning: 22, ToolCalls: 33},
+				Elapsed: 1500 * time.Millisecond,
+			},
+		}
+
+		data, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatalf("Marshal error = %v, want nil", err)
+		}
+
+		var obj struct {
+			Stats struct {
+				Output struct {
+					ContentBytes   int `json:"content_bytes"`
+					ReasoningBytes int `json:"reasoning_bytes"`
+					ToolCallBytes  int `json:"tool_call_bytes"`
+				} `json:"output"`
+				ElapsedNS int64 `json:"elapsed_ns"`
+			} `json:"stats"`
+		}
+		if err := json.Unmarshal(data, &obj); err != nil {
+			t.Fatalf("Unmarshal error = %v, want nil", err)
+		}
+		if obj.Stats.Output.ContentBytes != 11 {
+			t.Errorf("stats.output.content_bytes = %d, want 11", obj.Stats.Output.ContentBytes)
+		}
+		if obj.Stats.Output.ReasoningBytes != 22 {
+			t.Errorf("stats.output.reasoning_bytes = %d, want 22", obj.Stats.Output.ReasoningBytes)
+		}
+		if obj.Stats.Output.ToolCallBytes != 33 {
+			t.Errorf("stats.output.tool_call_bytes = %d, want 33", obj.Stats.Output.ToolCallBytes)
+		}
+		if obj.Stats.ElapsedNS != 1500000000 {
+			t.Errorf("stats.elapsed_ns = %d, want 1500000000", obj.Stats.ElapsedNS)
+		}
+
+		var back llm.Response
+		if err := json.Unmarshal(data, &back); err != nil {
+			t.Fatalf("Unmarshal error = %v, want nil", err)
+		}
+		if back.Stats != resp.Stats {
+			t.Errorf("Stats round-trip = %+v, want %+v", back.Stats, resp.Stats)
+		}
+	})
+
+	t.Run("zero stats always present", func(t *testing.T) {
+		t.Parallel()
+
+		data, err := json.Marshal(llm.Response{})
+		if err != nil {
+			t.Fatalf("Marshal error = %v, want nil", err)
+		}
+		want := `"stats":{"output":{"content_bytes":0,"reasoning_bytes":0,"tool_call_bytes":0},"elapsed_ns":0}`
+		if !strings.Contains(string(data), want) {
+			t.Errorf("Marshal = %s, want to contain %s", data, want)
+		}
+	})
 }
 
 func TestFinishReasonValuesPassThrough(t *testing.T) {

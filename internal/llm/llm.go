@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // Role identifies who produced a message.
@@ -52,6 +53,21 @@ type ToolCall struct {
 	FunctionArgs string `json:"arguments"`
 }
 
+// OutputBytes returns the size of the model's output in this
+// message, split into components: Content and Reasoning byte
+// lengths, plus each tool call's function name and JSON-encoded
+// arguments — the fields the model produced. Server-generated tool
+// call ids are excluded from ToolCalls: they are not the model's
+// output. Byte lengths are len() of the Go strings — UTF-8 bytes,
+// matching what the user perceives as output size.
+func (m Message) OutputBytes() OutputBytes {
+	obs := OutputBytes{Content: len(m.Content), Reasoning: len(m.Reasoning)}
+	for _, tc := range m.ToolCalls {
+		obs.ToolCalls += len(tc.FunctionName) + len(tc.FunctionArgs)
+	}
+	return obs
+}
+
 // DecodedArgs returns the tool call arguments as raw JSON, unquoting the
 // wire-encoded string form.
 func (tc ToolCall) DecodedArgs() (json.RawMessage, error) {
@@ -86,6 +102,10 @@ type Response struct {
 	Message      Message `json:"message"`
 	FinishReason string  `json:"finish_reason"`
 	Usage        Usage   `json:"usage"`
+	// Stats holds the stats of the call that produced this response,
+	// as measured by the provider client. Zero for fake clients and
+	// any client that does not measure.
+	Stats CallStats `json:"stats"`
 }
 
 // Usage holds token counts reported by the provider.
@@ -93,6 +113,32 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+// OutputBytes holds the byte sizes of the model's output, split by
+// what produced it: assistant text, extracted reasoning, and tool
+// calls. Total is derivable via Total.
+type OutputBytes struct {
+	Content   int `json:"content_bytes"`
+	Reasoning int `json:"reasoning_bytes"`
+	ToolCalls int `json:"tool_call_bytes"`
+}
+
+// Total returns the summed byte count across all components.
+func (o OutputBytes) Total() int {
+	return o.Content + o.Reasoning + o.ToolCalls
+}
+
+// CallStats holds the observable stats of one LLM call, measured by
+// the provider client that made it. Output is the size of the
+// model's output, split by component (see Message.OutputBytes).
+// Elapsed is the end-to-end call duration: from just before the
+// request is sent to when the response body has been fully
+// received. All fields are zero when the client could not observe
+// them (e.g. a fake client in tests).
+type CallStats struct {
+	Output  OutputBytes   `json:"output"`
+	Elapsed time.Duration `json:"elapsed_ns"`
 }
 
 // Finish reason values in common use across OpenAI-compatible servers. Values
