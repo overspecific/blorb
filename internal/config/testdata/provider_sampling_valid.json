@@ -1,0 +1,31 @@
+{
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "temperature": 0,
+      "top_p": 0.9,
+      "seed": 42,
+      "stop": ["END", "STOP"],
+      "max_tokens": 512,
+      "frequency_penalty": 1.5,
+      "presence_penalty": -1
+    }
+  ],
+  "models": [
+    {
+      "name": "m",
+      "provider": "local",
+      "model_name": "m"
+    }
+  ],
+  "agents": [
+    {
+      "name": "helper",
+      "system_prompt": "You are helpful.",
+      "max_turns": 1,
+      "model": "m"
+    }
+  ]
+}

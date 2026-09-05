@@ -76,10 +76,16 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	}
 
 	// The resolved top-level model entry backs the tracing wrapper and
-	// engine below; the client is built from it.
+	// engine below; the client is built from it. Its provider carries
+	// the server-wide generation defaults the engine sends on every
+	// request.
 	model, ok := opts.Config.Model(opts.Agent.Model)
 	if !ok {
 		return "", fmt.Errorf("agent %q: model %q is not a defined model", opts.Agent.Name, opts.Agent.Model)
+	}
+	provider, ok := opts.Config.Provider(model.Provider)
+	if !ok {
+		return "", fmt.Errorf("model %q: provider %q is not a defined provider", model.Name, model.Provider)
 	}
 
 	// The engine suppresses whole-message events when it streams; only
@@ -152,6 +158,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		Stream:       opts.Stream && streaming,
 		AgentName:    opts.Agent.Name,
 		Model:        model.ModelName,
+		Sampling:     provider.SamplingParams(),
 	})
 
 	// With tracing, engine events map onto the turn's spans before

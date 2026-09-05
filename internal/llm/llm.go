@@ -94,6 +94,44 @@ type Request struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 	Tools    []Tool    `json:"tools,omitempty"`
+
+	// Sampling carries the request's generation parameters. Nil fields
+	// (and an empty Stop) mean the server default applies; pointers so
+	// explicit zeros survive and reach the wire. Provider packages map
+	// them onto their own wire shapes (openai top-level fields, ollama's
+	// nested options object).
+	Sampling SamplingParams `json:"sampling,omitempty"`
+}
+
+// SamplingParams holds the shared generation knobs. nil/empty fields mean
+// the server default applies; the numeric fields are pointers so an
+// explicit zero ("temperature": 0) is distinguishable from an absent
+// field and reaches the wire.
+type SamplingParams struct {
+	// Temperature controls randomness; higher is more random.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// TopP is the nucleus-sampling probability mass cutoff.
+	TopP *float64 `json:"top_p,omitempty"`
+	// Seed pins deterministic sampling where the server supports it.
+	Seed *int64 `json:"seed,omitempty"`
+	// Stop lists stop sequences that end generation early. Empty means
+	// the server default (typically none).
+	Stop []string `json:"stop,omitempty"`
+	// MaxTokens caps the response length. Ollama maps it to num_predict.
+	MaxTokens *int `json:"max_tokens,omitempty"`
+	// FrequencyPenalty penalizes tokens by their frequency so far,
+	// in [-2, 2].
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	// PresencePenalty penalizes tokens that have appeared at all,
+	// in [-2, 2].
+	PresencePenalty *float64 `json:"presence_penalty,omitempty"`
+}
+
+// Any reports whether any sampling parameter is set: false means every
+// field is nil/empty and the request carries no sampling overrides at all.
+func (s SamplingParams) Any() bool {
+	return s.Temperature != nil || s.TopP != nil || s.Seed != nil || len(s.Stop) > 0 ||
+		s.MaxTokens != nil || s.FrequencyPenalty != nil || s.PresencePenalty != nil
 }
 
 // Response is a provider-neutral chat completion response.

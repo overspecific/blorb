@@ -63,10 +63,15 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 	defer registry.Close()
 
 	// The agent's named model resolves against the config and drives the
-	// engine's model field (usage records, tracing) below.
+	// engine's model field (usage records, tracing) and sampling (the
+	// model's provider's server-wide generation defaults) below.
 	model, ok := r.cfg.Config.Model(agent.Model)
 	if !ok {
 		return tools.SubagentResult{}, fmt.Errorf("subagent %q: model %q is not a defined model", agentName, agent.Model)
+	}
+	provider, ok := r.cfg.Config.Provider(model.Provider)
+	if !ok {
+		return tools.SubagentResult{}, fmt.Errorf("subagent %q: model %q: provider %q is not a defined provider", agentName, agent.Model, model.Provider)
 	}
 
 	client, err := r.newClient(agent)
@@ -82,6 +87,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 		Stream:       r.cfg.Stream,
 		AgentName:    agent.Name,
 		Model:        model.ModelName,
+		Sampling:     provider.SamplingParams(),
 	})
 
 	// Usage records are always collected — even when the caller wants no

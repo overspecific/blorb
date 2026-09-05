@@ -107,6 +107,11 @@ type EngineConfig struct {
 	// Model is the agent's configured provider model, reported on
 	// EventUsage. Optional; empty when unknown.
 	Model string
+	// Sampling carries the generation parameters copied into every
+	// llm.Request the engine builds — on the initial call and on every
+	// follow-up tool round. Zero value (no fields set) means the server
+	// defaults apply everywhere.
+	Sampling llm.SamplingParams
 }
 
 // Engine owns conversation state and drives turns.
@@ -236,7 +241,7 @@ func (e *Engine) call(ctx context.Context, onEvent func(Event) error) (resp *llm
 	}
 	messages = append(messages, e.history...)
 
-	req := llm.Request{Messages: messages}
+	req := llm.Request{Messages: messages, Sampling: e.cfg.Sampling}
 	if e.cfg.Tools != nil {
 		req.Tools = e.cfg.Tools.Definitions()
 	}

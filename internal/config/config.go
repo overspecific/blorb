@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/tools/builtin"
 )
 
@@ -240,6 +241,19 @@ type Provider struct {
 	// a pointer so an explicit "api_key_env": "" is distinguishable from
 	// an absent field: empty is a config error, absent means no key.
 	APIKeyEnv *string `json:"api_key_env,omitempty"`
+
+	// Sampling holds the server-wide generation defaults applied to every
+	// model on this provider. Fields left unset mean the server default
+	// applies; they are pointers so explicit zeros ("temperature": 0)
+	// survive. These are connection facts, not model facts: one server
+	// serves one generation configuration. See Sampling.
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
+	Seed             *int64   `json:"seed,omitempty"`
+	Stop             []string `json:"stop,omitempty"`
+	MaxTokens        *int     `json:"max_tokens,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
 }
 
 // APIKeyEnvOrDefault returns the configured api_key_env, or "" when unset.
@@ -248,6 +262,20 @@ func (p *Provider) APIKeyEnvOrDefault() string {
 		return ""
 	}
 	return *p.APIKeyEnv
+}
+
+// SamplingParams converts the provider's server-wide generation defaults
+// into the neutral sampling vocabulary the engine sends on every request.
+func (p *Provider) SamplingParams() llm.SamplingParams {
+	return llm.SamplingParams{
+		Temperature:      p.Temperature,
+		TopP:             p.TopP,
+		Seed:             p.Seed,
+		Stop:             p.Stop,
+		MaxTokens:        p.MaxTokens,
+		FrequencyPenalty: p.FrequencyPenalty,
+		PresencePenalty:  p.PresencePenalty,
+	}
 }
 
 // Model is one named LLM backend declaration in blorb.json: a provider
@@ -650,10 +678,43 @@ func (p *Provider) validate() error {
 	}
 	switch p.Type {
 	case ModelTypeOpenAI, ModelTypeOllama:
-		return validateEndpointProvider(p)
+		if err := validateEndpointProvider(p); err != nil {
+			return err
+		}
+		return validateSampling(p)
 	default:
 		return fmt.Errorf("unknown type %q (supported: %v)", p.Type, SupportedModelTypes())
 	}
+}
+
+// validateSampling checks the provider's server-wide generation defaults:
+// temperature >= 0, top_p in (0, 1], seed >= 0, max_tokens >= 1, penalties
+// in [-2, 2], and every stop entry non-empty.
+func validateSampling(p *Provider) error {
+	if p.Temperature != nil && *p.Temperature < 0 {
+		return fmt.Errorf("temperature %v must be at least 0", *p.Temperature)
+	}
+	if p.TopP != nil && (*p.TopP <= 0 || *p.TopP > 1) {
+		return fmt.Errorf("top_p %v must be in (0, 1]", *p.TopP)
+	}
+	if p.Seed != nil && *p.Seed < 0 {
+		return fmt.Errorf("seed %d must be at least 0", *p.Seed)
+	}
+	if p.MaxTokens != nil && *p.MaxTokens < 1 {
+		return fmt.Errorf("max_tokens %d must be at least 1", *p.MaxTokens)
+	}
+	if p.FrequencyPenalty != nil && (*p.FrequencyPenalty < -2 || *p.FrequencyPenalty > 2) {
+		return fmt.Errorf("frequency_penalty %v must be in [-2, 2]", *p.FrequencyPenalty)
+	}
+	if p.PresencePenalty != nil && (*p.PresencePenalty < -2 || *p.PresencePenalty > 2) {
+		return fmt.Errorf("presence_penalty %v must be in [-2, 2]", *p.PresencePenalty)
+	}
+	for _, s := range p.Stop {
+		if s == "" {
+			return fmt.Errorf("stop entries must not be empty")
+		}
+	}
+	return nil
 }
 
 // validateEndpointProvider checks the fields shared by the endpoint-backed

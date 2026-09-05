@@ -177,6 +177,39 @@ func TestRunTurnPlainReply(t *testing.T) {
 	}
 }
 
+// TestEngineSamplingParamsOnEveryRequest pins that the configured
+// Sampling reaches every llm.Request the engine builds: the initial call
+// and the follow-up call after a tool round.
+func TestEngineSamplingParamsOnEveryRequest(t *testing.T) {
+	t.Parallel()
+
+	temp := 0.0 // explicit zero must survive the plumbing
+	maxTokens := 64
+	sampling := llm.SamplingParams{Temperature: &temp, MaxTokens: &maxTokens}
+
+	r := toolRegistry(t)
+	fc := &fakeClient{responses: []llm.Response{
+		toolCallResp(call("call_1", "echo", `{"msg":"hello"}`)),
+		textResp("done"),
+	}}
+	e := engine.New(engine.EngineConfig{Client: fc, Tools: r, Sampling: sampling})
+
+	if _, err := e.RunTurn(context.Background(), "go", func(engine.Event) error { return nil }); err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if len(fc.requests) != 2 {
+		t.Fatalf("API calls = %d, want 2", len(fc.requests))
+	}
+	for i, req := range fc.requests {
+		if req.Sampling.Temperature == nil || *req.Sampling.Temperature != 0 {
+			t.Errorf("request %d Sampling.Temperature = %v, want the explicit 0", i, req.Sampling.Temperature)
+		}
+		if req.Sampling.MaxTokens == nil || *req.Sampling.MaxTokens != 64 {
+			t.Errorf("request %d Sampling.MaxTokens = %v, want 64", i, req.Sampling.MaxTokens)
+		}
+	}
+}
+
 func TestRunTurnSingleToolCall(t *testing.T) {
 	t.Parallel()
 

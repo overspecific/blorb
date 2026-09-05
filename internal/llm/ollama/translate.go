@@ -40,7 +40,26 @@ func wireRequest(req llm.Request, defaultModel, reasoningEffort string) (chatReq
 		Messages: msgs,
 		Think:    thinkValue(reasoningEffort),
 		Tools:    wireTools(req.Tools),
+		Options:  wireSamplingOptions(req.Sampling),
 	}, nil
+}
+
+// wireSamplingOptions maps the neutral sampling parameters onto Ollama's
+// nested options object, with MaxTokens as num_predict. A request with no
+// sampling overrides at all returns nil, leaving options off the wire.
+func wireSamplingOptions(s llm.SamplingParams) *wireOptions {
+	if !s.Any() {
+		return nil
+	}
+	return &wireOptions{
+		Temperature:      s.Temperature,
+		TopP:             s.TopP,
+		Seed:             s.Seed,
+		Stop:             s.Stop,
+		NumPredict:       s.MaxTokens,
+		FrequencyPenalty: s.FrequencyPenalty,
+		PresencePenalty:  s.PresencePenalty,
+	}
 }
 
 // wireTools converts neutral tool definitions into Ollama's

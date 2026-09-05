@@ -24,9 +24,7 @@ import (
 	"github.com/overspecific/blorb/internal/llm"
 )
 
-// chatRequest is the Ollama /api/chat request envelope. It carries none of
-// Ollama's options/format/tool_choice knobs: the neutral llm.Request has no
-// such fields.
+// chatRequest is the Ollama /api/chat request envelope.
 //
 // Think is `any` rather than bool: it carries either false (disabling
 // thinking; Ollama rejects the string "none") or a level string passed
@@ -39,6 +37,24 @@ type chatRequest struct {
 	Stream   bool          `json:"stream,omitempty"`
 	Think    any           `json:"think,omitempty"`
 	Tools    []wireTool    `json:"tools,omitempty"`
+	// Options carries the sampling parameters, nested the way Ollama's
+	// /api/chat expects. nil leaves the field off the wire entirely: a
+	// request with no sampling overrides sends the server defaults.
+	Options *wireOptions `json:"options,omitempty"`
+}
+
+// wireOptions is Ollama's nested generation-options object. All fields
+// carry omitempty and the numerics are pointers, so an explicit zero set
+// in the config (e.g. "temperature": 0) reaches the wire while unset
+// fields mean the server default applies.
+type wireOptions struct {
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
+	Seed             *int64   `json:"seed,omitempty"`
+	Stop             []string `json:"stop,omitempty"`
+	NumPredict       *int     `json:"num_predict,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
 }
 
 // wireMessage is the Ollama message shape. Content has omitempty: Ollama

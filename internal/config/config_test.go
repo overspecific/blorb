@@ -480,6 +480,14 @@ func TestLoadRejects(t *testing.T) {
 		{"provider_empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
 		{"provider_ollama_bad_base_url.json", []string{"ftp", "http or https"}},
 		{"provider_ollama_empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
+		{"provider_bad_temperature.json", []string{"temperature -0.5 must be at least 0"}},
+		{"provider_bad_top_p.json", []string{"top_p 1.5 must be in (0, 1]"}},
+		{"provider_bad_top_p_zero.json", []string{"top_p 0 must be in (0, 1]"}},
+		{"provider_bad_seed.json", []string{"seed -1 must be at least 0"}},
+		{"provider_bad_max_tokens.json", []string{"max_tokens 0 must be at least 1"}},
+		{"provider_bad_frequency_penalty.json", []string{"frequency_penalty 3 must be in [-2, 2]"}},
+		{"provider_bad_presence_penalty.json", []string{"presence_penalty -3 must be in [-2, 2]"}},
+		{"provider_empty_stop_entry.json", []string{"stop entries must not be empty"}},
 		{"model_missing_name.json", []string{"model \"\": name is required"}},
 		{"model_missing_provider.json", []string{"model \"m\": provider is required"}},
 		{"model_unknown_provider.json", []string{`model "m": provider "ghost" is not a defined provider`}},
@@ -744,6 +752,42 @@ func TestSupportedModelTypes(t *testing.T) {
 	}
 	if !slices.Contains(got, config.ModelTypeOllama) || !slices.Contains(got, config.ModelTypeOpenAI) {
 		t.Errorf("SupportedModelTypes() = %v, want both ollama and openai-compatible", got)
+	}
+}
+
+// TestLoadProviderSamplingValid pins the parsed sampling fields: every
+// value loads, explicit zeros survive (they are pointers), and both
+// provider types accept them.
+func TestLoadProviderSamplingValid(t *testing.T) {
+	cfg, err := loadTestdata(t, "provider_sampling_valid.json")
+	if err != nil {
+		t.Fatalf("Load(provider_sampling_valid.json) error = %v, want nil", err)
+	}
+	p := cfg.Providers[0]
+	if p.Temperature == nil || *p.Temperature != 0 {
+		t.Errorf("Temperature = %v, want the explicit 0", p.Temperature)
+	}
+	if p.TopP == nil || *p.TopP != 0.9 {
+		t.Errorf("TopP = %v, want 0.9", p.TopP)
+	}
+	if p.Seed == nil || *p.Seed != 42 {
+		t.Errorf("Seed = %v, want 42", p.Seed)
+	}
+	if got, want := p.Stop, []string{"END", "STOP"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("Stop = %v, want %v", got, want)
+	}
+	if p.MaxTokens == nil || *p.MaxTokens != 512 {
+		t.Errorf("MaxTokens = %v, want 512", p.MaxTokens)
+	}
+	if p.FrequencyPenalty == nil || *p.FrequencyPenalty != 1.5 {
+		t.Errorf("FrequencyPenalty = %v, want 1.5", p.FrequencyPenalty)
+	}
+	if p.PresencePenalty == nil || *p.PresencePenalty != -1 {
+		t.Errorf("PresencePenalty = %v, want -1", p.PresencePenalty)
+	}
+
+	if _, err := loadTestdata(t, "provider_ollama_sampling_valid.json"); err != nil {
+		t.Errorf("Load(provider_ollama_sampling_valid.json) error = %v, want nil", err)
 	}
 }
 

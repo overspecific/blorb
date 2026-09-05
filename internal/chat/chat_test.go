@@ -179,6 +179,46 @@ func TestRunPlainReplySession(t *testing.T) {
 	}
 }
 
+// TestRunProviderSamplingReachesEngine pins the plumbing: the agent's
+// model's provider sampling defaults reach every llm.Request the session
+// engine sends.
+func TestRunProviderSamplingReachesEngine(t *testing.T) {
+	t.Parallel()
+
+	temp := 0.0 // explicit zero must survive the plumbing
+	fc := &fakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "hi"), FinishReason: llm.FinishStop},
+	}}
+
+	cfg := testConfig(testAgent())
+	p := testProvider()
+	p.Temperature = &temp
+	cfg.Providers = []config.Provider{p}
+
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("hello\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return fc, nil
+		},
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if len(fc.requests) != 1 {
+		t.Fatalf("API calls = %d, want 1", len(fc.requests))
+	}
+	req := fc.requests[0]
+	if req.Sampling.Temperature == nil || *req.Sampling.Temperature != 0 {
+		t.Errorf("request Sampling.Temperature = %v, want the provider's explicit 0", req.Sampling.Temperature)
+	}
+}
+
 // TestRunScopesToolsToTheAgent verifies the registry only carries the
 // agent's granted tools: a top-level tool the agent does not list never
 // reaches the model, and granted tools arrive in the agent's listed order

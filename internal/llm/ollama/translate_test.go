@@ -24,6 +24,84 @@ func decodeRequest(t *testing.T, req chatRequest) map[string]any {
 	return out
 }
 
+// TestWireRequestSamplingOptions pins the sampling mapping onto Ollama's
+// nested options object: every parameter set produces the exact options
+// JSON (including explicit zeros reaching the wire), and a request with no
+// sampling overrides at all omits options entirely.
+func TestWireRequestSamplingOptions(t *testing.T) {
+	t.Parallel()
+
+	temp := 0.0
+	topP := 0.9
+	seed := int64(42)
+	maxTokens := 512
+	freq := -1.5
+	presence := 1.0
+
+	t.Run("all params set produces the exact options object", func(t *testing.T) {
+		t.Parallel()
+
+		req := llm.Request{
+			Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
+			Sampling: llm.SamplingParams{
+				Temperature:      &temp,
+				TopP:             &topP,
+				Seed:             &seed,
+				Stop:             []string{"END"},
+				MaxTokens:        &maxTokens,
+				FrequencyPenalty: &freq,
+				PresencePenalty:  &presence,
+			},
+		}
+		wire, err := wireRequest(req, "fallback-model", "")
+		if err != nil {
+			t.Fatalf("wireRequest error = %v, want nil", err)
+		}
+		got := decodeRequest(t, wire)
+
+		opts, ok := got["options"].(map[string]any)
+		if !ok {
+			t.Fatalf("wire request options = %#v, want the options object", got["options"])
+		}
+		want := map[string]any{
+			"temperature":       0.0, // explicit zero must reach the wire
+			"top_p":             0.9,
+			"seed":              42.0,
+			"stop":              []any{"END"},
+			"num_predict":       512.0,
+			"frequency_penalty": -1.5,
+			"presence_penalty":  1.0,
+		}
+		optsJSON, err := json.Marshal(opts)
+		if err != nil {
+			t.Fatalf("marshal options: %v", err)
+		}
+		wantJSON, err := json.Marshal(want)
+		if err != nil {
+			t.Fatalf("marshal want: %v", err)
+		}
+		if string(optsJSON) != string(wantJSON) {
+			t.Errorf("options = %s, want exactly %s", optsJSON, wantJSON)
+		}
+	})
+
+	t.Run("absent params omit options entirely", func(t *testing.T) {
+		t.Parallel()
+
+		req := llm.Request{
+			Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
+		}
+		wire, err := wireRequest(req, "fallback-model", "")
+		if err != nil {
+			t.Fatalf("wireRequest error = %v, want nil", err)
+		}
+		got := decodeRequest(t, wire)
+		if _, present := got["options"]; present {
+			t.Errorf("wire request carries options = %#v, want the field omitted", got["options"])
+		}
+	})
+}
+
 func TestWireRequestMessages(t *testing.T) {
 	t.Parallel()
 

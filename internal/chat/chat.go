@@ -119,10 +119,16 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	// The resolved top-level model entry backs the agent's identity in
-	// banners and usage records below; the client is built from it.
+	// banners and usage records below; the client is built from it. Its
+	// provider carries the connection and the server-wide generation
+	// defaults the engine sends on every request.
 	model, ok := opts.Config.Model(opts.Agent.Model)
 	if !ok {
 		return fmt.Errorf("agent %q: model %q is not a defined model", opts.Agent.Name, opts.Agent.Model)
+	}
+	sampling, err := modelSampling(opts.Config, model)
+	if err != nil {
+		return err
 	}
 
 	// The engine suppresses whole-message events when it streams; only
@@ -169,6 +175,7 @@ func Run(ctx context.Context, opts Options) error {
 		Stream:       opts.Stream && streaming,
 		AgentName:    opts.Agent.Name,
 		Model:        model.ModelName,
+		Sampling:     sampling,
 	})
 
 	// Session-level tracing: register and start the Prefactor instance
@@ -832,6 +839,16 @@ func modelProvider(cfg config.Config, model config.Model) (config.Provider, erro
 		return config.Provider{}, fmt.Errorf("model %q: provider %q is not a defined provider", model.Name, model.Provider)
 	}
 	return provider, nil
+}
+
+// modelSampling resolves a model's provider and returns its server-wide
+// generation defaults, the engine's Sampling for every request.
+func modelSampling(cfg config.Config, model config.Model) (llm.SamplingParams, error) {
+	provider, err := modelProvider(cfg, model)
+	if err != nil {
+		return llm.SamplingParams{}, err
+	}
+	return provider.SamplingParams(), nil
 }
 
 // NewProviderClient builds the LLM client for a provider by name, without

@@ -206,6 +206,41 @@ func TestRunPlainReply(t *testing.T) {
 	}
 }
 
+// TestRunProviderSamplingReachesEngine pins the plumbing: the agent's
+// model's provider sampling defaults reach the engine's llm.Request.
+func TestRunProviderSamplingReachesEngine(t *testing.T) {
+	t.Parallel()
+
+	temp := 0.0 // explicit zero must survive the plumbing
+	fc := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "the answer"), FinishReason: llm.FinishStop},
+	}}
+
+	cfg := runTestConfig(runTestAgent())
+	p := runTestProvider()
+	p.Temperature = &temp
+	cfg.Providers = []config.Provider{p}
+
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &runSyncBuffer{},
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return fc, nil
+		},
+	}, "hello there")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if len(fc.requests) != 1 {
+		t.Fatalf("API calls = %d, want 1", len(fc.requests))
+	}
+	req := fc.requests[0]
+	if req.Sampling.Temperature == nil || *req.Sampling.Temperature != 0 {
+		t.Errorf("request Sampling.Temperature = %v, want the provider's explicit 0", req.Sampling.Temperature)
+	}
+}
+
 func TestRunStreamedReply(t *testing.T) {
 	t.Parallel()
 
