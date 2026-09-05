@@ -6,7 +6,7 @@ Restructures the config first: provider-level facts (type, base_url, api_key_env
 
 - [x] Commit 1: Extract providers from models in the config
 - [x] Commit 2: ModelLister capability and the blorb models command
-- [ ] Commit 3: Sampling parameters: config, llm.Request, engine plumbing, ollama options
+- [x] Commit 3: Sampling parameters: config, llm.Request, engine plumbing, ollama options
 - [ ] Commit 4: Sampling parameters on the openai client
 - [ ] Commit 5: Ollama format (structured output)
 - [ ] Commit 6: Ollama keep_alive
