@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/engine"
@@ -525,14 +526,18 @@ func TestSubagentRunnerUsagePropagation(t *testing.T) {
 
 	firstUsage := llm.Usage{PromptTokens: 11, CompletionTokens: 4, TotalTokens: 15}
 	secondUsage := llm.Usage{PromptTokens: 60, CompletionTokens: 6, TotalTokens: 66}
+	firstStats := llm.CallStats{Output: llm.OutputBytes{ToolCalls: 9}, Elapsed: time.Second}
+	secondStats := llm.CallStats{Output: llm.OutputBytes{Content: 5}, Elapsed: 2 * time.Second}
 	first := llm.Response{
 		ID:           "resp",
 		Message:      llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call("call_1", "echo", "{}")}},
 		FinishReason: llm.FinishToolCalls,
 		Usage:        firstUsage,
+		Stats:        firstStats,
 	}
 	second := textResp("final")
 	second.Usage = secondUsage
+	second.Stats = secondStats
 	sub := &fakeClient{responses: []llm.Response{first, second}}
 	factory := &clientFactory{clients: map[string]llm.Client{"worker": sub}}
 
@@ -566,6 +571,12 @@ func TestSubagentRunnerUsagePropagation(t *testing.T) {
 			t.Errorf("usage event %d Depth = %d, want 0 from RunSubagent", i, usageEvents[i].Depth)
 		}
 	}
+	wantStats := []llm.CallStats{firstStats, secondStats}
+	for i, want := range wantStats {
+		if usageEvents[i].Stats != want {
+			t.Errorf("usage event %d Stats = %+v, want %+v", i, usageEvents[i].Stats, want)
+		}
+	}
 }
 
 func TestSubagentRunnerUsageCollectedWithoutCallback(t *testing.T) {
@@ -577,9 +588,11 @@ func TestSubagentRunnerUsageCollectedWithoutCallback(t *testing.T) {
 		Message:      llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call("call_1", "echo", "{}")}},
 		FinishReason: llm.FinishToolCalls,
 		Usage:        llm.Usage{PromptTokens: 11, CompletionTokens: 4, TotalTokens: 15},
+		Stats:        llm.CallStats{Output: llm.OutputBytes{ToolCalls: 9}, Elapsed: time.Second},
 	}
 	second := textResp("final")
 	second.Usage = llm.Usage{PromptTokens: 60, CompletionTokens: 6, TotalTokens: 66}
+	second.Stats = llm.CallStats{Output: llm.OutputBytes{Content: 5}, Elapsed: 2 * time.Second}
 	sub := &fakeClient{responses: []llm.Response{first, second}}
 	factory := &clientFactory{clients: map[string]llm.Client{"worker": sub}}
 
@@ -595,8 +608,8 @@ func TestSubagentRunnerUsageCollectedWithoutCallback(t *testing.T) {
 	}
 
 	want := []tools.SubagentUsageRecord{
-		{Agent: "worker", Model: "m", Usage: first.Usage},
-		{Agent: "worker", Model: "m", Usage: second.Usage},
+		{Agent: "worker", Model: "m", Usage: first.Usage, Stats: first.Stats},
+		{Agent: "worker", Model: "m", Usage: second.Usage, Stats: second.Stats},
 	}
 	if len(res.Usage) != len(want) {
 		t.Fatalf("res.Usage = %+v, want %+v", res.Usage, want)
@@ -644,7 +657,7 @@ func TestSubagentRunnerFailureStillCarriesUsage(t *testing.T) {
 		t.Error("res.Err = false, want true")
 	}
 	want := []tools.SubagentUsageRecord{
-		{Agent: "worker", Model: "m", Usage: loopResp.Usage},
+		{Agent: "worker", Model: "m", Usage: loopResp.Usage, Stats: loopResp.Stats},
 	}
 	if len(res.Usage) != 1 || res.Usage[0] != want[0] {
 		t.Errorf("res.Usage = %+v, want %+v (calls that ran still spent tokens)", res.Usage, want)

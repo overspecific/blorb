@@ -74,6 +74,9 @@ type Event struct {
 	Failed bool
 	// Usage is the provider-reported token usage of the completed call.
 	Usage llm.Usage
+	// Stats is the stats of the completed call; zero for all kinds
+	// except EventUsage.
+	Stats llm.CallStats
 	// AgentName attributes the call to the agent whose engine made it.
 	AgentName string
 	// Model is the agent's configured provider model.
@@ -271,12 +274,15 @@ func (e *Engine) call(ctx context.Context, onEvent func(Event) error) (resp *llm
 // emitUsage reports one completed LLM call's usage via EventUsage.
 func (e *Engine) emitUsage(resp *llm.Response, onEvent func(Event) error) error {
 	var usage llm.Usage
+	var stats llm.CallStats
 	if resp != nil {
 		usage = resp.Usage
+		stats = resp.Stats
 	}
 	return onEvent(Event{
 		Kind:      EventUsage,
 		Usage:     usage,
+		Stats:     stats,
 		AgentName: e.cfg.AgentName,
 		Model:     e.cfg.Model,
 	})

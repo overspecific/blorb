@@ -41,6 +41,9 @@ type SubagentEvent struct {
 	// Usage is set on SubagentUsage events: the token usage of one
 	// completed LLM call by the named agent.
 	Usage llm.Usage
+	// Stats is the stats of the completed call; set on SubagentUsage
+	// events.
+	Stats llm.CallStats
 }
 
 // SubagentUsageRecord is one LLM call's usage within a subagent run.
@@ -48,6 +51,9 @@ type SubagentUsageRecord struct {
 	Agent string
 	Model string
 	Usage llm.Usage
+	// Stats is the stats of the completed call; zero when the provider
+	// client did not measure.
+	Stats llm.CallStats
 }
 
 // SubagentResult is the outcome of a subagent run, mirroring ToolResult:

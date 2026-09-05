@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/engine"
@@ -119,6 +120,11 @@ func usageResp(content string, usage llm.Usage) llm.Response {
 	return resp
 }
 
+func statsResp(content string, usage llm.Usage, stats llm.CallStats) llm.Response {
+	resp := usageResp(content, usage)
+	resp.Stats = stats
+	return resp
+}
 func toolCallResp(calls ...llm.ToolCall) llm.Response {
 	return llm.Response{
 		ID:           "resp",
@@ -1034,11 +1040,45 @@ func TestRunTurnEmitsUsageWholeMessage(t *testing.T) {
 	}
 }
 
+func TestRunTurnEmitsUsageStatsWholeMessage(t *testing.T) {
+	t.Parallel()
+
+	wantStats := llm.CallStats{
+		Output:  llm.OutputBytes{Content: 10, Reasoning: 3, ToolCalls: 21},
+		Elapsed: 1500 * time.Millisecond,
+	}
+	fc := &fakeClient{responses: []llm.Response{statsResp("the answer", llm.Usage{TotalTokens: 44}, wantStats)}}
+	e := engine.New(engine.EngineConfig{Client: fc, AgentName: "main", Model: "gpt-test"})
+
+	var events []engine.Event
+	_, err := e.RunTurn(context.Background(), "hi", func(ev engine.Event) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+
+	var usageEvents []engine.Event
+	for _, ev := range events {
+		if ev.Kind == engine.EventUsage {
+			usageEvents = append(usageEvents, ev)
+		}
+	}
+	if len(usageEvents) != 1 {
+		t.Fatalf("usage events = %+v, want exactly one", usageEvents)
+	}
+	if usageEvents[0].Stats != wantStats {
+		t.Errorf("Stats = %+v, want %+v", usageEvents[0].Stats, wantStats)
+	}
+}
+
 func TestRunTurnEmitsUsageStreamed(t *testing.T) {
 	t.Parallel()
 
 	wantUsage := llm.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}
-	resp := usageResp("the answer", wantUsage)
+	wantStats := llm.CallStats{Output: llm.OutputBytes{Content: 7}, Elapsed: 2 * time.Second}
+	resp := statsResp("the answer", wantUsage, wantStats)
 	fc := &streamingClient{responses: []llm.Response{resp}}
 	e := engine.New(engine.EngineConfig{Client: fc, Stream: true})
 
@@ -1063,6 +1103,9 @@ func TestRunTurnEmitsUsageStreamed(t *testing.T) {
 	idx := usageIndexes[0]
 	if events[idx].Usage != wantUsage {
 		t.Errorf("usage = %+v, want %+v", events[idx].Usage, wantUsage)
+	}
+	if events[idx].Stats != wantStats {
+		t.Errorf("stats = %+v, want %+v", events[idx].Stats, wantStats)
 	}
 	// For streamed calls the usage event arrives after the call's deltas,
 	// since the provider reports usage in the stream's final chunk.

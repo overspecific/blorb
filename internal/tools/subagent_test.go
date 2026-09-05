@@ -410,7 +410,8 @@ func TestSubagentUsageEventForwarding(t *testing.T) {
 		result: tools.SubagentResult{Output: "done"},
 		events: []tools.SubagentEvent{
 			{Agent: "deepest", Depth: 0, Kind: tools.SubagentUsage,
-				Usage: llm.Usage{PromptTokens: 5, CompletionTokens: 6, TotalTokens: 11}},
+				Usage: llm.Usage{PromptTokens: 5, CompletionTokens: 6, TotalTokens: 11},
+				Stats: llm.CallStats{Output: llm.OutputBytes{Content: 8}, Elapsed: time.Second}},
 		},
 	}
 	var got []tools.SubagentEvent
@@ -444,7 +445,8 @@ func TestSubagentUsageRecordsPassThroughResult(t *testing.T) {
 	// The tool copies SubagentResult.Usage onto its own result path; the
 	// output text is unaffected.
 	want := []tools.SubagentUsageRecord{
-		{Agent: "x", Model: "m", Usage: llm.Usage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}},
+		{Agent: "x", Model: "m", Usage: llm.Usage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10},
+			Stats: llm.CallStats{Output: llm.OutputBytes{Content: 12}, Elapsed: 3 * time.Second}},
 	}
 	fake := &fakeSubagentRunner{
 		result: tools.SubagentResult{Output: "the answer", Usage: want},

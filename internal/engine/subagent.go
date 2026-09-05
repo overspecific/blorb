@@ -94,6 +94,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 				Agent: agentName,
 				Model: ev.Model,
 				Usage: ev.Usage,
+				Stats: ev.Stats,
 			})
 		}
 		return r.convert(agentName, onEvent)(ev)
@@ -146,6 +147,7 @@ func (r *SubagentRunner) convert(agentName string, onEvent func(tools.SubagentEv
 			Failed: ev.Failed,
 			Model:  ev.Model,
 			Usage:  ev.Usage,
+			Stats:  ev.Stats,
 		}
 		switch ev.Kind {
 		case EventAssistantText:
