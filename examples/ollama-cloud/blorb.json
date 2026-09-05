@@ -2,10 +2,10 @@
   "default_agent": "cloudy",
   "models": [
     {
-      "name": "cloud-qwen3",
+      "name": "cloud-gemma4",
       "type": "ollama",
       "base_url": "https://ollama.com",
-      "model_name": "qwen3:8b",
+      "model_name": "gemma4:e4b",
       "api_key_env": "OLLAMA_API_KEY",
       "reasoning_effort": "medium"
     }
@@ -19,7 +19,7 @@
         "read",
         "grep"
       ],
-      "model": "cloud-qwen3"
+      "model": "cloud-gemma4"
     }
   ],
   "tools": [
