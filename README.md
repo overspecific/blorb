@@ -168,15 +168,16 @@ Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
 
 ```
 provider local (openai-compatible, http://localhost:13305/v1)
-  Gemma-4-E4B-it-GGUF (installed)
+  Gemma-4-E4B-it-GGUF (used by small)
   Qwen3-32B-GGUF
-provider local-llama (ollama, http://localhost:11434)
-  llama3.1:latest (installed)
   gemma4:31b
-  mxbai-embed-large (NOT INSTALLED)
+  mxbai-embed-large
+provider local-llama (ollama, http://localhost:11434)
+  llama3.1:latest (used by local-llama)
+  mistral:7b (NOT INSTALLED; configured as local-mistral)
 ```
 
-Each provider prints one block — name, type, base_url — followed by the server's installed models (from `GET /models` on openai-compatible servers, `/api/tags` on Ollama) with each of the provider's configured models marked `installed` or `NOT INSTALLED` by `model_name`. API keys resolve through the same path as a real session, so a missing key or a listing failure is reported per provider and does not stop the others.
+Each provider prints one block — name, type, base_url — followed by the server's installed models (from `GET /models` on openai-compatible servers, `/api/tags` on Ollama). A model the config uses is marked `used by <config model name>`, naming the model entry (several entries may share one `model_name`); unconfigured server models print plainly. A configured `model_name` the server does not have prints as `NOT INSTALLED`, naming the config entry that points at it — that is the typo you are looking for. API keys resolve through the same path as a real session, so a missing key or a listing failure is reported per provider and does not stop the others.
 
 Exit codes: `0` when every provider that could be listed shows all its configured models installed; `1` when any listing failed or any model is missing — typo detection is the point.
 

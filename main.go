@@ -101,16 +101,29 @@ func modelsCommand() *cli.Command {
 					continue
 				}
 
+				// usedBy maps each server model name to the config model
+				// entries that name it, so the listing can show which
+				// config models use what the server has.
+				usedBy := make(map[string][]string, len(models))
+				for _, m := range models {
+					usedBy[m.ModelName] = append(usedBy[m.ModelName], m.Name)
+				}
+
 				installedSet := make(map[string]struct{}, len(installed))
 				for _, mi := range installed {
-					fmt.Fprintf(w, "  %s\n", mi.Name)
 					installedSet[mi.Name] = struct{}{}
-				}
-				for _, m := range models {
-					if _, ok := installedSet[m.ModelName]; ok {
-						fmt.Fprintf(w, "  %s (installed)\n", m.ModelName)
+					if users := usedBy[mi.Name]; len(users) > 0 {
+						fmt.Fprintf(w, "  %s (used by %s)\n", mi.Name, strings.Join(users, ", "))
 					} else {
-						fmt.Fprintf(w, "  %s (NOT INSTALLED)\n", m.ModelName)
+						fmt.Fprintf(w, "  %s\n", mi.Name)
+					}
+				}
+				// A configured model the server does not have is the typo
+				// case: name both the wire model_name and the config
+				// entry that points at it.
+				for _, m := range models {
+					if _, ok := installedSet[m.ModelName]; !ok {
+						fmt.Fprintf(w, "  %s (NOT INSTALLED; configured as %s)\n", m.ModelName, m.Name)
 						exitCode = 1
 					}
 				}

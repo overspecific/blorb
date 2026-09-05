@@ -902,14 +902,19 @@ func TestModelsCommandAllInstalled(t *testing.T) {
 	if !strings.Contains(out, "provider local (openai-compatible, "+srv.URL+")") {
 		t.Errorf("output %q missing the provider block heading", out)
 	}
-	if !strings.Contains(out, "model-helper (installed)") {
-		t.Errorf("output %q missing the installed marking", out)
+	// The configured model appears once, marked with the config entry
+	// that uses it; the unconfigured server model appears plainly.
+	if !strings.Contains(out, "model-helper (used by helper)") {
+		t.Errorf("output %q missing the used marking", out)
 	}
-	if !strings.Contains(out, "model-extra\n") {
+	if strings.Contains(out, "model-helper (installed)") {
+		t.Errorf("output %q carries the old installed marking", out)
+	}
+	if strings.Contains(out, "model-helper (NOT INSTALLED") {
+		t.Errorf("output %q marks a present model as missing", out)
+	}
+	if !strings.Contains(out, "\n  model-extra\n") {
 		t.Errorf("output %q missing the unconfigured server model", out)
-	}
-	if !strings.Contains(out, "provider local (openai-compatible, "+srv.URL+")") && strings.Count(out, "provider ") != 1 {
-		t.Errorf("output %q should carry exactly one provider block", out)
 	}
 }
 
@@ -923,11 +928,11 @@ func TestModelsCommandTypoedModelExitsNonZero(t *testing.T) {
 	if err == nil {
 		t.Fatalf("models command succeeded, want exit 1 (typo detection is the point)\noutput:\n%s", out)
 	}
-	if !strings.Contains(out, "model-helper (installed)") {
-		t.Errorf("output %q missing the installed marking", out)
+	if !strings.Contains(out, "model-helper (used by helper)") {
+		t.Errorf("output %q missing the used marking", out)
 	}
-	if !strings.Contains(out, "model-helper-mistyped (NOT INSTALLED)") {
-		t.Errorf("output %q missing the NOT INSTALLED marking", out)
+	if !strings.Contains(out, "model-helper-mistyped (NOT INSTALLED; configured as helper-mistyped)") {
+		t.Errorf("output %q missing the NOT INSTALLED marking naming the config entry", out)
 	}
 }
 
