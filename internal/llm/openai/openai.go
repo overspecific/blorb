@@ -1,5 +1,16 @@
-// Package openai implements llm.Client for OpenAI-compatible
-// /chat/completions servers over plain net/http + JSON.
+// Package openai implements llm.Client and llm.StreamingClient for
+// OpenAI-compatible /chat/completions servers over plain net/http + JSON
+// (SSE when streaming).
+//
+// Wire contract highlights:
+//
+//   - The model's reasoning_effort, when set, is sent as the request's
+//     reasoning_effort field on both the Chat and ChatStream paths; empty
+//     omits the field and the server default applies.
+//   - Server-extracted chain-of-thought (reasoning_content) decodes to
+//     llm.Message.Reasoning and is re-sent only with assistant messages
+//     that carry tool calls, keeping the model's thinking continuous
+//     across tool call rounds.
 package openai
 
 import (

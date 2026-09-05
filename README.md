@@ -203,6 +203,18 @@ A `blorb.json` defines the shared model and tool vocabularies and the agents tha
 
 With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb chat --agent quiet` runs the quiet one, and `./blorb chat --agent nope` fails naming the defined agents. Both agents share the `echo` tool; only `simple` also uses the `read` builtin.
 
+An `ollama` model entry looks like this instead:
+
+```json
+{
+  "name": "local-llama",
+  "type": "ollama",
+  "model_name": "llama3.1:latest",
+  "base_url": "http://localhost:11434",
+  "reasoning_effort": "medium"
+}
+```
+
 ### Top-level fields
 
 | Field           | Required | Description                                                                        |
@@ -220,15 +232,16 @@ Each model entry declares one named LLM backend. Agents reference it by name in 
 
 The `type` discriminator determines which fields are recognized; this is the extension point for future backend types.
 
-Currently supported: `openai-compatible` — any OpenAI-compatible chat completions API (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...).
+Currently supported: `openai-compatible` — any OpenAI-compatible chat completions API (OpenAI, Lemonade, LM Studio, vLLM, ...); and `ollama` — Ollama's native `/api/chat` API, for a local Ollama server or Ollama cloud.
 
-| Field         | Required | Description                                                                                         |
-| ------------- | -------- | --------------------------------------------------------------------------------------------------- |
-| `name`        | yes      | Identifier agents reference; unique within the config, and free-form to the config author.           |
-| `type`        | yes      | Must be `openai-compatible`.                                                                         |
-| `model_name`  | yes      | Model name passed to the API.                                                                        |
-| `base_url`    | yes      | Base URL of the chat completions endpoint, e.g. `http://localhost:13305/v1`. Must be http or https.  |
-| `api_key_env` | no       | Name of the environment variable containing the API key, if the endpoint needs one.                  |
+| Field            | Required | Description                                                                                                           |
+| ---------------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
+| `name`           | yes      | Identifier agents reference; unique within the config, and free-form to the config author.                             |
+| `type`           | yes      | Must be `openai-compatible` or `ollama`.                                                                               |
+| `model_name`     | yes      | Model name passed to the API (for ollama, the Ollama tag, e.g. `llama3.1:latest`).                                     |
+| `base_url`       | yes      | For `openai-compatible`, the API root with `/chat/completions` appended, e.g. `http://localhost:13305/v1`. For `ollama`, the bare Ollama server root with `/api/chat` appended, e.g. `http://localhost:11434`. Must be http or https. |
+| `api_key_env`    | no       | Name of the environment variable containing the API key, if the endpoint needs one. Optional for `ollama`: local Ollama needs no key, Ollama cloud does.                 |
+| `reasoning_effort` | no     | The thinking effort the backend is asked for: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Empty (the default) means the server default applies. The value is passed through verbatim on both paths — which values a given model accepts is the server's business — except that `none` becomes `think: false` on the ollama path, since Ollama rejects the string `none`. Thinking output surfaces as reasoning, streamed live for both types (`reasoning_content` over SSE for openai-compatible, `thinking` over Ollama's NDJSON for ollama). |
 
 ### Agents
 
@@ -393,6 +406,7 @@ Layout:
 - `internal/tools/builtin` — built-in tools (`read`, `grep`)
 - `internal/llm` — provider-neutral LLM types
 - `internal/llm/openai` — OpenAI-compatible client, with SSE streaming support
+- `internal/llm/ollama` — native Ollama client (`/api/chat`), non-streaming and NDJSON streaming
 - `internal/logging` — wire logging for LLM and tool interactions
 - `internal/prefactor` — Prefactor tracing client and tracer
 

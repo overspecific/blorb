@@ -1,5 +1,21 @@
-// Package ollama implements llm.Client for Ollama's native /api/chat API
-// over plain net/http + JSON, non-streaming and streaming (NDJSON).
+// Package ollama implements llm.Client and llm.StreamingClient for
+// Ollama's native /api/chat API over plain net/http + JSON. Non-streaming
+// requests return one JSON object; streaming requests return NDJSON — one
+// chatResponse object per line, terminating with a done:true line.
+//
+// Wire contract highlights:
+//
+//   - The model's reasoning_effort maps onto the request's think field:
+//     empty omits it (server default), "none" becomes think: false (Ollama
+//     rejects the string "none"), and every other value passes through
+//     verbatim as the level string.
+//   - Server thinking (message.thinking) decodes to llm.Message.Reasoning;
+//     reasoning is never re-sent to the server, matching the openai
+//     client's rule that a final answer's reasoning is stale by the next
+//     request.
+//   - Ollama omits tool call ids, so the client synthesizes
+//     "call_" + 16 hex chars when decoding; the engine needs non-empty ids
+//     for history matching and repair.
 package ollama
 
 import (
