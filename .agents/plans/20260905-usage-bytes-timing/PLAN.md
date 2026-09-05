@@ -23,7 +23,7 @@ Scope decisions:
 - [x] Commit 6: footer rendering with rates
 - [x] Commit 7: ndjson events carry stats
 - [x] Commit 8: prefactor span payload
-- [ ] Commit 9: docs
+- [x] Commit 9: docs
 
 ---
 

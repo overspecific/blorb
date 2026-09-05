@@ -17,7 +17,7 @@ Tools are plain executables declared in the config, built-ins implemented inside
 - One-shot `run` mode: one prompt in, one agent turn out, for scripting — the prompt comes from a quoted argument, a file, or stdin, with `--format plain` (agent text only on stdout, progress on stderr) and `--format ndjson` (streaming JSON events) alongside the chat-style default
 - Streamed assistant responses over SSE (text, reasoning, and tool calls as they arrive); `--no-stream` disables it
 - Tool results summarize by default in chat (a character and line count); `--tool-output` shows the full output, and failed results and subagent output always show in full
-- Token usage stats: every turn ends with a token footer (prompt/completion/total), chat prints session totals at exit, and subagent usage is itemised by agent in the footer's per-agent split
+- Token usage stats: every turn ends with a token footer (prompt/completion/total), chat prints session totals at exit, and subagent usage is itemised by agent in the footer's per-agent split. When the provider client can measure, the footer also shows a stats line — elapsed time, output bytes (split into text, reasoning, and tool-call bytes), and derived throughput (tok/s, KB/s)
 - Full wire logging: every LLM request/response and tool call/result is written to a timestamped file per session, so a plain sort of the filenames replays a turn in order (see [Logging](#logging))
 - Tools as local subprocesses, built-ins (`read`, `grep`), or subagents — one agent delegating to another defined in the same config, with JSON Schema argument declarations
 - Any OpenAI-compatible chat completions endpoint as the LLM backend
@@ -89,6 +89,8 @@ Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C
 
 Each turn ends with a token usage footer, e.g. `tokens: 123 prompt, 456 completion, 579 total` — with a per-agent split when subagents ran (see [Subagent tools](#tools)). When the session ends, chat prints the cumulative totals on a `session tokens: ...` line. A zero count means the provider did not report usage.
 
+When the provider client measures, the footer carries a second line with the call stats, e.g. `stats: 4s, 9.2KB output (6KB text, 2KB reasoning, 1.2KB tools), 20.0 tok/s, 2.3KB/s` — elapsed time, output bytes with the text/reasoning/tool-call split (components that are zero are omitted from the parenthesised split), and derived throughput. The session footer shows cumulative stats the same way. The line is omitted entirely when nothing was measured. Note that for reasoning models the rates are end-to-end — thinking time is included in both the elapsed span and the output bytes — so they read as "delivered per wall-clock second".
+
 ### One-shot runs
 
 `blorb run` executes exactly one agent turn and exits — the scripting counterpart to `chat`:
@@ -114,7 +116,7 @@ The prompt argument is required and exactly one is accepted: omitting it or pass
 
 `run` takes the same flags as `chat` (`-c | --config <path>`, `--agent <name>`, `--no-stream`, `--tool-output`) plus `--format <chat|plain|ndjson>`.
 
-**`chat`** (the default) is identical to chat output — everything on stdout, `>>>` headings, streamed fragments, and the per-turn token footer.
+**`chat`** (the default) is identical to chat output — everything on stdout, `>>>` headings, streamed fragments, and the per-turn token footer with its stats line.
 
 **`plain`** puts just the agent's output on stdout — no headings, no decorations, no trailing newline — so it composes in pipelines (`./blorb run --format plain "..." | jq`). Everything else goes to stderr: the chat-style progress (headings, tool activity, streamed fragments) and the token footer. The agent's output is the assistant's text events spliced exactly as they arrived, with nothing added between them.
 
@@ -130,10 +132,12 @@ text            {type, text}                       whole assistant message (with
 thinking        {type, thinking}                   whole reasoning (with --no-stream)
 tool_call       {type, name, arguments}            whole tool call (with --no-stream)
 tool_result     {type, name, output, failed}       tool result; output is always the full body
-usage           {type, agent, model, usage}        one LLM call's token usage
-done            {type, text?, usage, agents}       terminal on success
+usage           {type, agent, model, usage, stats} one LLM call's token usage and call stats
+done            {type, text?, usage, stats?, rates?, agents}  terminal on success
 error           {type, error}                      terminal on failure
 ```
+
+The `stats` object on `usage`, `subagent_usage`, and `done` carries the measured output bytes — `{"output":{"content_bytes":...,"reasoning_bytes":...,"tool_call_bytes":...},"elapsed_ns":...}`; derive the total by summing the three components. `done.agents[].stats` is each agent's summed stats. `done.rates` (`{"tokens_per_sec":...,"bytes_per_sec":...}`) is a convenience derived from the summed stats — consumers can compute their own rates from the raw fields — and is omitted when no time was measured.
 
 For example, to print just the assistant's text as it streams:
 
