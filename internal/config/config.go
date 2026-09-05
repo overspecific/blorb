@@ -296,6 +296,10 @@ type Model struct {
 	// ModelName is the model identifier sent to the server: for ollama
 	// the Ollama tag, for openai-compatible the server's model id.
 	ModelName string `json:"model_name,omitempty"`
+	// Format is Ollama's structured-output setting, valid only on models
+	// whose provider's type is ollama: either the JSON string "json" or a
+	// JSON schema object. Empty means free-form output.
+	Format json.RawMessage `json:"format,omitempty"`
 	// ReasoningEffort is the optional thinking effort the backend is
 	// asked for. Empty means the server default applies. Accepted values
 	// are the union of the OpenAI and Ollama scales; see
@@ -738,9 +742,9 @@ func validateEndpointProvider(p *Provider) error {
 }
 
 // validate checks one model definition: its name, that the provider it
-// names is defined, its model_name, and the reasoning_effort value set.
-// providers is the already-validated top-level list the model references
-// by name.
+// names is defined, its model_name, the reasoning_effort value set, and
+// the provider-type-gated knobs (format). providers is the
+// already-validated top-level list the model references by name.
 func (m *Model) validate(providers []Provider) error {
 	if m.Name == "" {
 		return fmt.Errorf("name is required")
@@ -748,13 +752,45 @@ func (m *Model) validate(providers []Provider) error {
 	if m.Provider == "" {
 		return fmt.Errorf("provider is required")
 	}
-	if !slices.ContainsFunc(providers, func(p Provider) bool { return p.Name == m.Provider }) {
+	idx := slices.IndexFunc(providers, func(p Provider) bool { return p.Name == m.Provider })
+	if idx < 0 {
 		return fmt.Errorf("provider %q is not a defined provider", m.Provider)
 	}
 	if m.ModelName == "" {
 		return fmt.Errorf("model_name is required")
 	}
-	return validateReasoningEffort(m.ReasoningEffort)
+	if err := validateReasoningEffort(m.ReasoningEffort); err != nil {
+		return err
+	}
+	return validateFormat(m.Format, providers[idx].Type)
+}
+
+// validateFormat checks the ollama-only format knob: the value must be
+// either the JSON string "json" or a JSON schema object, and it is
+// rejected outright on models whose provider is not ollama (Ollama-only
+// means rejected, not ignored).
+func validateFormat(format json.RawMessage, providerType string) error {
+	if len(format) == 0 {
+		return nil
+	}
+	if providerType != ModelTypeOllama {
+		return fmt.Errorf("format is not valid for models on %s providers", providerType)
+	}
+	var asAny any
+	if err := json.Unmarshal(format, &asAny); err != nil {
+		return fmt.Errorf("format must be valid JSON: %w", err)
+	}
+	switch v := asAny.(type) {
+	case string:
+		if v != "json" {
+			return fmt.Errorf("format must be \"json\" or a JSON schema object (got the string %q)", v)
+		}
+	case map[string]any:
+		return nil
+	default:
+		return fmt.Errorf("format must be \"json\" or a JSON schema object (got %v)", v)
+	}
+	return nil
 }
 
 // SupportedToolTypes lists the tool types this build recognizes, sorted

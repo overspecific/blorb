@@ -1,0 +1,11 @@
+{
+  "providers": [
+    {"name": "local", "type": "ollama", "base_url": "http://localhost:11434"}
+  ],
+  "models": [
+    {"name": "m", "provider": "local", "model_name": "llama3.1:latest", "format": "structured"}
+  ],
+  "agents": [
+    {"name": "helper", "system_prompt": "You are helpful.", "max_turns": 1, "model": "m"}
+  ]
+}

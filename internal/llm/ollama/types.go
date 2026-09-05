@@ -41,6 +41,10 @@ type chatRequest struct {
 	// /api/chat expects. nil leaves the field off the wire entirely: a
 	// request with no sampling overrides sends the server defaults.
 	Options *wireOptions `json:"options,omitempty"`
+	// Format is Ollama's structured-output setting from the model entry:
+	// the JSON string "json" or a JSON schema object, serialized
+	// verbatim. nil (unset) omits the field — free-form output.
+	Format json.RawMessage `json:"format,omitempty"`
 }
 
 // wireOptions is Ollama's nested generation-options object. All fields

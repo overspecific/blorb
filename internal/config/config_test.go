@@ -508,6 +508,9 @@ func TestLoadRejects(t *testing.T) {
 		{"model_missing_model.json", []string{"model \"m\": model_name is required"}},
 		{"model_reasoning_effort_invalid.json", []string{`reasoning_effort "ultra" must be one of`}},
 		{"model_ollama_bad_reasoning_effort.json", []string{`reasoning_effort "ultra" must be one of`}},
+		{"model_ollama_format_invalid.json", []string{`format must be "json" or a JSON schema object`}},
+		{"model_ollama_format_array.json", []string{`format must be "json" or a JSON schema object`}},
+		{"model_format_on_openai_provider.json", []string{"format is not valid for models on openai-compatible providers"}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
 		{"tool_missing_type.json", []string{"type is required"}},
@@ -788,6 +791,30 @@ func TestLoadProviderSamplingValid(t *testing.T) {
 
 	if _, err := loadTestdata(t, "provider_ollama_sampling_valid.json"); err != nil {
 		t.Errorf("Load(provider_ollama_sampling_valid.json) error = %v, want nil", err)
+	}
+}
+
+// TestLoadOllamaFormatValid pins the parsed format knob: the "json"
+// string form and the schema-object form both load verbatim.
+func TestLoadOllamaFormatValid(t *testing.T) {
+	cfg, err := loadTestdata(t, "model_ollama_format_json.json")
+	if err != nil {
+		t.Fatalf("Load(model_ollama_format_json.json) error = %v, want nil", err)
+	}
+	if got, want := string(cfg.Models[0].Format), `"json"`; got != want {
+		t.Errorf("Format = %s, want %s", got, want)
+	}
+
+	cfg, err = loadTestdata(t, "model_ollama_format_schema.json")
+	if err != nil {
+		t.Fatalf("Load(model_ollama_format_schema.json) error = %v, want nil", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(cfg.Models[0].Format, &schema); err != nil {
+		t.Fatalf("unmarshal Format: %v", err)
+	}
+	if schema["type"] != "object" {
+		t.Errorf("Format type = %v, want object", schema["type"])
 	}
 }
 

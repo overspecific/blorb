@@ -1835,6 +1835,80 @@ func TestNewClientOllama(t *testing.T) {
 	})
 }
 
+// TestNewClientOllamaFormat pins that an ollama model entry carrying
+// format builds a client that serializes it onto the wire, and that an
+// ollama model without format omits it.
+func TestNewClientOllamaFormat(t *testing.T) {
+	t.Parallel()
+
+	agent := testAgent()
+	agent.Model = "local-llama"
+
+	t.Run("format reaches the wire", func(t *testing.T) {
+		t.Parallel()
+
+		var gotFormat any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req map[string]any
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("unmarshal request: %v", err)
+			}
+			gotFormat = req["format"]
+			_, _ = w.Write([]byte(`{"model":"llama3.1:latest","message":{"role":"assistant","content":"hi"},"done":true,"done_reason":"stop"}`))
+		}))
+		defer srv.Close()
+
+		p := ollamaTestProvider()
+		p.BaseURL = srv.URL
+		m := ollamaTestModel()
+		m.Format = json.RawMessage(`"json"`)
+		cfg := config.Config{Providers: []config.Provider{p}, Models: []config.Model{m}, Agents: []config.Agent{agent}}
+
+		client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
+		if err != nil {
+			t.Fatalf("NewClientWithGetenv error = %v, want nil", err)
+		}
+		if _, err := client.Chat(context.Background(), llm.Request{}); err != nil {
+			t.Fatalf("Chat error = %v, want nil", err)
+		}
+		if gotFormat != "json" {
+			t.Errorf("wire format = %v, want %q", gotFormat, "json")
+		}
+	})
+
+	t.Run("unset format omits the field", func(t *testing.T) {
+		t.Parallel()
+
+		var sawFormat bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req map[string]any
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("unmarshal request: %v", err)
+			}
+			_, sawFormat = req["format"]
+			_, _ = w.Write([]byte(`{"model":"llama3.1:latest","message":{"role":"assistant","content":"hi"},"done":true,"done_reason":"stop"}`))
+		}))
+		defer srv.Close()
+
+		p := ollamaTestProvider()
+		p.BaseURL = srv.URL
+		cfg := config.Config{Providers: []config.Provider{p}, Models: []config.Model{ollamaTestModel()}, Agents: []config.Agent{agent}}
+
+		client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
+		if err != nil {
+			t.Fatalf("NewClientWithGetenv error = %v, want nil", err)
+		}
+		if _, err := client.Chat(context.Background(), llm.Request{}); err != nil {
+			t.Fatalf("Chat error = %v, want nil", err)
+		}
+		if sawFormat {
+			t.Errorf("wire request carries format, want the field omitted")
+		}
+	})
+}
+
 // subagentTestConfig builds a two-agent config: parent granted a subagent
 // tool targeting worker, and worker granted a trivial command tool so a
 // nested tool round trip is exercised.

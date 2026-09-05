@@ -781,6 +781,7 @@ var clientFactories = map[string]clientFactory{
 			BaseURL:         provider.BaseURL,
 			Model:           model.ModelName,
 			ReasoningEffort: model.ReasoningEffort,
+			Format:          model.Format,
 			APIKey:          apiKey,
 			Sink:            sink,
 		})

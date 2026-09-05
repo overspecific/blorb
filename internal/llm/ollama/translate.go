@@ -3,6 +3,7 @@ package ollama
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/overspecific/blorb/internal/llm"
@@ -10,12 +11,13 @@ import (
 
 // wireRequest builds the Ollama wire request from a neutral request.
 // defaultModel applies when the request carries no model; reasoningEffort
-// maps onto the think field (see thinkValue).
+// maps onto the think field (see thinkValue); format passes through
+// verbatim from the client config (nil omits the field).
 //
 // Thinking is deliberately NOT sent back to the server: a final answer's
 // reasoning is stale by the next request, and resending it pollutes the
 // prompt. It is decoded from responses only.
-func wireRequest(req llm.Request, defaultModel, reasoningEffort string) (chatRequest, error) {
+func wireRequest(req llm.Request, defaultModel, reasoningEffort string, format json.RawMessage) (chatRequest, error) {
 	model := req.Model
 	if model == "" {
 		model = defaultModel
@@ -41,6 +43,7 @@ func wireRequest(req llm.Request, defaultModel, reasoningEffort string) (chatReq
 		Think:    thinkValue(reasoningEffort),
 		Tools:    wireTools(req.Tools),
 		Options:  wireSamplingOptions(req.Sampling),
+		Format:   format,
 	}, nil
 }
 

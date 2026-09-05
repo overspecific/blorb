@@ -51,6 +51,11 @@ type Config struct {
 	// the level string. Which values a given model accepts is the
 	// server's business.
 	ReasoningEffort string
+	// Format is Ollama's structured-output setting, sent as the request's
+	// format field: either the JSON string "json" or a JSON schema
+	// object. nil omits the field (free-form output). It is a per-model
+	// setting, not a per-request override.
+	Format json.RawMessage
 	// APIKey, when non-empty, is sent as a Bearer token. Ollama cloud
 	// needs it; local Ollama ignores the header.
 	APIKey string
@@ -104,7 +109,7 @@ func New(cfg Config) (*Client, error) {
 // non-streaming Ollama response is a single JSON object, which the decoder
 // accepts as-is.
 func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
-	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort)
+	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +390,7 @@ func mapWireFinishReason(finishReason string) string {
 // error aborts the stream and is returned. It implements
 // llm.StreamingClient.
 func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
-	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort)
+	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format)
 	if err != nil {
 		return nil, err
 	}
