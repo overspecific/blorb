@@ -22,7 +22,7 @@ Scope decisions:
 - [x] Commit 5: `internal/usage` accumulates stats
 - [x] Commit 6: footer rendering with rates
 - [x] Commit 7: ndjson events carry stats
-- [ ] Commit 8: prefactor span payload
+- [x] Commit 8: prefactor span payload
 - [ ] Commit 9: docs
 
 ---

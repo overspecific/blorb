@@ -391,6 +391,7 @@ func llmResultPayload(resp llm.Response) map[string]any {
 		"reasoning":     resp.Message.Reasoning,
 		"tool_calls":    toolCalls,
 		"usage":         usagePayload(resp.Usage),
+		"stats":         statsPayload(resp.Stats),
 		"finish_reason": resp.FinishReason,
 		"status":        StatusComplete,
 	}
@@ -402,6 +403,25 @@ func usagePayload(u llm.Usage) map[string]any {
 		"prompt_tokens":     u.PromptTokens,
 		"completion_tokens": u.CompletionTokens,
 		"total_tokens":      u.TotalTokens,
+	}
+}
+
+// statsPayload builds the stats sub-payload. Milliseconds, not
+// nanoseconds: the span payload is human-facing telemetry and elapsed_ms
+// is the convention for span durations; sub-millisecond calls show 0,
+// which is acceptable for telemetry. (The ndjson surface keeps nanosecond
+// precision; this payload is a lossy display.)
+func statsPayload(s llm.CallStats) map[string]any {
+	return map[string]any{
+		"output_bytes": map[string]any{
+			"content":    s.Output.Content,
+			"reasoning":  s.Output.Reasoning,
+			"tool_calls": s.Output.ToolCalls,
+			// The breakdown rides alongside its total so consumers see
+			// where bytes went without summing.
+			"total": s.Output.Total(),
+		},
+		"elapsed_ms": s.Elapsed.Milliseconds(),
 	}
 }
 

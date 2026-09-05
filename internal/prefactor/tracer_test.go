@@ -393,6 +393,12 @@ func TestTracerLLMSpanPayloads(t *testing.T) {
 
 	resp := testResponse()
 	resp.Message.Reasoning = "thinking hard"
+	// Non-zero stats: the result payload must carry the nested
+	// output_bytes breakdown and the millisecond-rounded elapsed.
+	resp.Stats = llm.CallStats{
+		Output:  llm.OutputBytes{Content: 8, Reasoning: 13, ToolCalls: 21},
+		Elapsed: 1500 * time.Millisecond,
+	}
 	if err := ls.Complete(resp); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -451,6 +457,15 @@ func TestTracerLLMSpanPayloads(t *testing.T) {
 		Usage     struct {
 			TotalTokens int `json:"total_tokens"`
 		} `json:"usage"`
+		Stats struct {
+			OutputBytes struct {
+				Content   int `json:"content"`
+				Reasoning int `json:"reasoning"`
+				ToolCalls int `json:"tool_calls"`
+				Total     int `json:"total"`
+			} `json:"output_bytes"`
+			ElapsedMS int64 `json:"elapsed_ms"`
+		} `json:"stats"`
 		FinishReason string `json:"finish_reason"`
 		Status       string `json:"status"`
 	}
@@ -462,6 +477,15 @@ func TestTracerLLMSpanPayloads(t *testing.T) {
 	}
 	if result.Usage.TotalTokens != 15 {
 		t.Errorf("usage total_tokens = %d, want 15", result.Usage.TotalTokens)
+	}
+	if result.Stats.OutputBytes.Content != 8 || result.Stats.OutputBytes.Reasoning != 13 || result.Stats.OutputBytes.ToolCalls != 21 {
+		t.Errorf("stats.output_bytes = %+v, want content 8, reasoning 13, tool_calls 21", result.Stats.OutputBytes)
+	}
+	if result.Stats.OutputBytes.Total != 42 {
+		t.Errorf("stats.output_bytes.total = %d, want 42", result.Stats.OutputBytes.Total)
+	}
+	if result.Stats.ElapsedMS != 1500 {
+		t.Errorf("stats.elapsed_ms = %d, want 1500 (millisecond-rounded)", result.Stats.ElapsedMS)
 	}
 	if result.FinishReason != llm.FinishStop || result.Status != "complete" {
 		t.Errorf("finish_reason/status = %q/%q, want stop/complete", result.FinishReason, result.Status)
