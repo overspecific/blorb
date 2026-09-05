@@ -123,6 +123,139 @@ func TestChatSuccessRoundTrip(t *testing.T) {
 	}
 }
 
+// samplingRequest returns a request carrying every sampling parameter,
+// including explicit zeros, for the wire tests.
+func samplingRequest() llm.Request {
+	temp := 0.0
+	topP := 0.9
+	seed := int64(42)
+	maxTokens := 512
+	freq := -1.5
+	presence := 1.0
+	return llm.Request{
+		Model:    "gpt-4o-mini",
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
+		Sampling: llm.SamplingParams{
+			Temperature:      &temp,
+			TopP:             &topP,
+			Seed:             &seed,
+			Stop:             []string{"END"},
+			MaxTokens:        &maxTokens,
+			FrequencyPenalty: &freq,
+			PresencePenalty:  &presence,
+		},
+	}
+}
+
+// samplingFields asserts the exact sampling keys on the decoded wire body.
+var samplingFields = map[string]any{
+	"temperature":       0.0, // explicit zero must reach the wire
+	"top_p":             0.9,
+	"seed":              42.0,
+	"stop":              []any{"END"},
+	"max_tokens":        512.0,
+	"frequency_penalty": -1.5,
+	"presence_penalty":  1.0,
+}
+
+// captureRequest returns a server handler that decodes the incoming JSON
+// body into *got and replies — as an SSE stream when streamed, a
+// whole-message response otherwise.
+func captureRequest(t *testing.T, got *map[string]any, streamed bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		if err := json.Unmarshal(body, got); err != nil {
+			t.Errorf("unmarshal request body: %v", err)
+		}
+		if streamed {
+			w.Header().Set("Content-Type", "text/event-stream")
+			sseChunks(w,
+				`{"id":"resp-1","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}`,
+				`{"id":"resp-1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp-1","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}
+}
+
+// TestChatSamplingOnWire pins the sampling mapping: every parameter set
+// reaches the request body (including an explicit 0 temperature), and a
+// request without sampling omits every field. Both Chat and ChatStream
+// share request building, so both paths are covered.
+func TestChatSamplingOnWire(t *testing.T) {
+	t.Parallel()
+
+	for _, streamed := range []bool{false, true} {
+		name := "chat"
+		if streamed {
+			name = "chat_stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var gotReq map[string]any
+			srv := httptest.NewServer(captureRequest(t, &gotReq, streamed))
+			defer srv.Close()
+
+			c := newTestClient(t, srv.URL)
+			if streamed {
+				if _, err := c.ChatStream(context.Background(), samplingRequest(), func(llm.Delta) error { return nil }); err != nil {
+					t.Fatalf("ChatStream error = %v, want nil", err)
+				}
+			} else {
+				if _, err := c.Chat(context.Background(), samplingRequest()); err != nil {
+					t.Fatalf("Chat error = %v, want nil", err)
+				}
+			}
+
+			for k, want := range samplingFields {
+				if got, present := gotReq[k]; !present {
+					t.Errorf("wire request missing %s = %v", k, want)
+				} else {
+					gotJSON, _ := json.Marshal(got)
+					wantJSON, _ := json.Marshal(want)
+					if string(gotJSON) != string(wantJSON) {
+						t.Errorf("wire %s = %s, want %s", k, gotJSON, wantJSON)
+					}
+				}
+			}
+		})
+
+		t.Run(name+"_unset_omits_all", func(t *testing.T) {
+			t.Parallel()
+
+			var gotReq map[string]any
+			srv := httptest.NewServer(captureRequest(t, &gotReq, streamed))
+			defer srv.Close()
+
+			c := newTestClient(t, srv.URL)
+			req := llm.Request{
+				Model:    "gpt-4o-mini",
+				Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
+			}
+			if streamed {
+				if _, err := c.ChatStream(context.Background(), req, func(llm.Delta) error { return nil }); err != nil {
+					t.Fatalf("ChatStream error = %v, want nil", err)
+				}
+			} else {
+				if _, err := c.Chat(context.Background(), req); err != nil {
+					t.Fatalf("Chat error = %v, want nil", err)
+				}
+			}
+
+			for _, k := range []string{"temperature", "top_p", "seed", "stop", "max_tokens", "frequency_penalty", "presence_penalty"} {
+				if _, present := gotReq[k]; present {
+					t.Errorf("wire request carries %s = %v, want the field omitted", k, gotReq[k])
+				}
+			}
+		})
+	}
+}
+
 func TestChatToolResultMessagesOnWire(t *testing.T) {
 	t.Parallel()
 

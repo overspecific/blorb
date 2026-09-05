@@ -111,15 +111,35 @@ func New(cfg Config) (*Client, error) {
 	return &Client{cfg: cfg}, nil
 }
 
-// Chat sends a chat completion request and returns the provider-neutral
-// response.
-func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+// buildWireRequest converts a neutral request into the wire envelope.
+// Shared by the Chat and ChatStream paths so their request building cannot
+// drift; streamed sets the stream fields.
+func (c *Client) buildWireRequest(req llm.Request, streamed bool) wireRequest {
 	body := wireRequest{
 		Model:           firstNonEmpty(req.Model, c.cfg.Model),
 		Messages:        wireMessages(req.Messages),
 		Tools:           wireTools(req.Tools),
 		ReasoningEffort: c.cfg.ReasoningEffort,
+
+		Temperature:      req.Sampling.Temperature,
+		TopP:             req.Sampling.TopP,
+		Seed:             req.Sampling.Seed,
+		Stop:             req.Sampling.Stop,
+		MaxTokens:        req.Sampling.MaxTokens,
+		FrequencyPenalty: req.Sampling.FrequencyPenalty,
+		PresencePenalty:  req.Sampling.PresencePenalty,
 	}
+	if streamed {
+		body.Stream = true
+		body.StreamOptions = &streamOptions{IncludeUsage: true}
+	}
+	return body
+}
+
+// Chat sends a chat completion request and returns the provider-neutral
+// response.
+func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	body := c.buildWireRequest(req, false)
 
 	httpResp, endpoint, startedAt, err := c.post(ctx, body)
 	if err != nil {
@@ -375,14 +395,7 @@ func wireMessageForLog(m llm.Message) wireMessage {
 // finishes. An onDelta error aborts the stream and is returned. It
 // implements llm.StreamingClient.
 func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
-	body := wireRequest{
-		Model:           firstNonEmpty(req.Model, c.cfg.Model),
-		Messages:        wireMessages(req.Messages),
-		Tools:           wireTools(req.Tools),
-		Stream:          true,
-		StreamOptions:   &streamOptions{IncludeUsage: true},
-		ReasoningEffort: c.cfg.ReasoningEffort,
-	}
+	body := c.buildWireRequest(req, true)
 
 	httpResp, endpoint, startedAt, err := c.post(ctx, body)
 	if err != nil {
@@ -533,6 +546,23 @@ type wireRequest struct {
 	// applies. Populated from Config on both the Chat and ChatStream
 	// paths, which share request building.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
+	// The sampling parameters, sent top-level. All fields carry omitempty
+	// and the numerics are pointers, so an explicit zero (e.g.
+	// "temperature": 0) reaches the wire while unset fields mean the
+	// server default applies. Populated from the request on both the Chat
+	// and ChatStream paths.
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	Seed        *int64   `json:"seed,omitempty"`
+	Stop        []string `json:"stop,omitempty"`
+	// MaxTokens is sent as max_tokens — not max_completion_tokens — for
+	// widest compatibility with the llama-server/vLLM class of
+	// OpenAI-compatible servers, several of which do not accept the
+	// newer field name.
+	MaxTokens        *int     `json:"max_tokens,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
 }
 
 // streamOptions carries per-server streaming behaviour. IncludeUsage asks
