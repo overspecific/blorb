@@ -1445,3 +1445,90 @@ func TestChatStreamLogsNon2xx(t *testing.T) {
 		t.Errorf("response Status header = %v, want 401", got)
 	}
 }
+
+func TestChatCapturesCallStats(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model": "llama3.1:latest",
+			"created_at": "2026-01-01T00:00:00Z",
+			"message": {
+				"role": "assistant",
+				"content": "the answer",
+				"thinking": "hmm",
+				"tool_calls": [{"function": {"name": "ls", "arguments": {"path": "."}}}]
+			},
+			"done": true,
+			"done_reason": "tool_calls",
+			"prompt_eval_count": 12,
+			"eval_count": 5
+		}`))
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).Chat(context.Background(), sampleRequest())
+	if err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+
+	// Recomputed from the fixture's expected content/reasoning/tool
+	// call, pinning the component numbers themselves. The tool call's
+	// arguments are the wire bytes as-is (the decode preserves them),
+	// space included.
+	wantOutput := llm.OutputBytes{
+		Content:   len("the answer"),
+		Reasoning: len("hmm"),
+		ToolCalls: len("ls") + len(`{"path": "."}`),
+	}
+	if resp.Stats.Output != wantOutput {
+		t.Errorf("Stats.Output = %+v, want %+v", resp.Stats.Output, wantOutput)
+	}
+	if resp.Stats.Elapsed <= 0 {
+		t.Errorf("Stats.Elapsed = %v, want > 0", resp.Stats.Elapsed)
+	}
+}
+
+func TestChatStreamCapturesCallStats(t *testing.T) {
+	t.Parallel()
+
+	// Multi-line NDJSON stream: lines assemble to the same message the
+	// whole-body path would return, so streamed and non-streamed stats
+	// must agree — the cross-path consistency pin.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ndjsonChunks(w,
+			`{"model":"m","message":{"role":"assistant","thinking":"think "}}`,
+			`{"model":"m","message":{"role":"assistant","thinking":"hard"}}`,
+			`{"model":"m","message":{"role":"assistant","content":"Hello, "}}`,
+			`{"model":"m","message":{"role":"assistant","content":"world"}}`,
+			`{"model":"m","message":{"role":"assistant","tool_calls":[{"function":{"name":"ls","arguments":{"pa":"th"}}}]}}`,
+			`{"model":"m","message":{"role":"assistant","content":""},"done":true,"done_reason":"tool_calls","prompt_eval_count":10,"eval_count":4}`,
+		)
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).ChatStream(context.Background(), sampleRequest(), func(d llm.Delta) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want nil", err)
+	}
+
+	// Ollama re-encodes arguments as JSON, so the streamed call's args
+	// decode to the neutral `{"pa":"th"}` form.
+	wantOutput := llm.OutputBytes{
+		Content:   len("Hello, world"),
+		Reasoning: len("think hard"),
+		ToolCalls: len("ls") + len(`{"pa":"th"}`),
+	}
+	if resp.Stats.Output != wantOutput {
+		t.Errorf("Stats.Output = %+v, want %+v", resp.Stats.Output, wantOutput)
+	}
+	if resp.Stats.Elapsed <= 0 {
+		t.Errorf("Stats.Elapsed = %v, want > 0", resp.Stats.Elapsed)
+	}
+	if got := resp.Message.OutputBytes(); got != wantOutput {
+		t.Errorf("Message.OutputBytes() = %+v, want %+v", got, wantOutput)
+	}
+}

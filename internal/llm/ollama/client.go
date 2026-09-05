@@ -105,7 +105,7 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 		return nil, err
 	}
 
-	httpResp, endpoint, err := c.post(ctx, wire)
+	httpResp, endpoint, startedAt, err := c.post(ctx, wire)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +121,9 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 	if len(respBody) == maxBodyLen {
 		return nil, fmt.Errorf("read response body: response exceeds %d byte limit", maxBodyLen)
 	}
+	// The clock stops once the body has been fully received; parsing
+	// below is local work, not part of the call.
+	elapsed := time.Since(startedAt)
 
 	// Logged before the status check so non-2xx responses are logged
 	// with their body too. Write errors are ignored.
@@ -153,6 +156,7 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 	if hasToolCallWithoutName(resp.Message.ToolCalls) {
 		return nil, fmt.Errorf("decode response: tool call missing name (body: %s)", truncate(respBody, maxErrorBodyLen))
 	}
+	resp.Stats = llm.CallStats{Output: resp.Message.OutputBytes(), Elapsed: elapsed}
 	return resp, nil
 }
 
@@ -335,7 +339,7 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 	}
 	wire.Stream = true
 
-	httpResp, endpoint, err := c.post(ctx, wire)
+	httpResp, endpoint, startedAt, err := c.post(ctx, wire)
 	if err != nil {
 		return nil, err
 	}
@@ -368,19 +372,22 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 			httpResp.StatusCode, truncate(respBody, maxErrorBodyLen))
 	}
 
-	return c.readStream(httpResp, endpoint, onDelta)
+	return c.readStream(httpResp, endpoint, startedAt, onDelta)
 }
 
 // readStream consumes an NDJSON body, emitting deltas and accumulating the
 // complete response. It errors when the stream carries no parseable chunks
 // at all: an empty stream would otherwise surface as a silent empty answer.
 //
+// startedAt is the clock start taken by post; the clock stops when the
+// stream has been fully read, to measure the call's elapsed time.
+//
 // The response log record is written here, where the accumulator's
 // assembled response exists: the assembled response on the happy path, the
 // partial response on abort/error paths after data arrived, and an
 // "error: ..." body when the stream carried no data at all. Write errors
 // are ignored — logging is best-effort.
-func (c *Client) readStream(httpResp *http.Response, endpoint string, onDelta func(llm.Delta) error) (*llm.Response, error) {
+func (c *Client) readStream(httpResp *http.Response, endpoint string, startedAt time.Time, onDelta func(llm.Delta) error) (*llm.Response, error) {
 	logResponse := func(body []byte) {
 		if c.cfg.Sink == nil {
 			return
@@ -449,6 +456,10 @@ func (c *Client) readStream(httpResp *http.Response, endpoint string, onDelta fu
 		return fail(fmt.Errorf("decode response: tool call missing name"))
 	}
 
+	// The clock stops once the stream has been fully read and the
+	// assembled response validated.
+	resp.Stats = llm.CallStats{Output: resp.Message.OutputBytes(), Elapsed: time.Since(startedAt)}
+
 	// A marshal failure still leaves a record: error: <marshal error>.
 	body, err := marshalWireResponse(resp)
 	if err != nil {
@@ -462,21 +473,25 @@ func (c *Client) readStream(httpResp *http.Response, endpoint string, onDelta fu
 // post marshals the wire request and POSTs it to /api/chat. The caller owns
 // the response body. Shared by the Chat and ChatStream paths so their
 // request building cannot drift. The final endpoint URL is returned
-// alongside the response so callers can use it in response log records.
-func (c *Client) post(ctx context.Context, body chatRequest) (*http.Response, string, error) {
+// alongside the response so callers can use it in response log records,
+// together with the clock start for the call's elapsed measurement: just
+// before the request is built and sent. Callers stop the clock when the
+// response body has been fully read.
+func (c *Client) post(ctx context.Context, body chatRequest) (*http.Response, string, time.Time, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return nil, "", fmt.Errorf("marshal request: %w", err)
+		return nil, "", time.Time{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	endpoint, err := url.JoinPath(strings.TrimSuffix(c.cfg.BaseURL, "/"), chatPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("join base_url %q: %w", c.cfg.BaseURL, err)
+		return nil, "", time.Time{}, fmt.Errorf("join base_url %q: %w", c.cfg.BaseURL, err)
 	}
 
+	startedAt := time.Now()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return nil, "", fmt.Errorf("build request: %w", err)
+		return nil, "", time.Time{}, fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
@@ -504,19 +519,19 @@ func (c *Client) post(ctx context.Context, body chatRequest) (*http.Response, st
 		// own server-closed-idle sentinel, not this in-flight close.
 		// The request never reached the server, so send it once more.
 		if !errors.Is(err, io.EOF) {
-			return nil, "", fmt.Errorf("ollama chat: %w", err)
+			return nil, "", time.Time{}, fmt.Errorf("ollama chat: %w", err)
 		}
 		body, getErr := httpReq.GetBody()
 		if getErr != nil {
-			return nil, "", fmt.Errorf("ollama chat: retry unavailable: %w", err)
+			return nil, "", time.Time{}, fmt.Errorf("ollama chat: retry unavailable: %w", err)
 		}
 		httpReq.Body = body
 		httpResp, err = c.httpClient().Do(httpReq)
 		if err != nil {
-			return nil, "", fmt.Errorf("ollama chat: %w", err)
+			return nil, "", time.Time{}, fmt.Errorf("ollama chat: %w", err)
 		}
 	}
-	return httpResp, endpoint, nil
+	return httpResp, endpoint, startedAt, nil
 }
 
 // cloneHeader deep-copies a header map so a log record is immune to later
