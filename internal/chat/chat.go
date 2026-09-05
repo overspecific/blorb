@@ -782,6 +782,7 @@ var clientFactories = map[string]clientFactory{
 			Model:           model.ModelName,
 			ReasoningEffort: model.ReasoningEffort,
 			Format:          model.Format,
+			KeepAlive:       model.KeepAlive,
 			APIKey:          apiKey,
 			Sink:            sink,
 		})

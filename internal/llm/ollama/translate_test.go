@@ -53,7 +53,7 @@ func TestWireRequestSamplingOptions(t *testing.T) {
 				PresencePenalty:  &presence,
 			},
 		}
-		wire, err := wireRequest(req, "fallback-model", "", nil)
+		wire, err := wireRequest(req, "fallback-model", "", nil, "")
 		if err != nil {
 			t.Fatalf("wireRequest error = %v, want nil", err)
 		}
@@ -91,7 +91,7 @@ func TestWireRequestSamplingOptions(t *testing.T) {
 		req := llm.Request{
 			Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
 		}
-		wire, err := wireRequest(req, "fallback-model", "", nil)
+		wire, err := wireRequest(req, "fallback-model", "", nil, "")
 		if err != nil {
 			t.Fatalf("wireRequest error = %v, want nil", err)
 		}
@@ -127,7 +127,7 @@ func TestWireRequestMessages(t *testing.T) {
 		},
 	}
 
-	wire, err := wireRequest(req, "fallback-model", "", nil)
+	wire, err := wireRequest(req, "fallback-model", "", nil, "")
 	if err != nil {
 		t.Fatalf("wireRequest error = %v, want nil", err)
 	}
@@ -177,7 +177,7 @@ func TestWireRequestMessages(t *testing.T) {
 func TestWireRequestDefaultModel(t *testing.T) {
 	t.Parallel()
 
-	wire, err := wireRequest(llm.Request{}, "fallback-model", "", nil)
+	wire, err := wireRequest(llm.Request{}, "fallback-model", "", nil, "")
 	if err != nil {
 		t.Fatalf("wireRequest error = %v, want nil", err)
 	}
@@ -185,7 +185,7 @@ func TestWireRequestDefaultModel(t *testing.T) {
 		t.Errorf("Model = %q, want the default model", wire.Model)
 	}
 
-	wire, err = wireRequest(llm.Request{Model: "explicit"}, "fallback-model", "", nil)
+	wire, err = wireRequest(llm.Request{Model: "explicit"}, "fallback-model", "", nil, "")
 	if err != nil {
 		t.Fatalf("wireRequest error = %v, want nil", err)
 	}
@@ -205,7 +205,7 @@ func TestWireRequestEmptyArgsBecomeObject(t *testing.T) {
 			},
 		}},
 	}
-	wire, err := wireRequest(req, "m", "", nil)
+	wire, err := wireRequest(req, "m", "", nil, "")
 	if err != nil {
 		t.Fatalf("wireRequest error = %v, want nil", err)
 	}
@@ -226,7 +226,7 @@ func TestWireRequestInvalidArgsError(t *testing.T) {
 			},
 		}},
 	}
-	_, err := wireRequest(req, "m", "", nil)
+	_, err := wireRequest(req, "m", "", nil, "")
 	if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
 		t.Errorf("error = %v, want an invalid-arguments error", err)
 	}
@@ -253,7 +253,7 @@ func TestWireRequestThinkMapping(t *testing.T) {
 		t.Run("effort="+tc.effort, func(t *testing.T) {
 			t.Parallel()
 
-			wire, err := wireRequest(llm.Request{}, "m", tc.effort, nil)
+			wire, err := wireRequest(llm.Request{}, "m", tc.effort, nil, "")
 			if err != nil {
 				t.Fatalf("wireRequest error = %v, want nil", err)
 			}
@@ -300,7 +300,7 @@ func TestWireRequestNoThinkingResent(t *testing.T) {
 			Reasoning: "stale thinking",
 		}},
 	}
-	wire, err := wireRequest(req, "m", "", nil)
+	wire, err := wireRequest(req, "m", "", nil, "")
 	if err != nil {
 		t.Fatalf("wireRequest error = %v, want nil", err)
 	}
@@ -329,7 +329,7 @@ func TestWireRequestEmptyContentOmitted(t *testing.T) {
 			},
 		},
 	}
-	wire, err := wireRequest(req, "m", "", nil)
+	wire, err := wireRequest(req, "m", "", nil, "")
 	if err != nil {
 		t.Fatalf("wireRequest error = %v, want nil", err)
 	}
@@ -363,7 +363,7 @@ func TestWireRequestFormat(t *testing.T) {
 	t.Run("string form serializes verbatim", func(t *testing.T) {
 		t.Parallel()
 
-		wire, err := wireRequest(req, "m", "", json.RawMessage(`"json"`))
+		wire, err := wireRequest(req, "m", "", json.RawMessage(`"json"`), "")
 		if err != nil {
 			t.Fatalf("wireRequest error = %v, want nil", err)
 		}
@@ -377,7 +377,7 @@ func TestWireRequestFormat(t *testing.T) {
 		t.Parallel()
 
 		schema := json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}}}`)
-		wire, err := wireRequest(req, "m", "", schema)
+		wire, err := wireRequest(req, "m", "", schema, "")
 		if err != nil {
 			t.Fatalf("wireRequest error = %v, want nil", err)
 		}
@@ -391,13 +391,49 @@ func TestWireRequestFormat(t *testing.T) {
 	t.Run("unset omits the field", func(t *testing.T) {
 		t.Parallel()
 
-		wire, err := wireRequest(req, "m", "", nil)
+		wire, err := wireRequest(req, "m", "", nil, "")
 		if err != nil {
 			t.Fatalf("wireRequest error = %v, want nil", err)
 		}
 		got := decodeRequest(t, wire)
 		if _, present := got["format"]; present {
 			t.Errorf("wire format = %v, want the field omitted", got["format"])
+		}
+	})
+}
+
+// TestWireRequestKeepAlive pins the keep_alive mapping: set serializes
+// verbatim; unset omits the field.
+func TestWireRequestKeepAlive(t *testing.T) {
+	t.Parallel()
+
+	req := llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
+	}
+
+	t.Run("set serializes verbatim", func(t *testing.T) {
+		t.Parallel()
+
+		wire, err := wireRequest(req, "m", "", nil, "5m")
+		if err != nil {
+			t.Fatalf("wireRequest error = %v, want nil", err)
+		}
+		got := decodeRequest(t, wire)
+		if got["keep_alive"] != "5m" {
+			t.Errorf("wire keep_alive = %v, want %q", got["keep_alive"], "5m")
+		}
+	})
+
+	t.Run("unset omits the field", func(t *testing.T) {
+		t.Parallel()
+
+		wire, err := wireRequest(req, "m", "", nil, "")
+		if err != nil {
+			t.Fatalf("wireRequest error = %v, want nil", err)
+		}
+		got := decodeRequest(t, wire)
+		if _, present := got["keep_alive"]; present {
+			t.Errorf("wire keep_alive = %v, want the field omitted", got["keep_alive"])
 		}
 	})
 }

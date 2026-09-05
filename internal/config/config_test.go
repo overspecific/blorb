@@ -511,6 +511,7 @@ func TestLoadRejects(t *testing.T) {
 		{"model_ollama_format_invalid.json", []string{`format must be "json" or a JSON schema object`}},
 		{"model_ollama_format_array.json", []string{`format must be "json" or a JSON schema object`}},
 		{"model_format_on_openai_provider.json", []string{"format is not valid for models on openai-compatible providers"}},
+		{"model_keep_alive_on_openai_provider.json", []string{"keep_alive is not valid for models on openai-compatible providers"}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
 		{"tool_missing_type.json", []string{"type is required"}},
@@ -815,6 +816,23 @@ func TestLoadOllamaFormatValid(t *testing.T) {
 	}
 	if schema["type"] != "object" {
 		t.Errorf("Format type = %v, want object", schema["type"])
+	}
+}
+
+// TestLoadOllamaKeepAliveValid pins the parsed keep_alive knob: the string
+// passes through verbatim, and an absent field stays valid.
+func TestLoadOllamaKeepAliveValid(t *testing.T) {
+	cfg, err := loadTestdata(t, "model_ollama_keep_alive_valid.json")
+	if err != nil {
+		t.Fatalf("Load(model_ollama_keep_alive_valid.json) error = %v, want nil", err)
+	}
+	if got, want := cfg.Models[0].KeepAlive, "5m"; got != want {
+		t.Errorf("KeepAlive = %q, want %q", got, want)
+	}
+
+	// No keep_alive stays valid: the server default applies.
+	if _, err := loadTestdata(t, "model_ollama_valid.json"); err != nil {
+		t.Errorf("Load(model_ollama_valid.json) error = %v, want nil", err)
 	}
 }
 

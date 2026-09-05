@@ -300,6 +300,12 @@ type Model struct {
 	// whose provider's type is ollama: either the JSON string "json" or a
 	// JSON schema object. Empty means free-form output.
 	Format json.RawMessage `json:"format,omitempty"`
+	// KeepAlive is Ollama's how-long-the-model-stays-loaded setting,
+	// valid only on models whose provider's type is ollama. Blorb passes
+	// the string through verbatim — which duration forms a given server
+	// accepts is the server's business, matching the reasoning_effort
+	// rule. Empty means the server default applies.
+	KeepAlive string `json:"keep_alive,omitempty"`
 	// ReasoningEffort is the optional thinking effort the backend is
 	// asked for. Empty means the server default applies. Accepted values
 	// are the union of the OpenAI and Ollama scales; see
@@ -762,7 +768,23 @@ func (m *Model) validate(providers []Provider) error {
 	if err := validateReasoningEffort(m.ReasoningEffort); err != nil {
 		return err
 	}
-	return validateFormat(m.Format, providers[idx].Type)
+	if err := validateFormat(m.Format, providers[idx].Type); err != nil {
+		return err
+	}
+	return validateKeepAlive(m.KeepAlive, providers[idx].Type)
+}
+
+// validateKeepAlive checks the ollama-only keep_alive knob: the string
+// passes through verbatim, so only the provider-type gate applies
+// (Ollama-only means rejected, not ignored).
+func validateKeepAlive(keepAlive, providerType string) error {
+	if keepAlive == "" {
+		return nil
+	}
+	if providerType != ModelTypeOllama {
+		return fmt.Errorf("keep_alive is not valid for models on %s providers", providerType)
+	}
+	return nil
 }
 
 // validateFormat checks the ollama-only format knob: the value must be

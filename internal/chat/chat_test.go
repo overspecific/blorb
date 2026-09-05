@@ -1909,6 +1909,63 @@ func TestNewClientOllamaFormat(t *testing.T) {
 	})
 }
 
+// TestNewClientOllamaKeepAlive pins that an ollama model entry carrying
+// keep_alive builds a client that sends it on the wire, and that an entry
+// without it omits the field.
+func TestNewClientOllamaKeepAlive(t *testing.T) {
+	t.Parallel()
+
+	agent := testAgent()
+	agent.Model = "local-llama"
+
+	run := func(keepAlive string, check func(t *testing.T, wire map[string]any)) *httptest.Server {
+		var wireReq map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &wireReq); err != nil {
+				t.Errorf("unmarshal request: %v", err)
+			}
+			_, _ = w.Write([]byte(`{"model":"llama3.1:latest","message":{"role":"assistant","content":"hi"},"done":true,"done_reason":"stop"}`))
+		}))
+
+		p := ollamaTestProvider()
+		p.BaseURL = srv.URL
+		m := ollamaTestModel()
+		m.KeepAlive = keepAlive
+		cfg := config.Config{Providers: []config.Provider{p}, Models: []config.Model{m}, Agents: []config.Agent{agent}}
+
+		client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
+		if err != nil {
+			t.Fatalf("NewClientWithGetenv error = %v, want nil", err)
+		}
+		if _, err := client.Chat(context.Background(), llm.Request{}); err != nil {
+			t.Fatalf("Chat error = %v, want nil", err)
+		}
+		check(t, wireReq)
+		return srv
+	}
+
+	t.Run("keep_alive reaches the wire", func(t *testing.T) {
+		t.Parallel()
+		srv := run("5m", func(t *testing.T, wire map[string]any) {
+			if got := wire["keep_alive"]; got != "5m" {
+				t.Errorf("wire keep_alive = %v, want %q", got, "5m")
+			}
+		})
+		defer srv.Close()
+	})
+
+	t.Run("unset keep_alive omits the field", func(t *testing.T) {
+		t.Parallel()
+		srv := run("", func(t *testing.T, wire map[string]any) {
+			if _, present := wire["keep_alive"]; present {
+				t.Errorf("wire request carries keep_alive = %v, want the field omitted", wire["keep_alive"])
+			}
+		})
+		defer srv.Close()
+	})
+}
+
 // subagentTestConfig builds a two-agent config: parent granted a subagent
 // tool targeting worker, and worker granted a trivial command tool so a
 // nested tool round trip is exercised.

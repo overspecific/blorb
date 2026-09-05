@@ -56,6 +56,11 @@ type Config struct {
 	// object. nil omits the field (free-form output). It is a per-model
 	// setting, not a per-request override.
 	Format json.RawMessage
+	// KeepAlive is Ollama's how-long-the-model-stays-loaded setting, sent
+	// verbatim as the request's keep_alive field (e.g. "5m", -1). Empty
+	// omits the field (server default). It is a per-model setting, not a
+	// per-request override.
+	KeepAlive string
 	// APIKey, when non-empty, is sent as a Bearer token. Ollama cloud
 	// needs it; local Ollama ignores the header.
 	APIKey string
@@ -109,7 +114,7 @@ func New(cfg Config) (*Client, error) {
 // non-streaming Ollama response is a single JSON object, which the decoder
 // accepts as-is.
 func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
-	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format)
+	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format, c.cfg.KeepAlive)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +395,7 @@ func mapWireFinishReason(finishReason string) string {
 // error aborts the stream and is returned. It implements
 // llm.StreamingClient.
 func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
-	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format)
+	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format, c.cfg.KeepAlive)
 	if err != nil {
 		return nil, err
 	}

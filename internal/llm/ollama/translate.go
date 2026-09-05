@@ -11,13 +11,13 @@ import (
 
 // wireRequest builds the Ollama wire request from a neutral request.
 // defaultModel applies when the request carries no model; reasoningEffort
-// maps onto the think field (see thinkValue); format passes through
-// verbatim from the client config (nil omits the field).
+// maps onto the think field (see thinkValue); format and keepAlive pass
+// through verbatim from the client config (empty/nil omits the fields).
 //
 // Thinking is deliberately NOT sent back to the server: a final answer's
 // reasoning is stale by the next request, and resending it pollutes the
 // prompt. It is decoded from responses only.
-func wireRequest(req llm.Request, defaultModel, reasoningEffort string, format json.RawMessage) (chatRequest, error) {
+func wireRequest(req llm.Request, defaultModel, reasoningEffort string, format json.RawMessage, keepAlive string) (chatRequest, error) {
 	model := req.Model
 	if model == "" {
 		model = defaultModel
@@ -38,12 +38,13 @@ func wireRequest(req llm.Request, defaultModel, reasoningEffort string, format j
 	}
 
 	return chatRequest{
-		Model:    model,
-		Messages: msgs,
-		Think:    thinkValue(reasoningEffort),
-		Tools:    wireTools(req.Tools),
-		Options:  wireSamplingOptions(req.Sampling),
-		Format:   format,
+		Model:     model,
+		Messages:  msgs,
+		Think:     thinkValue(reasoningEffort),
+		Tools:     wireTools(req.Tools),
+		Options:   wireSamplingOptions(req.Sampling),
+		Format:    format,
+		KeepAlive: keepAlive,
 	}, nil
 }
 

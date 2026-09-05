@@ -45,6 +45,10 @@ type chatRequest struct {
 	// the JSON string "json" or a JSON schema object, serialized
 	// verbatim. nil (unset) omits the field — free-form output.
 	Format json.RawMessage `json:"format,omitempty"`
+	// KeepAlive passes the model entry's keep_alive through verbatim:
+	// which duration forms the server accepts is the server's business.
+	// Empty (unset) omits the field — server default.
+	KeepAlive string `json:"keep_alive,omitempty"`
 }
 
 // wireOptions is Ollama's nested generation-options object. All fields
