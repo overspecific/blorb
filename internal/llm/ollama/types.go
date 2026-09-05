@@ -41,14 +41,18 @@ type chatRequest struct {
 	Tools    []wireTool    `json:"tools,omitempty"`
 }
 
-// wireMessage is the Ollama message shape. Content has no omitempty: empty
-// content is sent as "", which Ollama accepts. Thinking is decode-only —
-// reasoning is deliberately never re-sent to the server, matching the
-// openai client's rule that a final answer's reasoning is stale by the
-// next request (see translate.wireRequest).
+// wireMessage is the Ollama message shape. Content has omitempty: Ollama
+// does not require the field, and sending "content": "" on assistant
+// messages carrying tool calls can knock some models out of structured
+// tool-calling mode (ollama/ollama#14181 — the empty string renders
+// differently from an absent field in the template), so empty content
+// omits the field entirely. Thinking is decode-only — reasoning is
+// deliberately never re-sent to the server, matching the openai client's
+// rule that a final answer's reasoning is stale by the next request (see
+// translate.wireRequest).
 type wireMessage struct {
 	Role       string         `json:"role"`
-	Content    string         `json:"content"`
+	Content    string         `json:"content,omitempty"`
 	Thinking   string         `json:"thinking,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`

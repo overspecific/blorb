@@ -231,6 +231,47 @@ func TestWireRequestNoThinkingResent(t *testing.T) {
 	}
 }
 
+// TestWireRequestEmptyContentOmitted pins that empty content omits the
+// content field entirely rather than sending "content": "": Ollama does
+// not require the field, and the empty string can knock tool-call models
+// out of structured tool-calling mode (ollama/ollama#14181).
+func TestWireRequestEmptyContentOmitted(t *testing.T) {
+	t.Parallel()
+
+	req := llm.Request{
+		Messages: []llm.Message{
+			// A system prompt carries content; a tool-call assistant
+			// message and a content-less user turn do not.
+			llm.NewTextMessage(llm.RoleSystem, "You are helpful."),
+			{
+				Role: llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Type: "function", FunctionName: "ping", FunctionArgs: "{}"},
+				},
+			},
+		},
+	}
+	wire, err := wireRequest(req, "m", "")
+	if err != nil {
+		t.Fatalf("wireRequest error = %v, want nil", err)
+	}
+
+	data, err := json.Marshal(wire.Messages)
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"content":"You are helpful."`) {
+		t.Errorf("wire messages = %s, want the system prompt's content present", s)
+	}
+	if strings.Contains(s, `"content":""`) {
+		t.Errorf("wire messages = %s, want empty content omitted, not sent as \"\"", s)
+	}
+	if !strings.Contains(s, `"tool_calls":[{`) {
+		t.Errorf("wire messages = %s, want the tool calls present", s)
+	}
+}
+
 func TestNeutralResponseContentAndThinking(t *testing.T) {
 	t.Parallel()
 
