@@ -64,12 +64,14 @@ func wireTools(tools []llm.Tool) []wireTool {
 }
 
 // randomHex returns 16 random hex characters, for synthesized tool call
-// ids ("call_" + randomHex). An error falls back to a fixed placeholder:
-// the engine needs a non-empty id more than it needs entropy.
+// ids ("call_" + randomHex). crypto/rand.Read is documented to never fail
+// on Go 1.24+, so a rand error is impossible here; panicking beats a
+// placeholder, whose identical ids would silently corrupt the tool-call
+// history matching the ids exist for.
 func randomHex() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "0000000000000000"
+		panic("ollama: crypto/rand failed: " + err.Error())
 	}
 	return hex.EncodeToString(b[:])
 }
