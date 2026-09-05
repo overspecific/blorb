@@ -517,6 +517,8 @@ func TestLoadRejects(t *testing.T) {
 		{"model_tool_choice_required_with_forced_tool.json", []string{"forced_tool is only valid when tool_choice is \"force\""}},
 		{"model_tool_choice_force_bad_name.json", []string{"forced_tool \"has space\" must match"}},
 		{"model_tool_choice_unknown.json", []string{"tool_choice"}},
+		{"model_top_logprobs_out_of_range.json", []string{"top_logprobs 21 must be in [0, 20]"}},
+		{"model_top_logprobs_without_logprobs.json", []string{"top_logprobs is settable only when logprobs is true"}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
 		{"tool_missing_type.json", []string{"type is required"}},
@@ -879,6 +881,19 @@ func TestLoadToolChoiceModesValid(t *testing.T) {
 		if got := cfg.Models[0].ResolvedToolChoice(); got != nil {
 			t.Errorf("%s: ResolvedToolChoice() = %+v, want nil (auto)", file, got)
 		}
+	}
+}
+
+// TestLoadLogprobsValid pins the parsed logprobs pair: logprobs with
+// top_logprobs loads, and logprobs without top_logprobs stays valid (the
+// server reports only the chosen token).
+func TestLoadLogprobsValid(t *testing.T) {
+	cfg, err := loadTestdata(t, "model_logprobs_valid.json")
+	if err != nil {
+		t.Fatalf("Load(model_logprobs_valid.json) error = %v, want nil", err)
+	}
+	if !cfg.Models[0].Logprobs || cfg.Models[0].TopLogprobs != 5 {
+		t.Errorf("Logprobs/TopLogprobs = %v/%d, want true/5", cfg.Models[0].Logprobs, cfg.Models[0].TopLogprobs)
 	}
 }
 

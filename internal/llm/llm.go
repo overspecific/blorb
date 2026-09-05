@@ -178,6 +178,29 @@ type Response struct {
 	// as measured by the provider client. Zero for fake clients and
 	// any client that does not measure.
 	Stats CallStats `json:"stats"`
+	// Logprobs, when present, carries the per-token log probabilities of
+	// the response's content tokens. Only populated when the request
+	// asked for them (a client-config setting) and the path is
+	// non-streaming; streamed logprob data is not decoded.
+	Logprobs []Logprob `json:"logprobs,omitempty"`
+}
+
+// TopLogprob is one alternative token considered at a content position.
+// Bytes is the token's UTF-8 bytes; nil when the server does not report
+// them.
+type TopLogprob struct {
+	Token   string  `json:"token"`
+	Logprob float64 `json:"logprob"`
+	Bytes   []int   `json:"bytes,omitempty"`
+}
+
+// Logprob is the log probability of one content token: the token actually
+// chosen, plus the top alternatives the server reports for the position.
+type Logprob struct {
+	Token   string       `json:"token"`
+	Logprob float64      `json:"logprob"`
+	Bytes   []int        `json:"bytes,omitempty"`
+	Top     []TopLogprob `json:"top,omitempty"`
 }
 
 // Usage holds token counts reported by the provider.

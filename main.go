@@ -236,6 +236,10 @@ func runCommand() *cli.Command {
 				Usage: "Output format: chat (default), plain, or ndjson",
 				Value: run.FormatChat,
 			},
+			&cli.BoolFlag{
+				Name:  "logprobs",
+				Usage: "With --format plain, print one line per token after the response body: the token, its logprob, and the top alternative when present",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			prompt, err := run.ResolvePrompt(cmd.Args().First(), os.Stdin)
@@ -276,15 +280,16 @@ func runCommand() *cli.Command {
 			// The final text is already printed by the event printer;
 			// nothing extra is output on success.
 			_, err = run.Run(sigCtx, run.Options{
-				Config:     cfg,
-				Agent:      agent,
-				Stdout:     os.Stdout,
-				Stderr:     os.Stderr,
-				Stream:     !cmd.Bool("no-stream"),
-				ToolOutput: cmd.Bool("tool-output"),
-				ConfigPath: cmd.String("config"),
-				Tracer:     tracer,
-				Format:     cmd.String("format"),
+				Config:       cfg,
+				Agent:        agent,
+				Stdout:       os.Stdout,
+				Stderr:       os.Stderr,
+				Stream:       !cmd.Bool("no-stream"),
+				ToolOutput:   cmd.Bool("tool-output"),
+				ConfigPath:   cmd.String("config"),
+				Tracer:       tracer,
+				Format:       cmd.String("format"),
+				ShowLogprobs: cmd.Bool("logprobs"),
 			}, prompt)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {

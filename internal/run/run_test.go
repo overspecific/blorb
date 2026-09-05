@@ -2183,7 +2183,8 @@ type ndjsonLine struct {
 		Usage llm.Usage    `json:"usage"`
 		Stats *ndjsonStats `json:"stats"`
 	} `json:"agents"`
-	Error string `json:"error"`
+	Logprobs []llm.Logprob `json:"logprobs"`
+	Error    string        `json:"error"`
 }
 
 // parseNDJSONLines parses every line of out into ndjsonLine values; it
@@ -2209,6 +2210,127 @@ func ndjsonTypes(lines []ndjsonLine) []string {
 		out[i] = l.Type
 	}
 	return out
+}
+
+// runLogprobResponses returns a canned response carrying per-token
+// logprobs, for the logprobs surface tests.
+func runLogprobResponses() []llm.Response {
+	return []llm.Response{
+		{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "Hi there"),
+			FinishReason: llm.FinishStop,
+			Logprobs: []llm.Logprob{
+				{Token: "Hi", Logprob: -0.25, Bytes: []int{72, 105}, Top: []llm.TopLogprob{
+					{Token: "Hi", Logprob: -0.25},
+					{Token: "Hey", Logprob: -1.5},
+				}},
+				{Token: " there", Logprob: -0.1},
+			},
+		},
+	}
+}
+
+// TestRunFormatNDJSONLogprobs pins that ndjson events carry the response's
+// logprobs when present: the text event and the terminal done event.
+func TestRunFormatNDJSONLogprobs(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout, stderr runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatNDJSON,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: runLogprobResponses()}, nil
+		},
+	}, "say hi")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	var text, done *ndjsonLine
+	for i := range lines {
+		switch lines[i].Type {
+		case "text":
+			text = &lines[i]
+		case "done":
+			done = &lines[i]
+		}
+	}
+	if text == nil || len(text.Logprobs) != 2 {
+		t.Fatalf("text event logprobs = %+v, want 2 entries", text)
+	}
+	if text.Logprobs[0].Token != "Hi" || text.Logprobs[0].Logprob != -0.25 {
+		t.Errorf("text logprobs[0] = %+v, want Hi/-0.25", text.Logprobs[0])
+	}
+	if done == nil || len(done.Logprobs) != 2 {
+		t.Fatalf("done event logprobs = %+v, want 2 entries carried through", done)
+	}
+}
+
+// TestRunFormatPlainLogprobs pins the --logprobs flag: with it, the plain
+// format prints one line per token after the response body; without it,
+// nothing extra prints.
+func TestRunFormatPlainLogprobs(t *testing.T) {
+	t.Run("with the flag prints the block", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := runTestConfig(runTestAgent())
+		var stdout, stderr runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Stderr: &stderr,
+			Format: run.FormatPlain,
+			// Stream off so the whole-message event (which carries the
+			// logprobs) is emitted.
+			ShowLogprobs: true,
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: runLogprobResponses()}, nil
+			},
+		}, "say hi")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		out := stdout.String()
+		if !strings.Contains(out, `"Hi" logprob=-0.2500 (top: "Hi" -0.2500)`) {
+			t.Errorf("stdout = %q, want the token line with its top alternative", out)
+		}
+		if !strings.Contains(out, `" there" logprob=-0.1000`) {
+			t.Errorf("stdout = %q, want the token line without alternatives", out)
+		}
+		if !strings.Contains(out, "Hi there") {
+			t.Errorf("stdout = %q, want the response body before the block", out)
+		}
+	})
+
+	t.Run("without the flag prints nothing extra", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := runTestConfig(runTestAgent())
+		var stdout, stderr runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Stderr: &stderr,
+			Format: run.FormatPlain,
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: runLogprobResponses()}, nil
+			},
+		}, "say hi")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if strings.Contains(stdout.String(), "logprob=") {
+			t.Errorf("stdout = %q, want no logprob block without the flag", stdout.String())
+		}
+	})
 }
 
 // TestRunFormatNDJSONNonStreamedToolRound pins the exact line sequence of

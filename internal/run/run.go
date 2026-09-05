@@ -55,6 +55,12 @@ type Options struct {
 	// value and default), "plain", or "ndjson". An unknown value
 	// fails the run before any LLM call is made.
 	Format string
+	// ShowLogprobs enables the plain format's per-token logprob block,
+	// printed after the response body (one line per token: the token,
+	// its logprob, and the top alternative when present). It has no
+	// effect on the chat format, and only shows anything when the model
+	// reported logprobs — a non-streaming feature.
+	ShowLogprobs bool
 }
 
 // Run executes exactly one agent turn for prompt and returns the final

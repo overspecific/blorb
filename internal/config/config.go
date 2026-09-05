@@ -317,6 +317,13 @@ type Model struct {
 	// "force". Required in force mode and an error otherwise. Must match
 	// NamePattern.
 	ForcedTool string `json:"forced_tool,omitempty"`
+	// Logprobs asks the server to report per-token log probabilities of
+	// the response's content tokens, surfaced through the run command's
+	// --logprobs flag. Models on both provider types support the knob.
+	Logprobs bool `json:"logprobs,omitempty"`
+	// TopLogprobs is how many top alternative tokens to report per
+	// position, in [0, 20], and settable only when logprobs is true.
+	TopLogprobs int `json:"top_logprobs,omitempty"`
 	// ReasoningEffort is the optional thinking effort the backend is
 	// asked for. Empty means the server default applies. Accepted values
 	// are the union of the OpenAI and Ollama scales; see
@@ -785,7 +792,26 @@ func (m *Model) validate(providers []Provider) error {
 	if err := validateKeepAlive(m.KeepAlive, providers[idx].Type); err != nil {
 		return err
 	}
-	return validateToolChoice(m)
+	if err := validateToolChoice(m); err != nil {
+		return err
+	}
+	return validateLogprobs(m)
+}
+
+// validateLogprobs checks the logprobs/top_logprobs pair: top_logprobs in
+// [0, 20] (OpenAI's cap), and settable only when logprobs is true. Models
+// on both provider types support the knob.
+func validateLogprobs(m *Model) error {
+	if m.TopLogprobs == 0 {
+		return nil
+	}
+	if !m.Logprobs {
+		return fmt.Errorf("top_logprobs is settable only when logprobs is true")
+	}
+	if m.TopLogprobs < 0 || m.TopLogprobs > 20 {
+		return fmt.Errorf("top_logprobs %d must be in [0, 20]", m.TopLogprobs)
+	}
+	return nil
 }
 
 // validateToolChoice checks the tool_choice/forced_tool pair: tool_choice

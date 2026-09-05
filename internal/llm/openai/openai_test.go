@@ -327,6 +327,89 @@ func TestChatToolChoiceOnWire(t *testing.T) {
 	}
 }
 
+// TestChatLogprobs pins the logprobs plumbing: the wire flags are sent
+// when the config asks (and omitted otherwise), and a response carrying
+// logprobs decodes into the neutral shape.
+func TestChatLogprobs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("request carries the flags when set, response decodes", func(t *testing.T) {
+		t.Parallel()
+
+		var gotReq map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &gotReq); err != nil {
+				t.Errorf("unmarshal request: %v", err)
+			}
+			_, _ = w.Write([]byte(`{
+				"id":"resp-1",
+				"choices":[{
+					"message":{"role":"assistant","content":"Hi there"},
+					"finish_reason":"stop",
+					"logprobs":{"content":[
+						{"token":"Hi","logprob":-0.25,"bytes":[72,105],"top_logprobs":[
+							{"token":"Hi","logprob":-0.25,"bytes":[72,105]},
+							{"token":"Hey","logprob":-1.5,"bytes":[72,101,121]}
+						]},
+						{"token":" there","logprob":-0.1,"bytes":[32,116,104,101,114,101],"top_logprobs":[]}
+					]}
+				}]
+			}`))
+		}))
+		defer srv.Close()
+
+		c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Logprobs = true; cfg.TopLogprobs = 2 })
+		resp, err := c.Chat(context.Background(), llm.Request{Model: "m"})
+		if err != nil {
+			t.Fatalf("Chat error = %v, want nil", err)
+		}
+
+		if gotReq["logprobs"] != true {
+			t.Errorf("wire logprobs = %v, want true", gotReq["logprobs"])
+		}
+		if got, want := gotReq["top_logprobs"], 2.0; got != want {
+			t.Errorf("wire top_logprobs = %v, want %v", got, want)
+		}
+
+		if len(resp.Logprobs) != 2 {
+			t.Fatalf("Logprobs = %d entries, want 2", len(resp.Logprobs))
+		}
+		first := resp.Logprobs[0]
+		if first.Token != "Hi" || first.Logprob != -0.25 {
+			t.Errorf("Logprobs[0] = %+v, want Hi/-0.25", first)
+		}
+		if got, want := first.Bytes, []int{72, 105}; fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("Logprobs[0].Bytes = %v, want %v", got, want)
+		}
+		if len(first.Top) != 2 || first.Top[1].Token != "Hey" || first.Top[1].Logprob != -1.5 {
+			t.Errorf("Logprobs[0].Top = %+v, want the Hey alternative", first.Top)
+		}
+		second := resp.Logprobs[1]
+		if second.Token != " there" || len(second.Top) != 0 {
+			t.Errorf("Logprobs[1] = %+v, want the token with no alternatives", second)
+		}
+	})
+
+	t.Run("request without the config omits the flags", func(t *testing.T) {
+		t.Parallel()
+
+		var gotReq map[string]any
+		srv := httptest.NewServer(captureRequest(t, &gotReq, false))
+		defer srv.Close()
+
+		if _, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{Model: "m"}); err != nil {
+			t.Fatalf("Chat error = %v, want nil", err)
+		}
+		if _, present := gotReq["logprobs"]; present {
+			t.Errorf("wire logprobs = %v, want the field omitted", gotReq["logprobs"])
+		}
+		if _, present := gotReq["top_logprobs"]; present {
+			t.Errorf("wire top_logprobs = %v, want the field omitted", gotReq["top_logprobs"])
+		}
+	})
+}
+
 func TestChatToolResultMessagesOnWire(t *testing.T) {
 	t.Parallel()
 

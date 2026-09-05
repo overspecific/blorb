@@ -78,6 +78,11 @@ type Event struct {
 	// Stats is the stats of the completed call; zero for all kinds
 	// except EventUsage.
 	Stats llm.CallStats
+	// Logprobs carries the response's per-token log probabilities on
+	// EventAssistantText, when the client config asked for them and the
+	// path was non-streaming; nil otherwise (streamed responses do not
+	// decode logprobs).
+	Logprobs []llm.Logprob
 	// AgentName attributes the call to the agent whose engine made it.
 	AgentName string
 	// Model is the agent's configured provider model.
@@ -218,7 +223,7 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 			}
 
 			if resp.Message.Content != "" {
-				if err := onEvent(Event{Kind: EventAssistantText, Text: resp.Message.Content}); err != nil {
+				if err := onEvent(Event{Kind: EventAssistantText, Text: resp.Message.Content, Logprobs: resp.Logprobs}); err != nil {
 					return "", err
 				}
 			}

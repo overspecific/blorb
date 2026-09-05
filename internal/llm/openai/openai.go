@@ -65,6 +65,17 @@ type Config struct {
 	// a per-model setting, not a per-request override. Which values a
 	// given model accepts is the server's business.
 	ReasoningEffort string
+	// Logprobs asks the server to report per-token log probabilities of
+	// the response's content tokens, decoded into Response.Logprobs on
+	// the non-streaming path. It is a per-model setting, not a
+	// per-request override. Streamed logprob data is not decoded: ChatStream
+	// requests still carry the flags, but the stream accumulators ignore
+	// them.
+	Logprobs bool
+	// TopLogprobs is how many top alternative tokens the server reports
+	// per position, alongside the chosen token's logprob. Only sent when
+	// Logprobs is true.
+	TopLogprobs int
 	// HTTPClient is optional; a client with a 5 minute timeout is used
 	// when nil, so a hung server cannot block a turn forever.
 	HTTPClient *http.Client
@@ -130,6 +141,9 @@ func (c *Client) buildWireRequest(req llm.Request, streamed bool) wireRequest {
 		PresencePenalty:  req.Sampling.PresencePenalty,
 
 		ToolChoice: wireToolChoice(req.ToolChoice),
+
+		Logprobs:    c.cfg.Logprobs,
+		TopLogprobs: c.cfg.TopLogprobs,
 	}
 	if streamed {
 		body.Stream = true
@@ -196,6 +210,7 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 		Message:      neutralMsg,
 		FinishReason: choice.FinishReason,
 		Usage:        envelope.Usage,
+		Logprobs:     neutralLogprobs(choice.Logprobs),
 		Stats:        llm.CallStats{Output: neutralMsg.OutputBytes(), Elapsed: elapsed},
 	}
 	if resp.Message.Role == "" {
@@ -367,8 +382,9 @@ func marshalWireResponse(resp *llm.Response) ([]byte, error) {
 		Usage: resp.Usage,
 	}
 	envelope.Choices = append(envelope.Choices, struct {
-		Message      wireMessage `json:"message"`
-		FinishReason string      `json:"finish_reason"`
+		Message      wireMessage   `json:"message"`
+		FinishReason string        `json:"finish_reason"`
+		Logprobs     *wireLogprobs `json:"logprobs"`
 	}{
 		Message:      wireMessageForLog(resp.Message),
 		FinishReason: resp.FinishReason,
@@ -396,6 +412,11 @@ func wireMessageForLog(m llm.Message) wireMessage {
 // order; see llm.Delta). It returns the complete response once the stream
 // finishes. An onDelta error aborts the stream and is returned. It
 // implements llm.StreamingClient.
+//
+// Streamed logprob data is not decoded: the request still carries the
+// logprobs flags when the client config asks for them, but the stream
+// accumulators ignore that data and the returned response's Logprobs stay
+// nil. Use the non-streaming Chat path when logprobs matter.
 func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
 	body := c.buildWireRequest(req, true)
 
@@ -571,6 +592,14 @@ type wireRequest struct {
 	// force serializes as the OpenAI object shape naming the function.
 	// nil means auto.
 	ToolChoice any `json:"tool_choice,omitempty"`
+
+	// Logprobs asks the server to report per-token log probabilities.
+	// The zero value (false) omits both fields and the server returns
+	// none.
+	Logprobs bool `json:"logprobs,omitempty"`
+	// TopLogprobs is the number of top alternatives reported per
+	// position; only meaningful when Logprobs is true.
+	TopLogprobs int `json:"top_logprobs,omitempty"`
 }
 
 // streamOptions carries per-server streaming behaviour. IncludeUsage asks
@@ -800,10 +829,45 @@ func wireTools(tools []llm.Tool) []wireTool {
 type wireResponse struct {
 	ID      string `json:"id"`
 	Choices []struct {
-		Message      wireMessage `json:"message"`
-		FinishReason string      `json:"finish_reason"`
+		Message      wireMessage   `json:"message"`
+		FinishReason string        `json:"finish_reason"`
+		Logprobs     *wireLogprobs `json:"logprobs"`
 	} `json:"choices"`
 	Usage llm.Usage `json:"usage"`
+}
+
+// wireLogprobs is the logprobs response block: per-token entries for the
+// content, each carrying the chosen token and the top alternatives.
+type wireLogprobs struct {
+	Content []struct {
+		Token       string  `json:"token"`
+		Logprob     float64 `json:"logprob"`
+		Bytes       []int   `json:"bytes"`
+		TopLogprobs []struct {
+			Token   string  `json:"token"`
+			Logprob float64 `json:"logprob"`
+			Bytes   []int   `json:"bytes"`
+		} `json:"top_logprobs"`
+	} `json:"content"`
+}
+
+// neutralLogprobs converts the wire logprobs block into the neutral shape.
+func neutralLogprobs(wire *wireLogprobs) []llm.Logprob {
+	if wire == nil {
+		return nil
+	}
+	out := make([]llm.Logprob, 0, len(wire.Content))
+	for _, c := range wire.Content {
+		lp := llm.Logprob{Token: c.Token, Logprob: c.Logprob, Bytes: c.Bytes}
+		for _, t := range c.TopLogprobs {
+			lp.Top = append(lp.Top, llm.TopLogprob{Token: t.Token, Logprob: t.Logprob, Bytes: t.Bytes})
+		}
+		out = append(out, lp)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ListModels enumerates the models the server has installed, via GET

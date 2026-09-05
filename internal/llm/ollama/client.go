@@ -56,6 +56,17 @@ type Config struct {
 	// object. nil omits the field (free-form output). It is a per-model
 	// setting, not a per-request override.
 	Format json.RawMessage
+	// Logprobs asks the server to report per-token log probabilities of
+	// the response's content tokens, decoded into Response.Logprobs on
+	// the non-streaming path. It is a per-model setting, not a
+	// per-request override. Streamed logprob data is not decoded: ChatStream
+	// requests still carry the flags, but the stream accumulators ignore
+	// them.
+	Logprobs bool
+	// TopLogprobs is how many top alternative tokens the server reports
+	// per position, alongside the chosen token's logprob. Only sent when
+	// Logprobs is true.
+	TopLogprobs int
 	// KeepAlive is Ollama's how-long-the-model-stays-loaded setting, sent
 	// verbatim as the request's keep_alive field (e.g. "5m", -1). Empty
 	// omits the field (server default). It is a per-model setting, not a
@@ -114,7 +125,7 @@ func New(cfg Config) (*Client, error) {
 // non-streaming Ollama response is a single JSON object, which the decoder
 // accepts as-is.
 func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
-	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format, c.cfg.KeepAlive)
+	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format, c.cfg.KeepAlive, c.cfg.Logprobs, c.cfg.TopLogprobs)
 	if err != nil {
 		return nil, err
 	}
@@ -394,8 +405,13 @@ func mapWireFinishReason(finishReason string) string {
 // It returns the complete response once the stream finishes. An onDelta
 // error aborts the stream and is returned. It implements
 // llm.StreamingClient.
+//
+// Streamed logprob data is not decoded: the request still carries the
+// logprobs flags when the client config asks for them, but the stream
+// accumulators ignore that data and the returned response's Logprobs stay
+// nil. Use the non-streaming Chat path when logprobs matter.
 func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
-	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format, c.cfg.KeepAlive)
+	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format, c.cfg.KeepAlive, c.cfg.Logprobs, c.cfg.TopLogprobs)
 	if err != nil {
 		return nil, err
 	}

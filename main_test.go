@@ -1000,20 +1000,20 @@ func TestRunFormatFlagDefaults(t *testing.T) {
 	}
 }
 
-// TestRunCommandHasNoNewFlags pins run's flag set: exactly 5 flags
-// (config, no-stream, tool-output, agent, format), so the set stays
-// deliberate.
+// TestRunCommandHasNoNewFlags pins run's flag set: exactly 6 flags
+// (config, no-stream, tool-output, agent, format, logprobs), so the set
+// stays deliberate.
 func TestRunCommandHasNoNewFlags(t *testing.T) {
 	cmd := runCommand()
-	if len(cmd.Flags) != 5 {
-		t.Errorf("run has %d flags, want 5 (config, no-stream, tool-output, agent, format): %+v", len(cmd.Flags), cmd.Flags)
+	if len(cmd.Flags) != 6 {
+		t.Errorf("run has %d flags, want 6 (config, no-stream, tool-output, agent, format, logprobs): %+v", len(cmd.Flags), cmd.Flags)
 	}
 	var names []string
 	for _, f := range cmd.Flags {
 		names = append(names, f.Names()[0])
 	}
 	joined := strings.Join(names, ",")
-	for _, want := range []string{"config", "no-stream", "tool-output", "agent", "format"} {
+	for _, want := range []string{"config", "no-stream", "tool-output", "agent", "format", "logprobs"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("run flags = %q, want %q present", joined, want)
 		}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/engine"
+	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/tools"
 	"github.com/overspecific/blorb/internal/usage"
 )
@@ -65,8 +66,15 @@ func (o Options) events(account *usage.Account) (printEvent func(engine.Event) e
 			// the two kinds never double-write.
 			switch ev.Kind {
 			case engine.EventAssistantText, engine.EventAssistantTextDelta:
-				_, err := o.Stdout.Write([]byte(ev.Text))
-				return err
+				if _, err := o.Stdout.Write([]byte(ev.Text)); err != nil {
+					return err
+				}
+				// The logprob block prints after the whole response body;
+				// streamed responses carry no logprobs, so a streamed run
+				// with the flag prints nothing here.
+				if o.ShowLogprobs && ev.Kind == engine.EventAssistantText && len(ev.Logprobs) > 0 {
+					printLogprobs(o.Stdout, ev.Logprobs)
+				}
 			}
 			return nil
 		}
@@ -74,6 +82,19 @@ func (o Options) events(account *usage.Account) (printEvent func(engine.Event) e
 	default:
 		printEvent, onSubagent, flush := chat.Events(o.Stdout, o.ToolOutput)
 		return printEvent, onSubagent, flush, nil
+	}
+}
+
+// printLogprobs writes the logprob block: one line per token after the
+// response body — the token, its logprob, and, compactly, the top
+// alternative when present.
+func printLogprobs(w io.Writer, lps []llm.Logprob) {
+	for _, lp := range lps {
+		if len(lp.Top) > 0 {
+			fmt.Fprintf(w, "  %q logprob=%.4f (top: %q %.4f)\n", lp.Token, lp.Logprob, lp.Top[0].Token, lp.Top[0].Logprob)
+			continue
+		}
+		fmt.Fprintf(w, "  %q logprob=%.4f\n", lp.Token, lp.Logprob)
 	}
 }
 

@@ -12,12 +12,14 @@ import (
 // wireRequest builds the Ollama wire request from a neutral request.
 // defaultModel applies when the request carries no model; reasoningEffort
 // maps onto the think field (see thinkValue); format and keepAlive pass
-// through verbatim from the client config (empty/nil omits the fields).
+// through verbatim from the client config (empty/nil omits the fields);
+// logprobs/topLogprobs come from the client config and are only sent when
+// logprobs is true.
 //
 // Thinking is deliberately NOT sent back to the server: a final answer's
 // reasoning is stale by the next request, and resending it pollutes the
 // prompt. It is decoded from responses only.
-func wireRequest(req llm.Request, defaultModel, reasoningEffort string, format json.RawMessage, keepAlive string) (chatRequest, error) {
+func wireRequest(req llm.Request, defaultModel, reasoningEffort string, format json.RawMessage, keepAlive string, logprobs bool, topLogprobs int) (chatRequest, error) {
 	model := req.Model
 	if model == "" {
 		model = defaultModel
@@ -46,7 +48,20 @@ func wireRequest(req llm.Request, defaultModel, reasoningEffort string, format j
 		Format:     format,
 		KeepAlive:  keepAlive,
 		ToolChoice: wireToolChoice(req.ToolChoice),
+		Logprobs:   logprobs,
+		// top_logprobs is only meaningful with logprobs: omit it
+		// otherwise so the wire never carries a dangling count.
+		TopLogprobs: topLogprobsIf(logprobs, topLogprobs),
 	}, nil
+}
+
+// topLogprobsIf returns n when logprobs is true, 0 (omitted on the wire)
+// otherwise.
+func topLogprobsIf(logprobs bool, n int) int {
+	if !logprobs {
+		return 0
+	}
+	return n
 }
 
 // wireToolChoice maps the neutral tool choice onto the wire: auto (and

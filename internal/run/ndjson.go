@@ -24,8 +24,9 @@ import (
 //	tool_call       {type, name, arguments}         — whole tool call
 //	tool_result     {type, name, output, failed}    — tool result; output is always the full body
 //	usage           {type, agent, model, usage, stats} — one completed LLM call's token usage and call stats
+//	text            carries logprobs too, when the model reported them (non-streaming)
 //	subagent_*      — the same vocabulary prefixed subagent_, with agent and depth fields added
-//	done            {type, text?, usage, stats, rates?, agents} — terminal on success; text is the final assistant text
+//	done            {type, text?, logprobs?, usage, stats, rates?, agents} — terminal on success; text is the final assistant text
 //	error           {type, error}                   — terminal on failure; no done follows
 //
 // The stream contract:
@@ -92,6 +93,9 @@ type ndjsonEvent struct {
 	// Agents is the per-agent usage split (done), mirroring
 	// usage.Account.AgentTotals.
 	Agents []ndjsonAgentUsage `json:"agents,omitempty"`
+	// Logprobs is the final response's per-token log probabilities (text
+	// and done), present only when the model reported them.
+	Logprobs []llm.Logprob `json:"logprobs,omitempty"`
 	// Error is the run error's message (error).
 	Error string `json:"error,omitempty"`
 }
@@ -120,6 +124,9 @@ type ndjsonRates struct {
 type ndjsonSink struct {
 	enc     *json.Encoder
 	account *usage.Account
+	// logprobs remembers the last response's logprobs so the terminal
+	// done event can carry them; nil when none were reported.
+	logprobs []llm.Logprob
 }
 
 // newNDJSONSink builds the sink. SetEscapeHTML(false) keeps tool output
@@ -139,7 +146,10 @@ func (s *ndjsonSink) emit(ev ndjsonEvent) error {
 func (s *ndjsonSink) printEvent(ev engine.Event) error {
 	switch ev.Kind {
 	case engine.EventAssistantText:
-		return s.emit(ndjsonEvent{Type: "text", Text: ev.Text})
+		// The final response's logprobs travel with the text event and
+		// are remembered for the terminal done event.
+		s.logprobs = ev.Logprobs
+		return s.emit(ndjsonEvent{Type: "text", Text: ev.Text, Logprobs: ev.Logprobs})
 	case engine.EventAssistantThinking:
 		return s.emit(ndjsonEvent{Type: "thinking", Thinking: ev.Text})
 	case engine.EventAssistantTextDelta:
@@ -202,7 +212,7 @@ func (s *ndjsonSink) finish(final string, runErr error) error {
 		return s.emit(ndjsonEvent{Type: "error", Error: runErr.Error()})
 	}
 	total := s.account.Total()
-	done := ndjsonEvent{Type: "done", Text: final, Usage: &total}
+	done := ndjsonEvent{Type: "done", Text: final, Usage: &total, Logprobs: s.logprobs}
 	stats := s.account.TotalStats()
 	done.Stats = &stats
 	if stats.Elapsed > 0 {

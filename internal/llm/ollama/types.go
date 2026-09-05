@@ -54,6 +54,14 @@ type chatRequest struct {
 	// force serializes as the OpenAI object shape (which Ollama accepts)
 	// naming the function. nil means auto.
 	ToolChoice any `json:"tool_choice,omitempty"`
+
+	// Logprobs asks the server to report per-token log probabilities.
+	// The zero value (false) omits both fields and the server returns
+	// none.
+	Logprobs bool `json:"logprobs,omitempty"`
+	// TopLogprobs is the number of top alternatives reported per
+	// position; only meaningful when Logprobs is true.
+	TopLogprobs int `json:"top_logprobs,omitempty"`
 }
 
 // wireOptions is Ollama's nested generation-options object. All fields
@@ -127,6 +135,39 @@ type chatResponse struct {
 	// counts, respectively.
 	PromptEvalCount int `json:"prompt_eval_count"`
 	EvalCount       int `json:"eval_count"`
+	// Logprobs, when the request asked for them, carries the per-token
+	// log probabilities of the content (non-streaming responses only;
+	// streamed chunks do not carry the field in a form blorb decodes).
+	Logprobs []wireLogprob `json:"logprobs,omitempty"`
+}
+
+// wireLogprob is one logprob entry: the chosen token, its logprob, its
+// UTF-8 bytes, and the top alternatives for the position.
+type wireLogprob struct {
+	Token       string  `json:"token"`
+	Logprob     float64 `json:"logprob"`
+	Bytes       []int   `json:"bytes"`
+	TopLogprobs []struct {
+		Token   string  `json:"token"`
+		Logprob float64 `json:"logprob"`
+		Bytes   []int   `json:"bytes"`
+	} `json:"top_logprobs"`
+}
+
+// neutralLogprobs converts the wire logprobs array into the neutral shape.
+func neutralLogprobs(wire []wireLogprob) []llm.Logprob {
+	if len(wire) == 0 {
+		return nil
+	}
+	out := make([]llm.Logprob, 0, len(wire))
+	for _, w := range wire {
+		lp := llm.Logprob{Token: w.Token, Logprob: w.Logprob, Bytes: w.Bytes}
+		for _, t := range w.TopLogprobs {
+			lp.Top = append(lp.Top, llm.TopLogprob{Token: t.Token, Logprob: t.Logprob, Bytes: t.Bytes})
+		}
+		out = append(out, lp)
+	}
+	return out
 }
 
 // wireTagsResponse is the Ollama /api/tags response: the server's
@@ -221,6 +262,7 @@ func neutralResponse(chunk *chatResponse) *llm.Response {
 	resp := &llm.Response{
 		Message:      msg,
 		FinishReason: mapFinishReason(chunk.DoneReason),
+		Logprobs:     neutralLogprobs(chunk.Logprobs),
 		Usage: llm.Usage{
 			PromptTokens:     chunk.PromptEvalCount,
 			CompletionTokens: chunk.EvalCount,

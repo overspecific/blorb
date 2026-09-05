@@ -769,6 +769,8 @@ var clientFactories = map[string]clientFactory{
 			Model:           model.ModelName,
 			APIKey:          apiKey,
 			ReasoningEffort: model.ReasoningEffort,
+			Logprobs:        model.Logprobs,
+			TopLogprobs:     model.TopLogprobs,
 			Sink:            sink,
 		})
 	},
@@ -783,6 +785,8 @@ var clientFactories = map[string]clientFactory{
 			ReasoningEffort: model.ReasoningEffort,
 			Format:          model.Format,
 			KeepAlive:       model.KeepAlive,
+			Logprobs:        model.Logprobs,
+			TopLogprobs:     model.TopLogprobs,
 			APIKey:          apiKey,
 			Sink:            sink,
 		})
