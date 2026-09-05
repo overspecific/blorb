@@ -18,30 +18,41 @@ func TestFormatTurn(t *testing.T) {
 		want    string
 	}{
 		{
-			name: "empty account renders zeros",
-			want: "\n---\ntokens: 0 prompt, 0 completion, 0 total",
+			// Nothing to label an empty block with. No caller reaches
+			// this: chat and run print footers only when at least one
+			// call was recorded.
+			name: "empty account renders nothing",
+			want: "\n---\n",
 		},
 		{
-			name: "single agent renders without split",
+			name: "single agent renders one line",
 			records: []usage.Record{
 				{Agent: "main", Usage: llm.Usage{PromptTokens: 123, CompletionTokens: 456, TotalTokens: 579}},
 			},
-			want: "\n---\ntokens: 123 prompt, 456 completion, 579 total",
+			want: "\n---\nmain: 123 prompt, 456 completion, 579 total",
 		},
 		{
-			name: "two agents render a name-ordered split",
+			name: "one line per agent plus a total",
 			records: []usage.Record{
 				{Agent: "worker", Usage: llm.Usage{PromptTokens: 23, CompletionTokens: 156, TotalTokens: 179}},
 				{Agent: "main", Usage: llm.Usage{PromptTokens: 100, CompletionTokens: 300, TotalTokens: 400}},
 			},
-			want: "\n---\ntokens: 123 prompt, 456 completion, 579 total (main: 100/300/400, worker: 23/156/179)",
+			want: "\n---\nmain: 100 prompt, 300 completion, 400 total\nworker: 23 prompt, 156 completion, 179 total\ntotal: 123 prompt, 456 completion, 579 total",
+		},
+		{
+			name: "multiple invocations of one agent sum into its line",
+			records: []usage.Record{
+				{Agent: "main", Usage: llm.Usage{PromptTokens: 100, CompletionTokens: 300, TotalTokens: 400}},
+				{Agent: "main", Usage: llm.Usage{PromptTokens: 23, CompletionTokens: 156, TotalTokens: 179}},
+			},
+			want: "\n---\nmain: 123 prompt, 456 completion, 579 total",
 		},
 		{
 			name: "zero-usage records still render",
 			records: []usage.Record{
 				{Agent: "main", Usage: llm.Usage{}},
 			},
-			want: "\n---\ntokens: 0 prompt, 0 completion, 0 total",
+			want: "\n---\nmain: 0 prompt, 0 completion, 0 total",
 		},
 	}
 
@@ -67,7 +78,7 @@ func TestFormatSession(t *testing.T) {
 	a.Add(usage.Record{Agent: "main", Usage: llm.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}})
 	a.Add(usage.Record{Agent: "worker", Usage: llm.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}})
 
-	want := "\n---\nsession tokens: 11 prompt, 22 completion, 33 total (main: 1/2/3, worker: 10/20/30)"
+	want := "\n---\nsession main: 1 prompt, 2 completion, 3 total\nsession worker: 10 prompt, 20 completion, 30 total\nsession total: 11 prompt, 22 completion, 33 total"
 	if got := usage.FormatSession(a); got != want {
 		t.Errorf("FormatSession() = %q, want %q", got, want)
 	}
@@ -84,32 +95,8 @@ func TestFormatSessionPrefixDiffersFromTurn(t *testing.T) {
 	if turn == session {
 		t.Errorf("FormatTurn and FormatSession rendered identically: %q", turn)
 	}
-	if !strings.HasPrefix(session, "\n---\nsession tokens: ") {
-		t.Errorf("FormatSession = %q, want the session prefix after the delimiter", session)
-	}
-}
-
-func TestFormatTurnDelimited(t *testing.T) {
-	t.Parallel()
-
-	a := &usage.Account{}
-	a.Add(usage.Record{Agent: "main", Usage: llm.Usage{PromptTokens: 364, CompletionTokens: 182, TotalTokens: 546}})
-
-	want := "\n---\ntokens: 364 prompt, 182 completion, 546 total"
-	if got := usage.FormatTurn(a); got != want {
-		t.Errorf("FormatTurn() = %q, want %q", got, want)
-	}
-}
-
-func TestFormatSessionDelimited(t *testing.T) {
-	t.Parallel()
-
-	a := &usage.Account{}
-	a.Add(usage.Record{Agent: "main", Usage: llm.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}})
-
-	want := "\n---\nsession tokens: 1 prompt, 1 completion, 2 total"
-	if got := usage.FormatSession(a); got != want {
-		t.Errorf("FormatSession() = %q, want %q", got, want)
+	if !strings.HasPrefix(session, "\n---\nsession main: ") {
+		t.Errorf("FormatSession = %q, want the session-prefixed agent line", session)
 	}
 }
 
@@ -122,25 +109,25 @@ func TestFormatStatsLine(t *testing.T) {
 		want    string
 	}{
 		{
-			name: "zero stats render no stats line",
+			name: "zero stats render tokens only",
 			records: []usage.Record{
 				{Agent: "main", Usage: llm.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}},
 			},
-			want: "\n---\ntokens: 1 prompt, 2 completion, 3 total",
+			want: "\n---\nmain: 1 prompt, 2 completion, 3 total",
 		},
 		{
 			name: "full breakdown with rates",
 			records: []usage.Record{
 				{
 					Agent: "main",
-					Usage: llm.Usage{CompletionTokens: 80, TotalTokens: 80},
+					Usage: llm.Usage{PromptTokens: 0, CompletionTokens: 80, TotalTokens: 80},
 					Stats: llm.CallStats{
 						Output:  llm.OutputBytes{Content: 6144, Reasoning: 2048, ToolCalls: 1228},
 						Elapsed: 4 * time.Second,
 					},
 				},
 			},
-			want: "\n---\ntokens: 0 prompt, 80 completion, 80 total\nstats: 4s, 9.2KB output (6KB text, 2KB reasoning, 1.2KB tools), 20.0 tok/s, 2.3KB/s",
+			want: "\n---\nmain: 0 prompt, 80 completion, 80 total, 4s, 9.2KB output (6KB text, 2KB reasoning, 1.2KB tools), 20.0 tok/s, 2.3KB/s",
 		},
 		{
 			name: "content-only omits the split",
@@ -154,7 +141,7 @@ func TestFormatStatsLine(t *testing.T) {
 					},
 				},
 			},
-			want: "\n---\ntokens: 0 prompt, 80 completion, 80 total\nstats: 4s, 4KB output, 20.0 tok/s, 1KB/s",
+			want: "\n---\nmain: 0 prompt, 80 completion, 80 total, 4s, 4KB output, 20.0 tok/s, 1KB/s",
 		},
 		{
 			name: "reasoning-only split shows just reasoning",
@@ -168,7 +155,7 @@ func TestFormatStatsLine(t *testing.T) {
 					},
 				},
 			},
-			want: "\n---\ntokens: 0 prompt, 40 completion, 40 total\nstats: 4s, 4KB output (4KB reasoning), 10.0 tok/s, 1KB/s",
+			want: "\n---\nmain: 0 prompt, 40 completion, 40 total, 4s, 4KB output (4KB reasoning), 10.0 tok/s, 1KB/s",
 		},
 		{
 			name: "zero elapsed renders no rates",
@@ -179,7 +166,7 @@ func TestFormatStatsLine(t *testing.T) {
 					Stats: llm.CallStats{Output: llm.OutputBytes{Content: 4096}},
 				},
 			},
-			want: "\n---\ntokens: 0 prompt, 80 completion, 80 total\nstats: 0s, 4KB output",
+			want: "\n---\nmain: 0 prompt, 80 completion, 80 total, 0s, 4KB output",
 		},
 		{
 			name: "sub-second elapsed renders one decimal",
@@ -193,10 +180,31 @@ func TestFormatStatsLine(t *testing.T) {
 					},
 				},
 			},
-			want: "\n---\ntokens: 0 prompt, 40 completion, 40 total\nstats: 12.3s, 2KB output, 3.2 tok/s, 165B/s",
+			want: "\n---\nmain: 0 prompt, 40 completion, 40 total, 12.3s, 2KB output, 3.2 tok/s, 165B/s",
 		},
 		{
-			name: "records sum before rates compute",
+			name: "per-agent lines and total each carry their own stats",
+			records: []usage.Record{
+				{
+					Agent: "main",
+					Usage: llm.Usage{PromptTokens: 0, CompletionTokens: 80, TotalTokens: 80},
+					Stats: llm.CallStats{Output: llm.OutputBytes{Content: 4096}, Elapsed: 4 * time.Second},
+				},
+				{
+					Agent: "worker",
+					Usage: llm.Usage{PromptTokens: 0, CompletionTokens: 40, TotalTokens: 40},
+					// The worker's client measured nothing: its line
+					// shows tokens only, and the total stats are the
+					// main agent's alone.
+					Stats: llm.CallStats{},
+				},
+			},
+			want: "\n---\nmain: 0 prompt, 80 completion, 80 total, 4s, 4KB output, 20.0 tok/s, 1KB/s\n" +
+				"worker: 0 prompt, 40 completion, 40 total\n" +
+				"total: 0 prompt, 120 completion, 120 total, 4s, 4KB output, 30.0 tok/s, 1KB/s",
+		},
+		{
+			name: "multiple invocations of one agent sum before rates compute",
 			records: []usage.Record{
 				{
 					Agent: "main",
@@ -204,12 +212,12 @@ func TestFormatStatsLine(t *testing.T) {
 					Stats: llm.CallStats{Output: llm.OutputBytes{Content: 2048}, Elapsed: time.Second},
 				},
 				{
-					Agent: "worker",
+					Agent: "main",
 					Usage: llm.Usage{CompletionTokens: 40, TotalTokens: 40},
 					Stats: llm.CallStats{Output: llm.OutputBytes{Content: 2048}, Elapsed: 3 * time.Second},
 				},
 			},
-			want: "\n---\ntokens: 0 prompt, 80 completion, 80 total (main: 0/40/40, worker: 0/40/40)\nstats: 4s, 4KB output, 20.0 tok/s, 1KB/s",
+			want: "\n---\nmain: 0 prompt, 80 completion, 80 total, 4s, 4KB output, 20.0 tok/s, 1KB/s",
 		},
 	}
 
@@ -228,7 +236,7 @@ func TestFormatStatsLine(t *testing.T) {
 	}
 }
 
-func TestFormatSessionCarriesStatsLine(t *testing.T) {
+func TestFormatSessionCarriesStats(t *testing.T) {
 	t.Parallel()
 
 	a := &usage.Account{}
@@ -241,7 +249,7 @@ func TestFormatSessionCarriesStatsLine(t *testing.T) {
 		},
 	})
 
-	want := "\n---\nsession tokens: 1 prompt, 40 completion, 41 total\nstats: 4s, 4KB output, 10.0 tok/s, 1KB/s"
+	want := "\n---\nsession main: 1 prompt, 40 completion, 41 total, 4s, 4KB output, 10.0 tok/s, 1KB/s"
 	if got := usage.FormatSession(a); got != want {
 		t.Errorf("FormatSession() = %q, want %q", got, want)
 	}

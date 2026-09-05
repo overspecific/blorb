@@ -1428,7 +1428,7 @@ func TestRunUsageFooterHappyPath(t *testing.T) {
 	}
 
 	out := stdout.String()
-	wantFooter := "tokens: 12 prompt, 34 completion, 46 total\nstats: 2s, 3KB output (2KB text, 1KB reasoning), 17.0 tok/s, 1.5KB/s\n"
+	wantFooter := "tester: 12 prompt, 34 completion, 46 total, 2s, 3KB output (2KB text, 1KB reasoning), 17.0 tok/s, 1.5KB/s\n"
 	if !strings.HasSuffix(out, wantFooter) {
 		t.Errorf("stdout = %q, want it to end with the usage footer and stats line", out)
 	}
@@ -1460,10 +1460,10 @@ func TestRunUsageFooterToolRoundSummed(t *testing.T) {
 
 	out := stdout.String()
 	// One footer with the turn's summed usage, not one per call.
-	if n := strings.Count(out, "tokens: 38 prompt, 6 completion, 44 total"); n != 1 {
+	if n := strings.Count(out, "tester: 38 prompt, 6 completion, 44 total"); n != 1 {
 		t.Errorf("stdout = %q, want exactly one summed footer, got %d", out, n)
 	}
-	if strings.Contains(out, "tokens: 8 prompt") {
+	if strings.Contains(out, "tester: 8 prompt") {
 		t.Errorf("stdout = %q, want no per-call footer", out)
 	}
 }
@@ -1514,7 +1514,7 @@ func TestRunUsageFooterSubagentSplit(t *testing.T) {
 	}
 
 	out := stdout.String()
-	want := "tokens: 256 prompt, 35 completion, 291 total (parent: 230/30/260, worker: 26/5/31)"
+	want := "parent: 230 prompt, 30 completion, 260 total\nworker: 26 prompt, 5 completion, 31 total\ntotal: 256 prompt, 35 completion, 291 total"
 	if !strings.Contains(out, want) {
 		t.Errorf("stdout = %q, want the per-agent footer split %q", out, want)
 	}
@@ -1557,7 +1557,7 @@ func TestRunUsageFooterOnFailingRun(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, "tokens: 5 prompt, 6 completion, 11 total") {
+	if !strings.Contains(out, "tester: 5 prompt, 6 completion, 11 total") {
 		t.Errorf("stdout = %q, want the partial footer for the call that completed", out)
 	}
 }
@@ -1632,7 +1632,7 @@ func TestRunFormatPlainWholeMessageToolRound(t *testing.T) {
 	if !strings.Contains(diag, ">>> Tool: echoer") || !strings.Contains(diag, ">>> Result: Tool: echoer") {
 		t.Errorf("stderr = %q, want the tool activity blocks", diag)
 	}
-	if !strings.Contains(diag, "tokens: 38 prompt, 6 completion, 44 total") {
+	if !strings.Contains(diag, "tester: 38 prompt, 6 completion, 44 total") {
 		t.Errorf("stderr = %q, want the usage footer", diag)
 	}
 	// The spliced stdout text must not appear verbatim on stderr: the
@@ -1884,7 +1884,7 @@ func TestRunFormatPlainFooterOnStderr(t *testing.T) {
 	if out := stdout.String(); strings.Contains(out, "tokens:") {
 		t.Errorf("stdout = %q, want no footer", out)
 	}
-	if diag := stderr.String(); !strings.HasSuffix(diag, "tokens: 12 prompt, 34 completion, 46 total\n") {
+	if diag := stderr.String(); !strings.HasSuffix(diag, "tester: 12 prompt, 34 completion, 46 total\n") {
 		t.Errorf("stderr = %q, want it to end with the usage footer", diag)
 	}
 }
@@ -1984,7 +1984,7 @@ func TestRunFormatPlainNilStderrFallsBackToStdout(t *testing.T) {
 	if !strings.Contains(out, ">>> Assistant:") {
 		t.Errorf("stdout = %q, want the headings on the fallback stream", out)
 	}
-	if !strings.Contains(out, "tokens: 1 prompt, 2 completion, 3 total") {
+	if !strings.Contains(out, "tester: 1 prompt, 2 completion, 3 total") {
 		t.Errorf("stdout = %q, want the footer on the fallback stream", out)
 	}
 	if !strings.Contains(out, "the answer") {
@@ -2018,7 +2018,7 @@ func TestRunFormatChatIgnoresStderr(t *testing.T) {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 	out := stdout.String()
-	if !strings.HasSuffix(out, "tokens: 12 prompt, 34 completion, 46 total\n") {
+	if !strings.HasSuffix(out, "tester: 12 prompt, 34 completion, 46 total\n") {
 		t.Errorf("stdout = %q, want the footer still on stdout for chat", out)
 	}
 	if diag := stderr.String(); diag != "" {

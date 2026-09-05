@@ -4,61 +4,78 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/overspecific/blorb/internal/llm"
 )
 
 // FormatTurn renders a per-turn footer block: a blank line, a
-// horizontal-rule delimiter, then the turn's total usage, with per-agent
-// split when the account holds more than one agent, then the stats line
-// (formatStats) when any call measured output or time. The shape is:
+// horizontal-rule delimiter, then one usage line per agent that made a
+// call (a name-ordered split; an agent's multiple calls sum into its one
+// line), then a "total:" line across all agents. When a single agent
+// contributed, its line and the total carry the same numbers, so the
+// block is just that one line — the total line is not repeated. The
+// shape, with subagents:
 //
 //	(blank line)
 //	---
-//	tokens: 123 prompt, 456 completion, 579 total
+//	main: 123 prompt, 456 completion, 579 total, 4s, 9.2KB output, 20.0 tok/s, 2.3KB/s
+//	worker: 23 prompt, 156 completion, 179 total, 2s, 1.1KB output, 11.5 tok/s, 550B/s
+//	total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1KB/s
 //
-// and with multiple agents, one parenthesised item per agent:
+// and a single agent renders only its line:
 //
 //	---
-//	tokens: 123 prompt, 456 completion, 579 total (main: 100/300/400, worker: 23/156/179)
+//	main: 123 prompt, 456 completion, 579 total, 4s, 9.2KB output, 20.0 tok/s, 2.3KB/s
 //
-// where each agent item is "name: prompt/completion/total". A zero total
-// still renders: it means the provider did not report usage, not that no
-// call happened.
+// Each line's stats part (elapsed time, output bytes with their
+// text/reasoning/tools split, and the derived rates) renders when that
+// line's summed stats measured anything; lines whose client measured
+// nothing show tokens only. A zero token total still renders: it means
+// the provider did not report usage, not that no call happened.
 func FormatTurn(a *Account) string {
-	return "\n---\ntokens: " + formatTotals(a) + formatStats(a)
+	return "\n---\n" + formatLines(a, "")
 }
 
 // FormatSession renders the session totals block, same shape as
-// FormatTurn but prefixed "session tokens:" (chat prints it at exit).
+// FormatTurn but with a "session " prefix on each line label (chat prints
+// it at exit).
 func FormatSession(a *Account) string {
-	return "\n---\nsession tokens: " + formatTotals(a) + formatStats(a)
+	return "\n---\n" + formatLines(a, "session ")
 }
 
-// formatTotals renders the shared "N prompt, N completion, N total" body,
-// plus the per-agent split when more than one agent contributed.
-func formatTotals(a *Account) string {
-	total := a.Total()
-	body := fmt.Sprintf("%d prompt, %d completion, %d total",
-		total.PromptTokens, total.CompletionTokens, total.TotalTokens)
-
-	agentTotals := a.AgentTotals()
-	if len(agentTotals) <= 1 {
-		return body
+// formatLines renders the per-agent lines plus the total line. Labels are
+// prefixed with prefix ("session " or ""). The total line is omitted when
+// a single agent contributed — its line is already the total.
+func formatLines(a *Account, prefix string) string {
+	totals := a.AgentTotals()
+	lines := make([]string, 0, len(totals)+1)
+	for _, at := range totals {
+		lines = append(lines, prefix+at.Agent+": "+agentLine(a, at))
 	}
-
-	items := make([]string, 0, len(agentTotals))
-	for _, at := range agentTotals {
-		items = append(items, fmt.Sprintf("%s: %d/%d/%d",
-			at.Agent, at.Usage.PromptTokens, at.Usage.CompletionTokens, at.Usage.TotalTokens))
+	if len(totals) > 1 {
+		lines = append(lines, prefix+"total: "+agentLine(a, AgentTotal{Usage: a.Total(), Stats: a.TotalStats()}))
 	}
-	return body + " (" + strings.Join(items, ", ") + ")"
+	return strings.Join(lines, "\n")
 }
 
-// formatStats renders the stats line: elapsed time, output bytes
-// with their content/reasoning/tools split, and the derived rates.
-// The line is empty — renders nothing — when no call measured any
-// output or time (the summed stats are all zero).
-func formatStats(a *Account) string {
-	stats := a.TotalStats()
+// agentLine renders one agent's "N prompt, N completion, N total" body
+// plus its stats part (formatStatsPart) when the agent's calls measured
+// any output or time.
+func agentLine(a *Account, at AgentTotal) string {
+	line := fmt.Sprintf("%d prompt, %d completion, %d total",
+		at.Usage.PromptTokens, at.Usage.CompletionTokens, at.Usage.TotalTokens)
+	if stats := formatStatsPart(at.Stats, at.Usage.CompletionTokens); stats != "" {
+		line += ", " + stats
+	}
+	return line
+}
+
+// formatStatsPart renders the stats part of one agent line: elapsed
+// time, output bytes with their content/reasoning/tools split, and the
+// derived rates. completionTokens is the agent's summed completion
+// count, feeding tokens/sec. It is empty — renders nothing — when no
+// call measured any output or time (the summed stats are all zero).
+func formatStatsPart(stats llm.CallStats, completionTokens int) string {
 	if stats.Output.Total() == 0 && stats.Elapsed == 0 {
 		return ""
 	}
@@ -88,11 +105,11 @@ func formatStats(a *Account) string {
 
 	if stats.Elapsed > 0 {
 		parts = append(parts,
-			fmt.Sprintf("%.1f tok/s", a.TokensPerSec()),
-			fmt.Sprintf("%s/s", humanBytes(int(a.BytesPerSec()))))
+			fmt.Sprintf("%.1f tok/s", float64(completionTokens)/stats.Elapsed.Seconds()),
+			fmt.Sprintf("%s/s", humanBytes(int(float64(stats.Output.Total())/stats.Elapsed.Seconds()))))
 	}
 
-	return "\nstats: " + strings.Join(parts, ", ")
+	return strings.Join(parts, ", ")
 }
 
 // humanBytes renders a byte count compactly: B below 1024, then KB, MB,

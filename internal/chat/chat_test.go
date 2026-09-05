@@ -2211,19 +2211,19 @@ func TestRunUsageFooterPerTurnAndSession(t *testing.T) {
 	}
 
 	out := stdout.String()
-	firstFooter := "tokens: 10 prompt, 5 completion, 15 total"
-	secondFooter := "tokens: 20 prompt, 7 completion, 27 total"
+	firstFooter := "tester: 10 prompt, 5 completion, 15 total"
+	secondFooter := "tester: 20 prompt, 7 completion, 27 total"
 	if !strings.Contains(out, firstFooter) {
 		t.Errorf("stdout = %q, want the first turn's footer %q", out, firstFooter)
 	}
 	if !strings.Contains(out, secondFooter) {
 		t.Errorf("stdout = %q, want the second turn's footer %q", out, secondFooter)
 	}
-	session := "session tokens: 30 prompt, 12 completion, 42 total"
+	session := "session tester: 30 prompt, 12 completion, 42 total"
 	if !strings.Contains(out, session) {
 		t.Errorf("stdout = %q, want the session totals line %q", out, session)
 	}
-	statsLine := "stats: 4s, 4KB output, "
+	statsLine := "4s, 4KB output, "
 	if n := strings.Count(out, statsLine); n != 2 {
 		t.Errorf("stdout = %q, want the stats line twice (second turn + session), got %d", out, n)
 	}
@@ -2231,8 +2231,8 @@ func TestRunUsageFooterPerTurnAndSession(t *testing.T) {
 	if !strings.Contains(out, "1.8 tok/s") || !strings.Contains(out, "3.0 tok/s") {
 		t.Errorf("stdout = %q, want both the turn rate 1.8 tok/s and the session rate 3.0 tok/s", out)
 	}
-	if strings.Contains(out, "tokens: 10 prompt, 5 completion, 15 total\nstats:") {
-		t.Errorf("stdout = %q, want no stats line on the unmeasured first turn's footer", out)
+	if strings.Contains(out, "tester: 10 prompt, 5 completion, 15 total, ") {
+		t.Errorf("stdout = %q, want no stats part on the unmeasured first turn's footer", out)
 	}
 	if strings.LastIndex(out, firstFooter) > strings.Index(out, secondFooter) {
 		t.Errorf("stdout = %q, want the first turn's footer before the second's", out)
@@ -2270,13 +2270,13 @@ func TestRunUsageFooterOncePerToolRoundTurn(t *testing.T) {
 	out := stdout.String()
 	// One turn footer with the turn's summed usage, not one per call; the
 	// session line reuses the same totals, prefixed "session ".
-	if n := strings.Count(out, "\ntokens: 38 prompt, 6 completion, 44 total"); n != 1 {
+	if n := strings.Count(out, "\ntester: 38 prompt, 6 completion, 44 total"); n != 1 {
 		t.Errorf("stdout = %q, want exactly one summed turn footer, got %d", out, n)
 	}
-	if !strings.Contains(out, "session tokens: 38 prompt, 6 completion, 44 total") {
+	if !strings.Contains(out, "session tester: 38 prompt, 6 completion, 44 total") {
 		t.Errorf("stdout = %q, want the session totals line", out)
 	}
-	if strings.Contains(out, "tokens: 8 prompt") {
+	if strings.Contains(out, "tester: 8 prompt") {
 		t.Errorf("stdout = %q, want no per-call footer", out)
 	}
 }
@@ -2313,7 +2313,7 @@ func TestRunUsageFooterWithSubagentSplit(t *testing.T) {
 
 	out := stdout.String()
 	// The footer splits by agent: parent 230/30/260, worker 26/5/31.
-	want := "tokens: 256 prompt, 35 completion, 291 total (parent: 230/30/260, worker: 26/5/31)"
+	want := "parent: 230 prompt, 30 completion, 260 total\nworker: 26 prompt, 5 completion, 31 total\ntotal: 256 prompt, 35 completion, 291 total"
 	if !strings.Contains(out, want) {
 		t.Errorf("stdout = %q, want the per-agent footer split %q", out, want)
 	}
@@ -2374,7 +2374,7 @@ func TestRunUsageFooterForInterruptedPartialTurn(t *testing.T) {
 	}
 
 	out := stdout.String()
-	footerAt := strings.Index(out, "tokens: 100 prompt, 10 completion, 110 total")
+	footerAt := strings.Index(out, "parent: 100 prompt, 10 completion, 110 total")
 	interruptedAt := strings.Index(out, "(interrupted)")
 	if footerAt < 0 || interruptedAt < 0 {
 		t.Fatalf("stdout = %q, want the partial footer and the interrupted marker", out)
@@ -2440,10 +2440,10 @@ func TestRunZeroUsageStillPrintsFooter(t *testing.T) {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "tokens: 0 prompt, 0 completion, 0 total") {
+	if !strings.Contains(out, "tester: 0 prompt, 0 completion, 0 total") {
 		t.Errorf("stdout = %q, want the zero-usage footer", out)
 	}
-	if !strings.Contains(out, "session tokens: 0 prompt, 0 completion, 0 total") {
+	if !strings.Contains(out, "session tester: 0 prompt, 0 completion, 0 total") {
 		t.Errorf("stdout = %q, want the zero-usage session line", out)
 	}
 }

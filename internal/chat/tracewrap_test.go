@@ -774,7 +774,7 @@ func TestRunTracedSessionTotalsBeforeTracerFinish(t *testing.T) {
 	}
 
 	out := stdout.String()
-	session := "session tokens: 30 prompt, 12 completion, 42 total"
+	session := "session tester: 30 prompt, 12 completion, 42 total"
 	if !strings.Contains(out, session) {
 		t.Errorf("stdout = %q, want the session totals line %q", out, session)
 	}
@@ -812,7 +812,7 @@ func TestRunTracedSessionTotalsOnFinishFailure(t *testing.T) {
 	}
 
 	out := stdout.String()
-	session := "session tokens: 10 prompt, 4 completion, 14 total"
+	session := "session tester: 10 prompt, 4 completion, 14 total"
 	if !strings.Contains(out, session) {
 		t.Errorf("stdout = %q, want the session totals line %q despite the tracer failure", out, session)
 	}
@@ -840,11 +840,11 @@ func TestRunTracedUsageFooterPerTurn(t *testing.T) {
 	}
 
 	out := stdout.String()
-	footer := "tokens: 25 prompt, 9 completion, 34 total"
+	footer := "tester: 25 prompt, 9 completion, 34 total"
 	if !strings.Contains(out, footer) {
 		t.Errorf("stdout = %q, want the turn footer %q in traced chat", out, footer)
 	}
-	session := "session tokens: 25 prompt, 9 completion, 34 total"
+	session := "session tester: 25 prompt, 9 completion, 34 total"
 	if !strings.Contains(out, session) {
 		t.Errorf("stdout = %q, want the session totals line %q", out, session)
 	}
