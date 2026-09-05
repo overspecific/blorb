@@ -9,7 +9,7 @@ Restructures the config first: provider-level facts (type, base_url, api_key_env
 - [x] Commit 3: Sampling parameters: config, llm.Request, engine plumbing, ollama options
 - [x] Commit 4: Sampling parameters on the openai client
 - [x] Commit 5: Ollama format (structured output)
-- [ ] Commit 6: Ollama keep_alive
+- [x] Commit 6: Ollama keep_alive
 - [ ] Commit 7: tool_choice from config to wire, with engine forced-tool behavior
 - [ ] Commit 8: Logprobs end to end
 - [ ] Commit 9: README and docs
