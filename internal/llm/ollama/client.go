@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -63,6 +64,12 @@ type Config struct {
 type Client struct {
 	cfg Config
 }
+
+// Client satisfies both provider seams.
+var (
+	_ llm.Client          = (*Client)(nil)
+	_ llm.StreamingClient = (*Client)(nil)
+)
 
 func (c *Client) httpClient() *http.Client {
 	if c.cfg.HTTPClient != nil {
@@ -145,6 +152,309 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 	resp := neutralResponse(&chunk)
 	if hasToolCallWithoutName(resp.Message.ToolCalls) {
 		return nil, fmt.Errorf("decode response: tool call missing name (body: %s)", truncate(respBody, maxErrorBodyLen))
+	}
+	return resp, nil
+}
+
+// maxContentLen bounds how much content is accumulated across a stream, so
+// a runaway stream cannot exhaust memory; beyond this the stream errors.
+const maxContentLen = maxBodyLen
+
+// streamAccumulator folds NDJSON stream chunks into the complete neutral
+// response.
+type streamAccumulator struct {
+	finishReason string
+	usage        llm.Usage
+	content      strings.Builder
+	reasoning    strings.Builder
+	toolCalls    map[int]*wireToolCall
+	order        []int
+}
+
+func newStreamAccumulator() *streamAccumulator {
+	return &streamAccumulator{toolCalls: map[int]*wireToolCall{}}
+}
+
+// addDelta folds one wire chunk into the accumulation and emits its deltas
+// via onDelta. An onDelta error aborts the stream and is returned.
+func (a *streamAccumulator) addDelta(chunk *chatResponse, onDelta func(llm.Delta) error) error {
+	if chunk.Message.Thinking != "" {
+		if a.reasoning.Len()+len(chunk.Message.Thinking) > maxContentLen {
+			return fmt.Errorf("read stream: reasoning exceeds %d byte limit", maxContentLen)
+		}
+		a.reasoning.WriteString(chunk.Message.Thinking)
+		if err := onDelta(llm.Delta{Reasoning: chunk.Message.Thinking}); err != nil {
+			return err
+		}
+	}
+	if chunk.Message.Content != "" {
+		if a.content.Len()+len(chunk.Message.Content) > maxContentLen {
+			return fmt.Errorf("read stream: content exceeds %d byte limit", maxContentLen)
+		}
+		a.content.WriteString(chunk.Message.Content)
+		if err := onDelta(llm.Delta{Content: chunk.Message.Content}); err != nil {
+			return err
+		}
+	}
+	for i := range chunk.Message.ToolCalls {
+		wtc := &chunk.Message.ToolCalls[i]
+		args := string(wtc.Function.Arguments)
+		// Ollama delivers a message's tool calls within a single chunk,
+		// so the index is the call's position within that chunk's array;
+		// streamed fragments for the same index accumulate like openai's:
+		// the first establishes id and name, later ones concatenate
+		// arguments.
+		idx := i
+		tc, ok := a.toolCalls[idx]
+		if !ok {
+			if len(args) > maxContentLen {
+				return fmt.Errorf("read stream: tool call arguments exceed %d byte limit", maxContentLen)
+			}
+			a.toolCalls[idx] = &wireToolCall{
+				ID: wtc.ID,
+				Function: wireFnCall{
+					Name:      wtc.Function.Name,
+					Arguments: json.RawMessage(args),
+				},
+			}
+			a.order = append(a.order, idx)
+		} else {
+			if wtc.ID != "" {
+				tc.ID = wtc.ID
+			}
+			if wtc.Function.Name != "" {
+				tc.Function.Name = wtc.Function.Name
+			}
+			if len(string(tc.Function.Arguments))+len(args) > maxContentLen {
+				return fmt.Errorf("read stream: tool call arguments exceed %d byte limit", maxContentLen)
+			}
+			tc.Function.Arguments = append(tc.Function.Arguments, args...)
+		}
+		if err := onDelta(llm.Delta{ToolCall: &llm.ToolCallDelta{
+			Index:     idx,
+			ID:        wtc.ID,
+			Type:      llm.ToolCallType,
+			Name:      wtc.Function.Name,
+			Arguments: args,
+		}}); err != nil {
+			return err
+		}
+	}
+	if chunk.Done {
+		a.finishReason = mapFinishReason(chunk.DoneReason)
+		a.usage = llm.Usage{
+			PromptTokens:     chunk.PromptEvalCount,
+			CompletionTokens: chunk.EvalCount,
+			TotalTokens:      chunk.PromptEvalCount + chunk.EvalCount,
+		}
+	}
+	return nil
+}
+
+// response builds the complete neutral response from what accumulated.
+func (a *streamAccumulator) response() *llm.Response {
+	msg := llm.Message{Role: llm.RoleAssistant, Content: a.content.String(), Reasoning: a.reasoning.String()}
+	for _, idx := range a.order {
+		wtc := a.toolCalls[idx]
+		args := string(wtc.Function.Arguments)
+		if args == "" {
+			args = "{}"
+		}
+		id := wtc.ID
+		if id == "" {
+			id = "call_" + randomHex()
+		}
+		msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
+			ID:           id,
+			Type:         llm.ToolCallType,
+			FunctionName: wtc.Function.Name,
+			FunctionArgs: args,
+		})
+	}
+	return &llm.Response{Message: msg, FinishReason: a.finishReason, Usage: a.usage}
+}
+
+// marshalWireResponse renders a completed neutral response back into a
+// synthetic final chatResponse, so streaming and non-streaming
+// llm-response log records carry directly comparable bodies.
+//
+// The message is built directly rather than via wireRequest: the log is
+// full-fidelity — what the model actually produced — and deliberately
+// keeps Thinking even though wireRequest would never re-send it (a final
+// answer's reasoning is stale by the next *request*, but the *log* must
+// record it).
+func marshalWireResponse(resp *llm.Response) ([]byte, error) {
+	msg := wireMessage{Role: string(resp.Message.Role), Content: resp.Message.Content, Thinking: resp.Message.Reasoning}
+	for _, tc := range resp.Message.ToolCalls {
+		args := json.RawMessage(tc.FunctionArgs)
+		if len(args) == 0 {
+			args = json.RawMessage("{}")
+		}
+		msg.ToolCalls = append(msg.ToolCalls, wireToolCall{
+			ID: tc.ID,
+			Function: wireFnCall{
+				Name:      tc.FunctionName,
+				Arguments: args,
+			},
+		})
+	}
+	chunk := chatResponse{
+		Message:         msg,
+		Done:            true,
+		DoneReason:      mapWireFinishReason(resp.FinishReason),
+		PromptEvalCount: resp.Usage.PromptTokens,
+		EvalCount:       resp.Usage.CompletionTokens,
+	}
+	return json.Marshal(chunk)
+}
+
+// mapWireFinishReason inverts mapFinishReason for the assembled log
+// record; unknown values pass through unchanged.
+func mapWireFinishReason(finishReason string) string {
+	switch finishReason {
+	case llm.FinishLength:
+		return "length"
+	case llm.FinishToolCalls:
+		return "tool_calls"
+	default:
+		return finishReason
+	}
+}
+
+// ChatStream sends a chat request with stream:true and reads the response
+// as an NDJSON stream — one chatResponse object per line, terminating with
+// a done:true line — calling onDelta for each incremental piece of
+// content, reasoning, or tool call as it arrives (in order; see llm.Delta).
+// It returns the complete response once the stream finishes. An onDelta
+// error aborts the stream and is returned. It implements
+// llm.StreamingClient.
+func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort)
+	if err != nil {
+		return nil, err
+	}
+	wire.Stream = true
+
+	httpResp, endpoint, err := c.post(ctx, wire)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, httpResp.Body)
+		_ = httpResp.Body.Close()
+	}()
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
+		respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxBodyLen))
+		if err != nil {
+			return nil, fmt.Errorf("read response body: %w", err)
+		}
+		if len(respBody) == maxBodyLen {
+			return nil, fmt.Errorf("read response body: response exceeds %d byte limit", maxBodyLen)
+		}
+		// Logged here rather than via the assembled response: this body
+		// was already read whole. Write errors are ignored.
+		if c.cfg.Sink != nil {
+			c.cfg.Sink.Write(logging.Record{
+				Time:    time.Now(),
+				Kind:    logging.KindLLMResponse,
+				Method:  http.MethodPost,
+				URL:     endpoint,
+				Headers: responseHeaders(httpResp),
+				Body:    append([]byte(nil), respBody...),
+			})
+		}
+		return nil, fmt.Errorf("ollama chat: unexpected status %d: %s",
+			httpResp.StatusCode, truncate(respBody, maxErrorBodyLen))
+	}
+
+	return c.readStream(httpResp, endpoint, onDelta)
+}
+
+// readStream consumes an NDJSON body, emitting deltas and accumulating the
+// complete response. It errors when the stream carries no parseable chunks
+// at all: an empty stream would otherwise surface as a silent empty answer.
+//
+// The response log record is written here, where the accumulator's
+// assembled response exists: the assembled response on the happy path, the
+// partial response on abort/error paths after data arrived, and an
+// "error: ..." body when the stream carried no data at all. Write errors
+// are ignored — logging is best-effort.
+func (c *Client) readStream(httpResp *http.Response, endpoint string, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	logResponse := func(body []byte) {
+		if c.cfg.Sink == nil {
+			return
+		}
+		c.cfg.Sink.Write(logging.Record{
+			Time:    time.Now(),
+			Kind:    logging.KindLLMResponse,
+			Method:  http.MethodPost,
+			URL:     endpoint,
+			Headers: responseHeaders(httpResp),
+			Body:    body,
+		})
+	}
+
+	acc := newStreamAccumulator()
+	sawData := false
+
+	fail := func(err error) (*llm.Response, error) {
+		// Log what the model had produced so far; with no data at all
+		// there is nothing assembled, so log the error itself.
+		if !sawData {
+			logResponse([]byte("error: " + err.Error()))
+			return nil, err
+		}
+		resp := acc.response()
+		body, marshalErr := marshalWireResponse(resp)
+		if marshalErr != nil {
+			body = []byte("error: " + marshalErr.Error())
+		}
+		logResponse(body)
+		return nil, err
+	}
+
+	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxBodyLen)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		var chunk chatResponse
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			// Not a JSON line (e.g. a keepalive comment); skip it rather
+			// than aborting the stream.
+			continue
+		}
+		sawData = true
+
+		if err := acc.addDelta(&chunk, onDelta); err != nil {
+			return fail(err)
+		}
+		if chunk.Done {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fail(fmt.Errorf("read stream: %w", err))
+	}
+	if !sawData {
+		return fail(fmt.Errorf("decode response: no data in stream"))
+	}
+
+	resp := acc.response()
+	if hasToolCallWithoutName(resp.Message.ToolCalls) {
+		return fail(fmt.Errorf("decode response: tool call missing name"))
+	}
+
+	// A marshal failure still leaves a record: error: <marshal error>.
+	body, err := marshalWireResponse(resp)
+	if err != nil {
+		logResponse([]byte("error: " + err.Error()))
+	} else {
+		logResponse(body)
 	}
 	return resp, nil
 }
