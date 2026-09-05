@@ -2,9 +2,8 @@
   "models": [
     {
       "name": "gpt-4o-mini",
-      "type": "openai-compatible",
-      "base_url": "https://api.example.com/v1",
-      "model_name": "gpt-4o-mini"
+      "model_name": "gpt-4o-mini",
+      "provider": "local"
     }
   ],
   "agents": [
@@ -24,6 +23,13 @@
         "echo"
       ],
       "builtin": "read"
+    }
+  ],
+  "providers": [
+    {
+      "type": "openai-compatible",
+      "base_url": "https://api.example.com/v1",
+      "name": "local"
     }
   ]
 }

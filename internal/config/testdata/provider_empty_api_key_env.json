@@ -1,16 +1,16 @@
 {
-  "unknown_field": true,
   "providers": [
     {
-      "name": "local",
+      "name": "remote",
       "type": "openai-compatible",
-      "base_url": "http://localhost:1"
+      "base_url": "https://api.example.com/v1",
+      "api_key_env": ""
     }
   ],
   "models": [
     {
       "name": "gpt-4o-mini",
-      "provider": "local",
+      "provider": "remote",
       "model_name": "gpt-4o-mini"
     }
   ],
@@ -18,7 +18,7 @@
     {
       "name": "helper",
       "system_prompt": "You are helpful.",
-      "max_turns": 1,
+      "max_turns": 5,
       "model": "gpt-4o-mini"
     }
   ]

@@ -2,9 +2,8 @@
   "models": [
     {
       "name": "m",
-      "type": "openai-compatible",
-      "base_url": "http://localhost:1",
-      "model_name": "m"
+      "model_name": "m",
+      "provider": "local"
     }
   ],
   "agents": [
@@ -13,6 +12,13 @@
       "system_prompt": "You are helpful.",
       "max_turns": 1,
       "model": "ghost"
+    }
+  ],
+  "providers": [
+    {
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "name": "local"
     }
   ]
 }

@@ -1,16 +1,14 @@
 {
-  "unknown_field": true,
   "providers": [
     {
-      "name": "local",
-      "type": "openai-compatible",
-      "base_url": "http://localhost:1"
+      "name": "remote",
+      "type": "openai-compatible"
     }
   ],
   "models": [
     {
       "name": "gpt-4o-mini",
-      "provider": "local",
+      "provider": "remote",
       "model_name": "gpt-4o-mini"
     }
   ],

@@ -119,13 +119,21 @@ func testAgent() config.Agent {
 }
 
 // testModel returns the canonical top-level model entry the test agents
-// reference: an OpenAI-compatible model named gpt-test.
+// reference: an OpenAI-compatible model named gpt-test on the test
+// provider, whose connection testProvider returns.
+func testProvider() config.Provider {
+	return config.Provider{
+		Name:    "local",
+		Type:    config.ModelTypeOpenAI,
+		BaseURL: "http://localhost:1",
+	}
+}
+
 func testModel() config.Model {
 	return config.Model{
 		Name:      "gpt-test",
-		Type:      config.ModelTypeOpenAI,
+		Provider:  "local",
 		ModelName: "gpt-test",
-		BaseURL:   "http://localhost:1",
 	}
 }
 
@@ -138,9 +146,10 @@ func testConfig(agent config.Agent, tools ...config.ToolEntry) config.Config {
 	}
 	agent.Tools = names
 	return config.Config{
-		Models: []config.Model{testModel()},
-		Agents: []config.Agent{agent},
-		Tools:  tools,
+		Providers: []config.Provider{testProvider()},
+		Models:    []config.Model{testModel()},
+		Agents:    []config.Agent{agent},
+		Tools:     tools,
 	}
 }
 
@@ -184,7 +193,7 @@ func TestRunScopesToolsToTheAgent(t *testing.T) {
 	}
 	agent := testAgent()
 	agent.Tools = []string{"beta", "alpha"}
-	cfg := config.Config{Models: []config.Model{testModel()}, Agents: []config.Agent{agent}, Tools: tools}
+	cfg := config.Config{Providers: []config.Provider{testProvider()}, Models: []config.Model{testModel()}, Agents: []config.Agent{agent}, Tools: tools}
 
 	fc := &fakeClient{responses: []llm.Response{
 		{Message: llm.NewTextMessage(llm.RoleAssistant, "ok"), FinishReason: llm.FinishStop},
@@ -1125,9 +1134,9 @@ func TestNewClient(t *testing.T) {
 	t.Run("openai with key env set", func(t *testing.T) {
 		t.Setenv("BLORB_TEST_KEY", "key-value")
 
-		m := testModel()
-		m.APIKeyEnv = ptr("BLORB_TEST_KEY")
-		cfg.Models = []config.Model{m}
+		p := testProvider()
+		p.APIKeyEnv = ptr("BLORB_TEST_KEY")
+		cfg.Providers = []config.Provider{p}
 
 		client, err := chat.NewClient(cfg, cfg.Agents[0])
 		if err != nil || client == nil {
@@ -1136,9 +1145,9 @@ func TestNewClient(t *testing.T) {
 	})
 
 	t.Run("openai with missing key env", func(t *testing.T) {
-		m := testModel()
-		m.APIKeyEnv = ptr("BLORB_TEST_MISSING_KEY")
-		cfg.Models = []config.Model{m}
+		p := testProvider()
+		p.APIKeyEnv = ptr("BLORB_TEST_MISSING_KEY")
+		cfg.Providers = []config.Provider{p}
 
 		_, err := chat.NewClient(cfg, cfg.Agents[0])
 		if err == nil || !strings.Contains(err.Error(), "BLORB_TEST_MISSING_KEY") {
@@ -1146,10 +1155,10 @@ func TestNewClient(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown model type", func(t *testing.T) {
-		m := testModel()
-		m.Type = "telepathy"
-		cfg.Models = []config.Model{m}
+	t.Run("unknown provider type", func(t *testing.T) {
+		p := testProvider()
+		p.Type = "telepathy"
+		cfg.Providers = []config.Provider{p}
 
 		_, err := chat.NewClient(cfg, cfg.Agents[0])
 		if err == nil || !strings.Contains(err.Error(), "telepathy") {
@@ -1160,7 +1169,7 @@ func TestNewClient(t *testing.T) {
 	t.Run("undefined model", func(t *testing.T) {
 		agent := testAgent()
 		agent.Model = "ghost"
-		broken := config.Config{Models: []config.Model{testModel()}, Agents: []config.Agent{agent}}
+		broken := config.Config{Providers: []config.Provider{testProvider()}, Models: []config.Model{testModel()}, Agents: []config.Agent{agent}}
 
 		_, err := chat.NewClient(broken, agent)
 		if err == nil || !strings.Contains(err.Error(), "ghost") {
@@ -1179,10 +1188,10 @@ func TestRunUsesInjectedGetenv(t *testing.T) {
 	t.Parallel()
 
 	agent := testAgent()
-	m := testModel()
-	m.APIKeyEnv = ptr("INJECTED_MISSING_VAR")
+	p := testProvider()
+	p.APIKeyEnv = ptr("INJECTED_MISSING_VAR")
 	cfg := testConfig(agent)
-	cfg.Models = []config.Model{m}
+	cfg.Providers = []config.Provider{p}
 
 	// No NewClient override and an injected Getenv that resolves nothing:
 	// Run must fail startup with the missing-env error, proving the
@@ -1211,10 +1220,10 @@ func TestRunInjectedGetenvResolvesKey(t *testing.T) {
 	// The test base URL points at a dead port, so a client that gets past
 	// env resolution fails on connect; the env error must not appear.
 	agent := testAgent()
-	m := testModel()
-	m.APIKeyEnv = ptr("INJECTED_ENV_VAR")
+	p := testProvider()
+	p.APIKeyEnv = ptr("INJECTED_ENV_VAR")
 	cfg := testConfig(agent)
-	cfg.Models = []config.Model{m}
+	cfg.Providers = []config.Provider{p}
 
 	var stdout strings.Builder
 	o := chat.Options{
@@ -1283,16 +1292,20 @@ func TestRunLongLineDeliveredAsOneTurn(t *testing.T) {
 
 // writeBlorbConfig writes a minimal valid config with the given raw JSON
 // merged at the top level (as a raw map) and returns its path. The
-// "provider" override is special-cased: it replaces the shared model
-// entry, since model settings live in the top-level models list.
+// "provider" override is special-cased: it replaces the shared provider
+// entry, since connection settings live in the top-level providers list.
 func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
 	t.Helper()
 
+	provider := map[string]any{
+		"name":     "local",
+		"type":     "openai-compatible",
+		"base_url": "placeholder",
+	}
 	model := map[string]any{
 		"name":       "gpt-test",
-		"type":       "openai-compatible",
+		"provider":   "local",
 		"model_name": "gpt-test",
-		"base_url":   "placeholder",
 	}
 	agent := map[string]any{
 		"name":          "logger",
@@ -1303,6 +1316,7 @@ func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
 	}
 	base := map[string]any{
 		"default_agent": "logger",
+		"providers":     []map[string]any{provider},
 		"models":        []map[string]any{model},
 		"agents":        []map[string]any{agent},
 		"tools": []map[string]any{{
@@ -1314,7 +1328,7 @@ func writeBlorbConfig(t *testing.T, dir string, extra map[string]any) string {
 	}
 	for k, v := range extra {
 		if k == "provider" {
-			base["models"] = []map[string]any{v.(map[string]any)}
+			base["providers"] = []map[string]any{v.(map[string]any)}
 			continue
 		}
 		base[k] = v
@@ -1446,10 +1460,9 @@ func TestRunWritesLogFilesForToolRound(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeBlorbConfig(t, dir, map[string]any{
 		"provider": map[string]any{
-			"name":       "gpt-test",
-			"type":       "openai-compatible",
-			"model_name": "gpt-test",
-			"base_url":   srv.URL,
+			"name":     "local",
+			"type":     "openai-compatible",
+			"base_url": srv.URL,
 		},
 	})
 
@@ -1504,10 +1517,9 @@ func TestRunLoggingDisabledWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeBlorbConfig(t, dir, map[string]any{
 		"provider": map[string]any{
-			"name":       "gpt-test",
-			"type":       "openai-compatible",
-			"model_name": "gpt-test",
-			"base_url":   srv.URL,
+			"name":     "local",
+			"type":     "openai-compatible",
+			"base_url": srv.URL,
 		},
 		"logging": map[string]any{"enabled": false},
 	})
@@ -1538,10 +1550,9 @@ func TestRunCustomLogPath(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeBlorbConfig(t, dir, map[string]any{
 		"provider": map[string]any{
-			"name":       "gpt-test",
-			"type":       "openai-compatible",
-			"model_name": "gpt-test",
-			"base_url":   srv.URL,
+			"name":     "local",
+			"type":     "openai-compatible",
+			"base_url": srv.URL,
 		},
 		"logging": map[string]any{"path": "mylogs"},
 	})
@@ -1586,10 +1597,9 @@ func TestRunSequentialSessionsGetDistinctLogDirs(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeBlorbConfig(t, dir, map[string]any{
 		"provider": map[string]any{
-			"name":       "gpt-test",
-			"type":       "openai-compatible",
-			"model_name": "gpt-test",
-			"base_url":   srv.URL,
+			"name":     "local",
+			"type":     "openai-compatible",
+			"base_url": srv.URL,
 		},
 	})
 
@@ -1615,9 +1625,9 @@ func TestNewClientWithGetenvNilSink(t *testing.T) {
 	t.Setenv("BLORB_TEST_KEY", "key-value")
 
 	cfg := testConfig(testAgent())
-	m := testModel()
-	m.APIKeyEnv = ptr("BLORB_TEST_KEY")
-	cfg.Models = []config.Model{m}
+	p := testProvider()
+	p.APIKeyEnv = ptr("BLORB_TEST_KEY")
+	cfg.Providers = []config.Provider{p}
 
 	client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
 	if err != nil || client == nil {
@@ -1645,12 +1655,14 @@ func TestNewClientPlumbsReasoningEffort(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	p := testProvider()
+	p.BaseURL = srv.URL
 	m := testModel()
-	m.BaseURL = srv.URL
 	m.ReasoningEffort = "high"
 	cfg := config.Config{
-		Models: []config.Model{m},
-		Agents: []config.Agent{testAgent()},
+		Providers: []config.Provider{p},
+		Models:    []config.Model{m},
+		Agents:    []config.Agent{testAgent()},
 	}
 
 	client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
@@ -1665,13 +1677,22 @@ func TestNewClientPlumbsReasoningEffort(t *testing.T) {
 	}
 }
 
-// ollamaTestModel returns the canonical ollama model entry for tests.
+// ollamaTestProvider returns the canonical ollama provider for tests.
+func ollamaTestProvider() config.Provider {
+	return config.Provider{
+		Name:    "local",
+		Type:    config.ModelTypeOllama,
+		BaseURL: "http://localhost:11434",
+	}
+}
+
+// ollamaTestModel returns the canonical ollama model entry for tests: it
+// names ollamaTestProvider's provider.
 func ollamaTestModel() config.Model {
 	return config.Model{
 		Name:      "local-llama",
-		Type:      config.ModelTypeOllama,
+		Provider:  "local",
 		ModelName: "llama3.1:latest",
-		BaseURL:   "http://localhost:11434",
 	}
 }
 
@@ -1696,9 +1717,9 @@ func TestNewClientOllama(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		m := ollamaTestModel()
-		m.BaseURL = srv.URL
-		cfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{agent}}
+		p := ollamaTestProvider()
+		p.BaseURL = srv.URL
+		cfg := config.Config{Providers: []config.Provider{p}, Models: []config.Model{ollamaTestModel()}, Agents: []config.Agent{agent}}
 
 		client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
 		if err != nil || client == nil {
@@ -1718,9 +1739,9 @@ func TestNewClientOllama(t *testing.T) {
 	t.Run("api_key_env with empty env errors", func(t *testing.T) {
 		t.Parallel()
 
-		m := ollamaTestModel()
-		m.APIKeyEnv = ptr("BLORB_TEST_MISSING_OLLAMA_KEY")
-		cfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{agent}}
+		p := ollamaTestProvider()
+		p.APIKeyEnv = ptr("BLORB_TEST_MISSING_OLLAMA_KEY")
+		cfg := config.Config{Providers: []config.Provider{p}, Models: []config.Model{ollamaTestModel()}, Agents: []config.Agent{agent}}
 
 		_, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
 		if err == nil || !strings.Contains(err.Error(), "BLORB_TEST_MISSING_OLLAMA_KEY") {
@@ -1731,8 +1752,7 @@ func TestNewClientOllama(t *testing.T) {
 	t.Run("api_key_env absent builds a client", func(t *testing.T) {
 		t.Parallel()
 
-		m := ollamaTestModel()
-		cfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{agent}}
+		cfg := config.Config{Providers: []config.Provider{ollamaTestProvider()}, Models: []config.Model{ollamaTestModel()}, Agents: []config.Agent{agent}}
 
 		client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
 		if err != nil || client == nil {
@@ -1757,9 +1777,10 @@ func TestNewClientOllama(t *testing.T) {
 		defer srv.Close()
 
 		m := ollamaTestModel()
-		m.BaseURL = srv.URL
 		m.ReasoningEffort = "none"
-		cfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{agent}}
+		p := ollamaTestProvider()
+		p.BaseURL = srv.URL
+		cfg := config.Config{Providers: []config.Provider{p}, Models: []config.Model{m}, Agents: []config.Agent{agent}}
 
 		client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
 		if err != nil || client == nil {
@@ -1790,8 +1811,9 @@ func subagentTestConfig(t *testing.T) config.Config {
 	parent.MaxTurns = 3
 
 	cfg := config.Config{
-		Models: []config.Model{testModel()},
-		Agents: []config.Agent{parent, worker},
+		Providers: []config.Provider{testProvider()},
+		Models:    []config.Model{testModel()},
+		Agents:    []config.Agent{parent, worker},
 		Tools: []config.ToolEntry{
 			{
 				Type:        config.ToolTypeSubagent,
@@ -2081,8 +2103,9 @@ func TestRunSubagentNestedStreamedTwiceInOneTurn(t *testing.T) {
 	c.MaxTurns = 3
 
 	cfg := config.Config{
-		Models: []config.Model{testModel()},
-		Agents: []config.Agent{parent, b, c},
+		Providers: []config.Provider{testProvider()},
+		Models:    []config.Model{testModel()},
+		Agents:    []config.Agent{parent, b, c},
 		Tools: []config.ToolEntry{
 			{Type: config.ToolTypeSubagent, Name: "ask_b", Description: "ask b", Agent: "b"},
 			{Type: config.ToolTypeSubagent, Name: "ask_c", Description: "ask c", Agent: "c"},

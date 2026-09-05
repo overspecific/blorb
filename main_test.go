@@ -237,9 +237,8 @@ func writeAgentConfig(t *testing.T, dir string, names []string, defaultAgent str
 	for i, name := range names {
 		models[i] = map[string]any{
 			"name":       name,
-			"type":       "openai-compatible",
+			"provider":   "local",
 			"model_name": "model-" + name,
-			"base_url":   baseURL,
 		}
 		agents[i] = map[string]any{
 			"name":          name,
@@ -249,6 +248,11 @@ func writeAgentConfig(t *testing.T, dir string, names []string, defaultAgent str
 		}
 	}
 	base := map[string]any{
+		"providers": []map[string]any{{
+			"name":     "local",
+			"type":     "openai-compatible",
+			"base_url": baseURL,
+		}},
 		"models": models,
 		"agents": agents,
 	}
@@ -600,11 +604,15 @@ func TestRunToolOutputFlagCommand(t *testing.T) {
 	dir := t.TempDir()
 	data, err := json.Marshal(map[string]any{
 		"default_agent": "helper",
+		"providers": []map[string]any{{
+			"name":     "local",
+			"type":     "openai-compatible",
+			"base_url": srv.URL,
+		}},
 		"models": []map[string]any{{
 			"name":       "m",
-			"type":       "openai-compatible",
+			"provider":   "local",
 			"model_name": "m",
-			"base_url":   srv.URL,
 		}},
 		"agents": []map[string]any{{
 			"name":          "helper",
@@ -722,7 +730,8 @@ func TestChatPrefactorMissingEnvVarExits(t *testing.T) {
 	path := filepath.Join(dir, "blorb.json")
 	cfgJSON := `{
 		"default_agent": "helper",
-		"models": [{"name": "m", "type": "openai-compatible", "model_name": "m", "base_url": "http://localhost:1"}],
+		"providers": [{"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}],
+		"models": [{"name": "m", "provider": "local", "model_name": "m"}],
 		"agents": [
 			{
 				"name": "helper",
@@ -762,7 +771,8 @@ func TestRunPrefactorMissingEnvVarExits(t *testing.T) {
 	path := filepath.Join(dir, "blorb.json")
 	cfgJSON := `{
 		"default_agent": "helper",
-		"models": [{"name": "m", "type": "openai-compatible", "model_name": "m", "base_url": "http://localhost:1"}],
+		"providers": [{"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}],
+		"models": [{"name": "m", "provider": "local", "model_name": "m"}],
 		"agents": [
 			{
 				"name": "helper",

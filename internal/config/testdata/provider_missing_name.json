@@ -1,9 +1,14 @@
 {
+  "providers": [
+    {
+      "type": "openai-compatible",
+      "base_url": "https://api.example.com/v1"
+    }
+  ],
   "models": [
     {
       "name": "gpt-4o-mini",
-      "type": "openai-compatible",
-      "base_url": "ftp://api.example.com/v1",
+      "provider": "gpt-4o-mini",
       "model_name": "gpt-4o-mini"
     }
   ],

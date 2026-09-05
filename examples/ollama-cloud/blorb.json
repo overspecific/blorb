@@ -3,11 +3,9 @@
   "models": [
     {
       "name": "cloud-gemma4",
-      "type": "ollama",
-      "base_url": "https://ollama.com",
       "model_name": "gemma4:31b",
-      "api_key_env": "OLLAMA_API_KEY",
-      "reasoning_effort": "medium"
+      "reasoning_effort": "medium",
+      "provider": "ollama-cloud"
     }
   ],
   "agents": [
@@ -40,6 +38,14 @@
       "config": {
         "base_dir": "../simple/knowledgebase"
       }
+    }
+  ],
+  "providers": [
+    {
+      "name": "ollama-cloud",
+      "type": "ollama",
+      "base_url": "https://ollama.com",
+      "api_key_env": "OLLAMA_API_KEY"
     }
   ]
 }

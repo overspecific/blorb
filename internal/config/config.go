@@ -65,9 +65,13 @@ const (
 )
 
 // Config is the top-level blorb.json schema. It declares the shared
-// model and tool vocabularies once and a set of named agents that
-// reference them by name.
+// provider, model, and tool vocabularies once and a set of named agents
+// that reference them by name.
 type Config struct {
+	// Providers is the required, non-empty list of named LLM server
+	// connections. Models reference them by name; the connection
+	// declarations live here, once.
+	Providers []Provider `json:"providers"`
 	// Models is the required, non-empty list of named LLM backends.
 	// Agents reference them by name; the declarations live here, once.
 	Models []Model `json:"models"`
@@ -210,12 +214,46 @@ func (p *PrefactorConfig) validate() error {
 	return nil
 }
 
-// Model is one named LLM backend declaration in blorb.json. The Type
-// discriminator determines which other fields are recognized; per-type
-// parsing and validation lives here rather than being flattened onto
-// Config so future model types can add their own fields. Agents
-// reference models by name; the declarations live once at the top level
-// and are shared.
+// Provider is one named LLM server connection in blorb.json: the
+// connection-level facts (type, base_url, api_key_env) one or more models
+// share. Type is the discriminator that selects the wire protocol and
+// determines which other provider fields are recognized; per-type parsing
+// and validation lives here rather than being flattened onto Config so
+// future provider types can add their own fields. Models reference
+// providers by name; the declarations live once at the top level and are
+// shared.
+type Provider struct {
+	// Name identifies the provider within the config: what models put in
+	// their provider field. It must be unique within the config.
+	Name string `json:"name"`
+
+	// Type selects the wire protocol: "openai-compatible" for
+	// OpenAI-compatible chat completions APIs (base_url is the API root
+	// with /chat/completions appended) or "ollama" for Ollama's native
+	// /api/chat API (base_url is the bare Ollama server root with
+	// /api/chat appended).
+	Type string `json:"type"`
+	// BaseURL is the server root: /chat/completions or /api/chat is
+	// appended per the type above.
+	BaseURL string `json:"base_url"`
+	// APIKeyEnv names the environment variable holding the API key. It is
+	// a pointer so an explicit "api_key_env": "" is distinguishable from
+	// an absent field: empty is a config error, absent means no key.
+	APIKeyEnv *string `json:"api_key_env,omitempty"`
+}
+
+// APIKeyEnvOrDefault returns the configured api_key_env, or "" when unset.
+func (p *Provider) APIKeyEnvOrDefault() string {
+	if p.APIKeyEnv == nil {
+		return ""
+	}
+	return *p.APIKeyEnv
+}
+
+// Model is one named LLM backend declaration in blorb.json: a provider
+// connection (by name) plus the model-level facts that distinguish this
+// model within it. Agents reference models by name; the declarations live
+// once at the top level and are shared.
 type Model struct {
 	// Name identifies the model within the config: what agents put in
 	// their model field. It is free-form to the config author —
@@ -223,21 +261,18 @@ type Model struct {
 	// unique within the config.
 	Name string `json:"name"`
 
-	// Fields for the endpoint-backed types "openai-compatible" and
-	// "ollama". For openai-compatible, base_url is the API root with
-	// /chat/completions appended; for ollama it is the bare Ollama server
-	// root with /api/chat appended.
-	Type      string `json:"type"`
+	// Provider names the top-level provider entry carrying the connection
+	// (type, base_url, api_key_env) this model talks to. It must be a
+	// defined provider in the same config (see Config.Provider).
+	Provider string `json:"provider"`
+	// ModelName is the model identifier sent to the server: for ollama
+	// the Ollama tag, for openai-compatible the server's model id.
 	ModelName string `json:"model_name,omitempty"`
-	BaseURL   string `json:"base_url,omitempty"`
-	// APIKeyEnv names the environment variable holding the API key. It is
-	// a pointer so an explicit "api_key_env": "" is distinguishable from
-	// an absent field: empty is a config error, absent means no key.
-	APIKeyEnv *string `json:"api_key_env,omitempty"`
 	// ReasoningEffort is the optional thinking effort the backend is
 	// asked for. Empty means the server default applies. Accepted values
 	// are the union of the OpenAI and Ollama scales; see
-	// validateReasoningEffort.
+	// validateReasoningEffort. Thinking is about the model, not the
+	// connection, so it is declared here and not on the provider.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
@@ -257,14 +292,6 @@ func validateReasoningEffort(effort string) error {
 		return fmt.Errorf("reasoning_effort %q must be one of: %s", effort, strings.Join(reasoningEfforts, ", "))
 	}
 	return nil
-}
-
-// APIKeyEnvOrDefault returns the configured api_key_env, or "" when unset.
-func (m *Model) APIKeyEnvOrDefault() string {
-	if m.APIKeyEnv == nil {
-		return ""
-	}
-	return *m.APIKeyEnv
 }
 
 // ToolEntry is a tool declaration in blorb.json. The Type discriminator
@@ -356,6 +383,18 @@ func (c Config) Model(name string) (Model, bool) {
 	return Model{}, false
 }
 
+// Provider returns the named provider definition and whether it exists in
+// the config. Models reference providers by name; callers resolve the
+// named entry before building an LLM client.
+func (c Config) Provider(name string) (Provider, bool) {
+	for _, p := range c.Providers {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return Provider{}, false
+}
+
 // DefaultAgentName returns the configured default agent name and whether
 // one is set.
 func (c Config) DefaultAgentName() (string, bool) {
@@ -384,8 +423,24 @@ func (c Config) AgentTools(a Agent) []ToolEntry {
 	return out
 }
 
-// Validate checks all required fields and value constraints.
+// Validate checks all required fields and value constraints. Providers
+// validate first: models depend on them, and the model checks need the
+// providers in scope.
 func (c *Config) Validate() error {
+	if c.Providers == nil {
+		return fmt.Errorf("providers is required")
+	}
+	if len(c.Providers) == 0 {
+		return fmt.Errorf("providers must not be empty")
+	}
+	if err := validateUniqueProviderNames(c.Providers); err != nil {
+		return err
+	}
+	for _, p := range c.Providers {
+		if err := p.validate(); err != nil {
+			return fmt.Errorf("provider %q: %w", p.Name, err)
+		}
+	}
 	if c.Models == nil {
 		return fmt.Errorf("models is required")
 	}
@@ -393,7 +448,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("models must not be empty")
 	}
 	for _, m := range c.Models {
-		if err := m.validate(); err != nil {
+		if err := m.validate(c.Providers); err != nil {
 			return fmt.Errorf("model %q: %w", m.Name, err)
 		}
 	}
@@ -584,41 +639,59 @@ func (l *LogConfig) validate() error {
 	return nil
 }
 
-func (m *Model) validate() error {
-	if m.Name == "" {
+// validate checks one provider definition: its name, type, and the
+// connection fields the type requires.
+func (p *Provider) validate() error {
+	if p.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	switch m.Type {
+	if !NamePattern.MatchString(p.Name) {
+		return fmt.Errorf("provider name %q must match %s", p.Name, NamePattern)
+	}
+	switch p.Type {
 	case ModelTypeOpenAI, ModelTypeOllama:
-		if err := validateEndpointModel(m); err != nil {
-			return err
-		}
+		return validateEndpointProvider(p)
 	default:
-		return fmt.Errorf("unknown type %q (supported: %v)", m.Type, SupportedModelTypes())
+		return fmt.Errorf("unknown type %q (supported: %v)", p.Type, SupportedModelTypes())
+	}
+}
+
+// validateEndpointProvider checks the fields shared by the endpoint-backed
+// provider types (openai-compatible, ollama): an http(s) base_url with a
+// host and the api_key_env pointer rule. It does not check the name or type.
+func validateEndpointProvider(p *Provider) error {
+	u, err := url.Parse(p.BaseURL)
+	if err != nil {
+		return fmt.Errorf("base_url %q: %w", p.BaseURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("base_url %q must use http or https scheme", p.BaseURL)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("base_url %q must include a host", p.BaseURL)
+	}
+	if p.APIKeyEnv != nil && *p.APIKeyEnv == "" {
+		return fmt.Errorf("api_key_env must not be empty when set")
 	}
 	return nil
 }
 
-// validateEndpointModel checks the fields shared by the endpoint-backed
-// model types (openai-compatible, ollama): model_name, an http(s) base_url
-// with a host, the api_key_env pointer rule, and the reasoning_effort value
-// set. It does not check the model name or type.
-func validateEndpointModel(m *Model) error {
+// validate checks one model definition: its name, that the provider it
+// names is defined, its model_name, and the reasoning_effort value set.
+// providers is the already-validated top-level list the model references
+// by name.
+func (m *Model) validate(providers []Provider) error {
+	if m.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if m.Provider == "" {
+		return fmt.Errorf("provider is required")
+	}
+	if !slices.ContainsFunc(providers, func(p Provider) bool { return p.Name == m.Provider }) {
+		return fmt.Errorf("provider %q is not a defined provider", m.Provider)
+	}
 	if m.ModelName == "" {
 		return fmt.Errorf("model_name is required")
-	}
-	u, err := url.Parse(m.BaseURL)
-	if err != nil {
-		return fmt.Errorf("base_url %q: %w", m.BaseURL, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("base_url %q must use http or https scheme", m.BaseURL)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("base_url %q must include a host", m.BaseURL)
-	}
-	if m.APIKeyEnv != nil && *m.APIKeyEnv == "" {
-		return fmt.Errorf("api_key_env must not be empty when set")
 	}
 	return validateReasoningEffort(m.ReasoningEffort)
 }
@@ -720,6 +793,17 @@ func validateUniqueModelNames(models []Model) error {
 			return fmt.Errorf("duplicate model name %q", m.Name)
 		}
 		seen[m.Name] = struct{}{}
+	}
+	return nil
+}
+
+func validateUniqueProviderNames(providers []Provider) error {
+	seen := make(map[string]struct{}, len(providers))
+	for _, p := range providers {
+		if _, ok := seen[p.Name]; ok {
+			return fmt.Errorf("duplicate provider name %q", p.Name)
+		}
+		seen[p.Name] = struct{}{}
 	}
 	return nil
 }

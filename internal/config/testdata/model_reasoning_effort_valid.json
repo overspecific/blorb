@@ -2,10 +2,9 @@
   "models": [
     {
       "name": "o4-mini",
-      "type": "openai-compatible",
-      "base_url": "https://api.example.com/v1",
       "model_name": "o4-mini",
-      "reasoning_effort": "max"
+      "reasoning_effort": "max",
+      "provider": "local"
     }
   ],
   "agents": [
@@ -14,6 +13,13 @@
       "system_prompt": "You are helpful.",
       "max_turns": 1,
       "model": "o4-mini"
+    }
+  ],
+  "providers": [
+    {
+      "type": "openai-compatible",
+      "base_url": "https://api.example.com/v1",
+      "name": "local"
     }
   ]
 }

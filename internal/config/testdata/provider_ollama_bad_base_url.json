@@ -1,11 +1,17 @@
 {
+  "providers": [
+    {
+      "name": "local",
+      "type": "ollama",
+      "base_url": "ftp://localhost:11434"
+    }
+  ],
   "models": [
     {
       "name": "local-llama",
-      "type": "ollama",
-      "base_url": "http://localhost:11434",
+      "provider": "local",
       "model_name": "llama3.1:latest",
-      "api_key_env": ""
+      "reasoning_effort": "medium"
     }
   ],
   "agents": [

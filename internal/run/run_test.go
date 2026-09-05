@@ -105,13 +105,21 @@ func (f *fragmentingClient) ChatStream(ctx context.Context, req llm.Request, onD
 }
 
 // runTestModel returns the canonical top-level model entry the run test
-// agents reference.
+// agents reference. Its provider carries the connection; runTestProvider
+// returns it so both travel together.
+func runTestProvider() config.Provider {
+	return config.Provider{
+		Name:    "local",
+		Type:    config.ModelTypeOpenAI,
+		BaseURL: "http://localhost:1",
+	}
+}
+
 func runTestModel() config.Model {
 	return config.Model{
 		Name:      "gpt-test",
-		Type:      config.ModelTypeOpenAI,
+		Provider:  "local",
 		ModelName: "gpt-test",
-		BaseURL:   "http://localhost:1",
 	}
 }
 
@@ -132,7 +140,7 @@ func runTestConfig(agent config.Agent, tools ...config.ToolEntry) config.Config 
 		names[i] = t.Name
 	}
 	agent.Tools = names
-	return config.Config{Models: []config.Model{runTestModel()}, Agents: []config.Agent{agent}, Tools: tools}
+	return config.Config{Providers: []config.Provider{runTestProvider()}, Models: []config.Model{runTestModel()}, Agents: []config.Agent{agent}, Tools: tools}
 }
 
 // syncBuffer is a mutex-guarded strings.Builder.
@@ -326,8 +334,9 @@ func runSubagentConfig(t *testing.T) config.Config {
 	worker.MaxTurns = 3
 
 	cfg := config.Config{
-		Models: []config.Model{runTestModel()},
-		Agents: []config.Agent{parent, worker},
+		Providers: []config.Provider{runTestProvider()},
+		Models:    []config.Model{runTestModel()},
+		Agents:    []config.Agent{parent, worker},
 		Tools: []config.ToolEntry{
 			{Type: config.ToolTypeSubagent, Name: "ask_worker", Description: "Ask the worker.", Agent: "worker"},
 			{Type: config.ToolTypeCommand, Name: "worker_tool", Description: "Worker tool.", Command: []string{"true"}},
@@ -527,7 +536,8 @@ func TestRunWritesSessionLogDir(t *testing.T) {
 	cfgPath := filepath.Join(dir, "blorb.json")
 	cfgJSON := `{
 		"default_agent": "logger",
-		"models": [{"name": "gpt-test", "type": "openai-compatible", "model_name": "gpt-test", "base_url": "http://localhost:1"}],
+		"providers": [{"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}],
+		"models": [{"name": "gpt-test", "provider": "local", "model_name": "gpt-test"}],
 		"agents": [{
 			"name": "logger",
 			"system_prompt": "You are helpful.",
@@ -598,9 +608,9 @@ func TestRunGetenvInjected(t *testing.T) {
 
 	agent := runTestAgent()
 	cfg := runTestConfig(agent)
-	m := runTestModel()
-	m.APIKeyEnv = ptr("INJECTED_MISSING_VAR")
-	cfg.Models = []config.Model{m}
+	p := runTestProvider()
+	p.APIKeyEnv = ptr("INJECTED_MISSING_VAR")
+	cfg.Providers = []config.Provider{p}
 
 	_, err := run.Run(context.Background(), run.Options{
 		Config: cfg,

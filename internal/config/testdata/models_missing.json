@@ -1,4 +1,11 @@
 {
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1"
+    }
+  ],
   "agents": [
     {
       "name": "helper",

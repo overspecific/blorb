@@ -2,10 +2,9 @@
   "models": [
     {
       "name": "local-llama",
-      "type": "ollama",
-      "base_url": "http://localhost:11434",
       "model_name": "llama3.1:latest",
-      "reasoning_effort": "medium"
+      "reasoning_effort": "medium",
+      "provider": "local"
     }
   ],
   "agents": [
@@ -14,6 +13,13 @@
       "system_prompt": "You are helpful.",
       "max_turns": 1,
       "model": "local-llama"
+    }
+  ],
+  "providers": [
+    {
+      "type": "ollama",
+      "base_url": "http://localhost:11434",
+      "name": "local"
     }
   ]
 }

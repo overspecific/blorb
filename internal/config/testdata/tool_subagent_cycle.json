@@ -3,9 +3,8 @@
   "models": [
     {
       "name": "m",
-      "type": "openai-compatible",
-      "base_url": "http://localhost:1",
-      "model_name": "m"
+      "model_name": "m",
+      "provider": "local"
     }
   ],
   "agents": [
@@ -40,6 +39,13 @@
       "name": "ask_b",
       "description": "Ask b.",
       "agent": "b"
+    }
+  ],
+  "providers": [
+    {
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "name": "local"
     }
   ]
 }

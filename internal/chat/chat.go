@@ -741,41 +741,37 @@ func resolveSink(opts Options) (logging.Sink, error) {
 	return opts.resolveSink()
 }
 
-// clientFactory builds the LLM client for one model type: it resolves the
-// model's api_key_env through getenv and constructs the provider client.
-// sink receives LLM wire logs; nil disables them.
-type clientFactory func(model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error)
+// clientFactory builds the LLM client for one provider type: the resolved
+// provider carries the connection (base_url, api_key_env), and the model
+// entry contributes its per-model fields (model_name, reasoning_effort).
+// getenv resolves the provider's api_key_env; sink receives LLM wire logs;
+// nil disables them.
+type clientFactory func(provider config.Provider, model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error)
 
-// clientFactories is the model-type registry: one entry per supported
-// model type. Adding a model type means adding a config constant, a
+// clientFactories is the provider-type registry: one entry per supported
+// provider type. Adding a provider type means adding a config constant, a
 // validation case, and an entry here — nothing else changes.
 var clientFactories = map[string]clientFactory{
-	config.ModelTypeOpenAI: func(model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
-		apiKey := ""
-		if envName := model.APIKeyEnvOrDefault(); envName != "" {
-			apiKey = getenv(envName)
-			if apiKey == "" {
-				return nil, fmt.Errorf("api_key_env %q is set but the environment variable is empty", envName)
-			}
+	config.ModelTypeOpenAI: func(provider config.Provider, model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+		apiKey, err := resolveAPIKey(provider, getenv)
+		if err != nil {
+			return nil, err
 		}
 		return openai.New(openai.Config{
-			BaseURL:         model.BaseURL,
+			BaseURL:         provider.BaseURL,
 			Model:           model.ModelName,
 			APIKey:          apiKey,
 			ReasoningEffort: model.ReasoningEffort,
 			Sink:            sink,
 		})
 	},
-	config.ModelTypeOllama: func(model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
-		apiKey := ""
-		if envName := model.APIKeyEnvOrDefault(); envName != "" {
-			apiKey = getenv(envName)
-			if apiKey == "" {
-				return nil, fmt.Errorf("api_key_env %q is set but the environment variable is empty", envName)
-			}
+	config.ModelTypeOllama: func(provider config.Provider, model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+		apiKey, err := resolveAPIKey(provider, getenv)
+		if err != nil {
+			return nil, err
 		}
 		return ollama.New(ollama.Config{
-			BaseURL:         model.BaseURL,
+			BaseURL:         provider.BaseURL,
 			Model:           model.ModelName,
 			ReasoningEffort: model.ReasoningEffort,
 			APIKey:          apiKey,
@@ -784,24 +780,77 @@ var clientFactories = map[string]clientFactory{
 	},
 }
 
-// NewClientWithGetenv builds the LLM client described by the named
-// top-level model entry, dispatching through the model-type registry.
-// getenv is the environment lookup, injectable for tests; pass os.Getenv
-// in production. sink receives LLM wire logs; nil disables them.
+// resolveAPIKey resolves a provider's api_key_env through getenv: empty
+// when unset, the env value when set. An env var that is named but empty
+// is an error.
+func resolveAPIKey(provider config.Provider, getenv func(string) string) (string, error) {
+	envName := provider.APIKeyEnvOrDefault()
+	if envName == "" {
+		return "", nil
+	}
+	apiKey := getenv(envName)
+	if apiKey == "" {
+		return "", fmt.Errorf("api_key_env %q is set but the environment variable is empty", envName)
+	}
+	return apiKey, nil
+}
+
+// NewClientWithGetenv builds the LLM client for the agent's named model:
+// the model resolves its provider, and the provider type dispatches
+// through the provider-type registry. getenv is the environment lookup,
+// injectable for tests; pass os.Getenv in production. sink receives LLM
+// wire logs; nil disables them.
 func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
 	model, ok := cfg.Model(agent.Model)
 	if !ok {
 		return nil, fmt.Errorf("agent %q: model %q is not a defined model", agent.Name, agent.Model)
 	}
-	factory, ok := clientFactories[model.Type]
-	if !ok {
-		return nil, fmt.Errorf("model type %q is not supported (supported: %v)", model.Type, config.SupportedModelTypes())
+	provider, err := modelProvider(cfg, model)
+	if err != nil {
+		return nil, err
 	}
-	return factory(model, getenv, sink)
+	return newProviderModelClient(provider, model, getenv, sink)
 }
 
-// NewClient builds the LLM client described by the named top-level model
-// entry using os.Getenv.
+// newProviderModelClient dispatches through the provider-type registry,
+// applying the model's per-model fields on top of the provider's
+// connection. Unknown provider types error with the supported list named.
+func newProviderModelClient(provider config.Provider, model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+	factory, ok := clientFactories[provider.Type]
+	if !ok {
+		return nil, fmt.Errorf("provider type %q is not supported (supported: %v)", provider.Type, config.SupportedModelTypes())
+	}
+	return factory(provider, model, getenv, sink)
+}
+
+// modelProvider resolves the provider a model references. Models are
+// validated against the config in production, so this errors only for
+// programmatically built configs that skipped validation.
+func modelProvider(cfg config.Config, model config.Model) (config.Provider, error) {
+	provider, ok := cfg.Provider(model.Provider)
+	if !ok {
+		return config.Provider{}, fmt.Errorf("model %q: provider %q is not a defined provider", model.Name, model.Provider)
+	}
+	return provider, nil
+}
+
+// NewProviderClient builds the LLM client for a provider by name, without
+// a model: for consumers that enumerate the provider's server rather than
+// chat with a specific model. getenv is the environment lookup,
+// injectable for tests; pass os.Getenv in production. sink receives LLM
+// wire logs; nil disables them.
+func NewProviderClient(cfg config.Config, providerName string, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+	provider, ok := cfg.Provider(providerName)
+	if !ok {
+		return nil, fmt.Errorf("provider %q is not a defined provider", providerName)
+	}
+	// The client needs the per-model settings a chat request applies;
+	// none are in scope without a model, so a zero Model stands in.
+	return newProviderModelClient(provider, config.Model{}, getenv, sink)
+}
+
+// NewClient builds the LLM client for the agent's named model using
+// os.Getenv.
 func NewClient(cfg config.Config, agent config.Agent) (llm.Client, error) {
 	return NewClientWithGetenv(cfg, agent, os.Getenv, logging.NewNop())
 }

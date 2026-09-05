@@ -21,11 +21,15 @@ func subagentConfig(t *testing.T, agents map[string]string, delegations map[stri
 	t.Helper()
 
 	cfg := config.Config{
+		Providers: []config.Provider{{
+			Name:    "local",
+			Type:    config.ModelTypeOpenAI,
+			BaseURL: "http://localhost:1",
+		}},
 		Models: []config.Model{{
 			Name:      "m",
-			Type:      config.ModelTypeOpenAI,
+			Provider:  "local",
 			ModelName: "m",
-			BaseURL:   "http://localhost:1",
 		}},
 		Agents: []config.Agent{},
 		Tools:  []config.ToolEntry{},

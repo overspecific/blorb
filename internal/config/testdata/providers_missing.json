@@ -1,17 +1,9 @@
 {
-  "providers": [
-    {
-      "name": "local",
-      "type": "openai-compatible",
-      "base_url": "http://localhost:1"
-    }
-  ],
   "models": [
     {
       "name": "m",
       "provider": "local",
-      "model_name": "m",
-      "no_such_field": true
+      "model_name": "m"
     }
   ],
   "agents": [

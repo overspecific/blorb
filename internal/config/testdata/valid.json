@@ -1,16 +1,26 @@
 {
   "default_agent": "main",
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1"
+    },
+    {
+      "name": "remote",
+      "type": "openai-compatible",
+      "base_url": "https://api.example.com/v1"
+    }
+  ],
   "models": [
     {
       "name": "m2",
-      "type": "openai-compatible",
-      "base_url": "http://localhost:1",
+      "provider": "local",
       "model_name": "m2"
     },
     {
       "name": "gpt-4o-mini",
-      "type": "openai-compatible",
-      "base_url": "https://api.example.com/v1",
+      "provider": "remote",
       "model_name": "gpt-4o-mini"
     }
   ],

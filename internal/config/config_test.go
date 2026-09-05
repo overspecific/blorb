@@ -70,15 +70,25 @@ func TestLoadValid(t *testing.T) {
 	if len(cfg.Tools) != 2 {
 		t.Fatalf("len(Tools) = %d, want 2", len(cfg.Tools))
 	}
+	if len(cfg.Providers) != 2 {
+		t.Fatalf("len(Providers) = %d, want 2", len(cfg.Providers))
+	}
 	if len(cfg.Models) != 2 {
 		t.Fatalf("len(Models) = %d, want 2", len(cfg.Models))
 	}
 	m2 := cfg.Models[0]
-	if m2.Name != "m2" || m2.Type != config.ModelTypeOpenAI {
-		t.Errorf("Models[0].Name/Type = %q/%q, want m2/%s", m2.Name, m2.Type, config.ModelTypeOpenAI)
+	if m2.Name != "m2" || m2.Provider != "local" {
+		t.Errorf("Models[0].Name/Provider = %q/%q, want m2/local", m2.Name, m2.Provider)
 	}
-	if m2.ModelName != "m2" || m2.BaseURL != "http://localhost:1" {
-		t.Errorf("Models[0].ModelName/BaseURL = %q/%q, want m2/http://localhost:1", m2.ModelName, m2.BaseURL)
+	if m2.ModelName != "m2" {
+		t.Errorf("Models[0].ModelName = %q, want m2", m2.ModelName)
+	}
+	local := cfg.Providers[0]
+	if local.Name != "local" || local.Type != config.ModelTypeOpenAI {
+		t.Errorf("Providers[0].Name/Type = %q/%q, want local/%s", local.Name, local.Type, config.ModelTypeOpenAI)
+	}
+	if local.BaseURL != "http://localhost:1" {
+		t.Errorf("Providers[0].BaseURL = %q, want http://localhost:1", local.BaseURL)
 	}
 
 	echo := cfg.Tools[0]
@@ -116,8 +126,12 @@ func TestLoadMaxTurnsDefault(t *testing.T) {
 	if !ok {
 		t.Fatalf("Model(%q) not found, want the with_api_key_env model", agent.Model)
 	}
-	if m.APIKeyEnvOrDefault() != "MY_API_KEY" {
-		t.Errorf("APIKeyEnv = %q, want %q", m.APIKeyEnvOrDefault(), "MY_API_KEY")
+	p, ok := cfg.Provider(m.Provider)
+	if !ok {
+		t.Fatalf("Provider(%q) not found, want the with_api_key_env provider", m.Provider)
+	}
+	if p.APIKeyEnvOrDefault() != "MY_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", p.APIKeyEnvOrDefault(), "MY_API_KEY")
 	}
 	if agent.MaxTurns != 5 {
 		t.Errorf("MaxTurns = %d, want 5", agent.MaxTurns)
@@ -173,6 +187,32 @@ func TestAgentLookup(t *testing.T) {
 		name, ok := config.Config{Agents: []config.Agent{{Name: "alpha"}}}.DefaultAgentName()
 		if ok {
 			t.Errorf("DefaultAgentName() = (%q, true), want false when default_agent is unset", name)
+		}
+	})
+}
+
+func TestProviderLookup(t *testing.T) {
+	cfg := config.Config{
+		Providers: []config.Provider{
+			{Name: "local", Type: config.ModelTypeOllama, BaseURL: "http://localhost:11434"},
+			{Name: "remote", Type: config.ModelTypeOpenAI, BaseURL: "https://api.example.com/v1"},
+		},
+	}
+
+	t.Run("present", func(t *testing.T) {
+		p, ok := cfg.Provider("local")
+		if !ok || p.Name != "local" || p.Type != config.ModelTypeOllama {
+			t.Errorf("Provider(local) = (%+v, %v), want the local provider", p, ok)
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		p, ok := cfg.Provider("missing")
+		if ok {
+			t.Errorf("Provider(missing) = (%+v, %v), want not ok", p, ok)
+		}
+		if p.Name != "" {
+			t.Errorf("Provider(missing).Name = %q, want empty for the zero Provider", p.Name)
 		}
 	})
 }
@@ -233,7 +273,7 @@ func TestAgentTools(t *testing.T) {
 // already valid JSON, so invalid schema JSON fails the outer parse first.
 func TestValidateRejectsBadArgsSchema(t *testing.T) {
 	cfg := config.Config{
-		Models: []config.Model{validModel()},
+		Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel()},
 		Agents: []config.Agent{validAgent()},
 		Tools: []config.ToolEntry{{
 			Type:        config.ToolTypeCommand,
@@ -251,7 +291,7 @@ func TestValidateRejectsBadArgsSchema(t *testing.T) {
 }
 
 func TestValidateAcceptsMissingAPIKeyEnv(t *testing.T) {
-	cfg := config.Config{Models: []config.Model{validModel()}, Agents: []config.Agent{validAgent()}}
+	cfg := config.Config{Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel()}, Agents: []config.Agent{validAgent()}}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate error = %v, want nil when api_key_env is absent", err)
 	}
@@ -273,7 +313,7 @@ func TestLoadReasoningEffort(t *testing.T) {
 	for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
 		m := validModel()
 		m.ReasoningEffort = effort
-		effortCfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{validAgent()}}
+		effortCfg := config.Config{Providers: []config.Provider{validProvider()}, Models: []config.Model{m}, Agents: []config.Agent{validAgent()}}
 		if err := effortCfg.Validate(); err != nil {
 			t.Errorf("Validate(reasoning_effort %q) error = %v, want nil", effort, err)
 		}
@@ -281,20 +321,29 @@ func TestLoadReasoningEffort(t *testing.T) {
 
 	// Absent stays valid: the server default applies.
 	m := validModel()
-	cfg = config.Config{Models: []config.Model{m}, Agents: []config.Agent{validAgent()}}
+	cfg = config.Config{Providers: []config.Provider{validProvider()}, Models: []config.Model{m}, Agents: []config.Agent{validAgent()}}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate error = %v, want nil with reasoning_effort absent", err)
 	}
 }
 
+// validProvider returns the canonical single valid provider for
+// programmatic configs.
+func validProvider() config.Provider {
+	return config.Provider{
+		Name:    "local",
+		Type:    config.ModelTypeOpenAI,
+		BaseURL: "http://localhost:1",
+	}
+}
+
 // validModel returns the canonical single valid model for programmatic
-// configs.
+// configs: it names validProvider's provider.
 func validModel() config.Model {
 	return config.Model{
 		Name:      "m",
-		Type:      config.ModelTypeOpenAI,
+		Provider:  "local",
 		ModelName: "m",
-		BaseURL:   "http://localhost:1",
 	}
 }
 
@@ -347,6 +396,7 @@ func TestPrefactorAbsent(t *testing.T) {
 
 func TestPrefactorDefaults(t *testing.T) {
 	cfg := config.Config{
+		Providers: []config.Provider{validProvider()},
 		Models:    []config.Model{validModel()},
 		Agents:    []config.Agent{validAgent()},
 		Prefactor: &config.PrefactorConfig{},
@@ -370,7 +420,7 @@ func TestValidateBuiltinEntry(t *testing.T) {
 	// per-type validation of the builtin field, its settings object, and
 	// the command-only fields they must not carry.
 	base := config.Config{
-		Models: []config.Model{validModel()},
+		Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel()},
 		Agents: []config.Agent{validAgent()},
 		Tools: []config.ToolEntry{{
 			Type:        config.ToolTypeBuiltin,
@@ -417,10 +467,22 @@ func TestLoadRejects(t *testing.T) {
 	}{
 		{"agents_missing.json", []string{"agents is required"}},
 		{"agents_empty.json", []string{"agents must not be empty"}},
+		{"providers_missing.json", []string{"providers is required"}},
+		{"providers_empty.json", []string{"providers must not be empty"}},
 		{"models_missing.json", []string{"models is required"}},
 		{"models_empty.json", []string{"models must not be empty"}},
+		{"provider_missing_name.json", []string{"provider \"\": name is required"}},
+		{"provider_bad_name.json", []string{`provider name "has space" must match`}},
+		{"provider_unknown_type.json", []string{"provider \"claude\": unknown type", "anthropic", "openai-compatible"}},
+		{"duplicate_provider_names.json", []string{"duplicate provider name"}},
+		{"provider_missing_base_url.json", []string{"base_url"}},
+		{"provider_bad_base_url_scheme.json", []string{"ftp", "http or https"}},
+		{"provider_empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
+		{"provider_ollama_bad_base_url.json", []string{"ftp", "http or https"}},
+		{"provider_ollama_empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
 		{"model_missing_name.json", []string{"model \"\": name is required"}},
-		{"model_unknown_type.json", []string{"model \"claude\": unknown type", "anthropic", "openai-compatible"}},
+		{"model_missing_provider.json", []string{"model \"m\": provider is required"}},
+		{"model_unknown_provider.json", []string{`model "m": provider "ghost" is not a defined provider`}},
 		{"model_unknown_field.json", []string{"no_such_field"}},
 		{"duplicate_model_names.json", []string{"duplicate model name"}},
 		{"agent_missing_name.json", []string{"agent name is required"}},
@@ -436,13 +498,7 @@ func TestLoadRejects(t *testing.T) {
 		{"agent_unknown_field.json", []string{"no_such_field"}},
 		{"default_agent_unknown.json", []string{`default_agent "ghost" is not a defined agent`}},
 		{"model_missing_model.json", []string{"model \"m\": model_name is required"}},
-		{"model_missing_base_url.json", []string{"base_url"}},
-		{"model_bad_base_url_scheme.json", []string{"ftp", "http or https"}},
-		{"model_empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
 		{"model_reasoning_effort_invalid.json", []string{`reasoning_effort "ultra" must be one of`}},
-		{"model_ollama_missing_model_name.json", []string{"model_name is required"}},
-		{"model_ollama_bad_base_url.json", []string{"ftp", "http or https"}},
-		{"model_ollama_empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
 		{"model_ollama_bad_reasoning_effort.json", []string{`reasoning_effort "ultra" must be one of`}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
@@ -516,7 +572,7 @@ func TestLoadSubagentValid(t *testing.T) {
 // JSON, so invalid schema JSON fails the outer parse first.
 func TestValidateRejectsSubagentBadArgsSchema(t *testing.T) {
 	cfg := config.Config{
-		Models: []config.Model{validModel()},
+		Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel()},
 		Agents: []config.Agent{validAgent()},
 		Tools: []config.ToolEntry{{
 			Type:        config.ToolTypeSubagent,
@@ -577,7 +633,7 @@ func TestConfigDir(t *testing.T) {
 
 	// A programmatically-built Config has no directory: config-relative
 	// paths fall back to the process working directory.
-	prog := config.Config{Models: []config.Model{validModel()}, Agents: []config.Agent{validAgent()}}
+	prog := config.Config{Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel()}, Agents: []config.Agent{validAgent()}}
 	if got := prog.Dir(); got != "" {
 		t.Errorf("Dir() = %q, want empty for a built Config", got)
 	}
@@ -597,7 +653,8 @@ func TestLoadBuiltinBaseDirRelativeToConfig(t *testing.T) {
 		}
 		path := filepath.Join(cfgDir, "blorb.json")
 		if err := os.WriteFile(path, []byte(`{
-			"models": [{"name": "m", "type": "openai-compatible", "model_name": "m", "base_url": "http://localhost:1"}],
+			"providers": [{"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}],
+			"models": [{"name": "m", "provider": "local", "model_name": "m"}],
 			"agents": [{
 				"name": "helper",
 				"system_prompt": "s",
@@ -627,7 +684,8 @@ func TestLoadBuiltinBaseDirRelativeToConfig(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "blorb.json")
 		if err := os.WriteFile(path, []byte(`{
-			"models": [{"name": "m", "type": "openai-compatible", "model_name": "m", "base_url": "http://localhost:1"}],
+			"providers": [{"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}],
+			"models": [{"name": "m", "provider": "local", "model_name": "m"}],
 			"agents": [{
 				"name": "helper",
 				"system_prompt": "s",
@@ -651,21 +709,29 @@ func TestLoadBuiltinBaseDirRelativeToConfig(t *testing.T) {
 	})
 }
 
-// TestLoadOllamaModelValid pins the parsed shape of an ollama model entry.
+// TestLoadOllamaModelValid pins the parsed shape of an ollama model entry
+// and its provider.
 func TestLoadOllamaModelValid(t *testing.T) {
 	cfg, err := loadTestdata(t, "model_ollama_valid.json")
 	if err != nil {
 		t.Fatalf("Load(model_ollama_valid.json) error = %v, want nil", err)
 	}
 	m := cfg.Models[0]
-	if m.Type != config.ModelTypeOllama {
-		t.Errorf("Type = %q, want %q", m.Type, config.ModelTypeOllama)
+	if m.Provider != "local" {
+		t.Errorf("Provider = %q, want local", m.Provider)
 	}
-	if m.ModelName != "llama3.1:latest" || m.BaseURL != "http://localhost:11434" {
-		t.Errorf("ModelName/BaseURL = %q/%q, want llama3.1:latest/http://localhost:11434", m.ModelName, m.BaseURL)
+	if m.ModelName != "llama3.1:latest" {
+		t.Errorf("ModelName = %q, want llama3.1:latest", m.ModelName)
 	}
 	if m.ReasoningEffort != "medium" {
 		t.Errorf("ReasoningEffort = %q, want medium", m.ReasoningEffort)
+	}
+	p := cfg.Providers[0]
+	if p.Type != config.ModelTypeOllama {
+		t.Errorf("Type = %q, want %q", p.Type, config.ModelTypeOllama)
+	}
+	if p.BaseURL != "http://localhost:11434" {
+		t.Errorf("BaseURL = %q, want http://localhost:11434", p.BaseURL)
 	}
 }
 
@@ -711,7 +777,7 @@ func TestLoadErrors(t *testing.T) {
 
 	t.Run("trailing garbage", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "garbage.json")
-		if err := os.WriteFile(path, []byte(`{"models":[{"name":"m","type":"openai-compatible","model_name":"m","base_url":"http://x"}],"agents":[{"name":"x","system_prompt":"s","model":"m"}]} xyz`), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(`{"providers":[{"name":"local","type":"openai-compatible","base_url":"http://x"}],"models":[{"name":"m","provider":"local","model_name":"m"}],"agents":[{"name":"x","system_prompt":"s","model":"m"}]} xyz`), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 
@@ -747,7 +813,8 @@ func loggingConfig(t *testing.T, logging json.RawMessage) (config.Config, error)
 	var full string
 	if len(logging) > 0 {
 		full = fmt.Sprintf(`{
-			"models": [{"name": "m", "type": "openai-compatible", "model_name": "m", "base_url": "http://localhost:1"}],
+			"providers": [{"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}],
+			"models": [{"name": "m", "provider": "local", "model_name": "m"}],
 			"agents": [
 				{
 					"name": "helper",
@@ -760,7 +827,8 @@ func loggingConfig(t *testing.T, logging json.RawMessage) (config.Config, error)
 		}`, logging)
 	} else {
 		full = `{
-			"models": [{"name": "m", "type": "openai-compatible", "model_name": "m", "base_url": "http://localhost:1"}],
+			"providers": [{"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}],
+			"models": [{"name": "m", "provider": "local", "model_name": "m"}],
 			"agents": [
 				{
 					"name": "helper",

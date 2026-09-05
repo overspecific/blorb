@@ -3,9 +3,8 @@
   "models": [
     {
       "name": "small",
-      "type": "openai-compatible",
-      "base_url": "http://localhost:13305/v1",
-      "model_name": "Gemma-4-E4B-it-GGUF"
+      "model_name": "Gemma-4-E4B-it-GGUF",
+      "provider": "local"
     }
   ],
   "agents": [
@@ -41,6 +40,13 @@
       "config": {
         "base_dir": "../simple/knowledgebase"
       }
+    }
+  ],
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:13305/v1"
     }
   ]
 }

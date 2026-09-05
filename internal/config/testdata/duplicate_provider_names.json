@@ -1,17 +1,21 @@
 {
-  "unknown_field": true,
   "providers": [
     {
       "name": "local",
       "type": "openai-compatible",
       "base_url": "http://localhost:1"
+    },
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:2"
     }
   ],
   "models": [
     {
-      "name": "gpt-4o-mini",
+      "name": "m",
       "provider": "local",
-      "model_name": "gpt-4o-mini"
+      "model_name": "m"
     }
   ],
   "agents": [
@@ -19,7 +23,7 @@
       "name": "helper",
       "system_prompt": "You are helpful.",
       "max_turns": 1,
-      "model": "gpt-4o-mini"
+      "model": "m"
     }
   ]
 }

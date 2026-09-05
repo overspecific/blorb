@@ -3,9 +3,8 @@
   "models": [
     {
       "name": "small",
-      "type": "openai-compatible",
-      "base_url": "http://localhost:13305/v1",
-      "model_name": "Gemma-4-E4B-it-GGUF"
+      "model_name": "Gemma-4-E4B-it-GGUF",
+      "provider": "local"
     }
   ],
   "agents": [
@@ -164,6 +163,13 @@
       "name": "ask_horologist",
       "description": "Delegate a time, date, or calendar question to the horologist agent, who owns the clock and calendar tools. Use it whenever the user asks what time it is, what today's date is, for a month calendar, or how many days until some date.",
       "agent": "horologist"
+    }
+  ],
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:13305/v1"
     }
   ]
 }

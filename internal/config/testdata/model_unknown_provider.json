@@ -1,5 +1,4 @@
 {
-  "unknown_field": true,
   "providers": [
     {
       "name": "local",
@@ -9,9 +8,9 @@
   ],
   "models": [
     {
-      "name": "gpt-4o-mini",
-      "provider": "local",
-      "model_name": "gpt-4o-mini"
+      "name": "m",
+      "provider": "ghost",
+      "model_name": "m"
     }
   ],
   "agents": [
@@ -19,7 +18,7 @@
       "name": "helper",
       "system_prompt": "You are helpful.",
       "max_turns": 1,
-      "model": "gpt-4o-mini"
+      "model": "m"
     }
   ]
 }
