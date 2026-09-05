@@ -1,0 +1,11 @@
+{
+  "providers": [
+    {"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}
+  ],
+  "models": [
+    {"name": "m", "provider": "local", "model_name": "m", "tool_choice": "none"}
+  ],
+  "agents": [
+    {"name": "helper", "system_prompt": "You are helpful.", "max_turns": 1, "model": "m"}
+  ]
+}

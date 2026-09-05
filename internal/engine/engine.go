@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/overspecific/blorb/internal/config"
@@ -112,23 +113,49 @@ type EngineConfig struct {
 	// follow-up tool round. Zero value (no fields set) means the server
 	// defaults apply everywhere.
 	Sampling llm.SamplingParams
+	// ToolChoice, when non-nil, is copied into every llm.Request the
+	// engine builds. In force mode the engine also polices the result:
+	// the forced tool must be among the registry's tools at construction
+	// (error otherwise), and a response that calls no tools is a
+	// repairable deviation. For the other modes the field is sent and
+	// the result taken as it comes: required asks the server to force
+	// some call, and the engine does not police which (or whether) the
+	// model complied.
+	ToolChoice *llm.ToolChoice
 }
 
 // Engine owns conversation state and drives turns.
 type Engine struct {
-	cfg          EngineConfig
-	history      []llm.Message
-	maxTurns     int
-	currentCalls int
+	cfg             EngineConfig
+	history         []llm.Message
+	maxTurns        int
+	currentCalls    int
+	constructionErr error
 }
 
-// New constructs an Engine.
+// New constructs an Engine. A force-mode ToolChoice naming a tool the
+// registry does not carry is recorded here and fails the first turn —
+// construction cannot error, so the misconfiguration surfaces as a clear
+// turn failure naming the tool.
 func New(cfg EngineConfig) *Engine {
 	maxTurns := cfg.MaxTurns
 	if maxTurns == 0 {
 		maxTurns = config.DefaultMaxTurns
 	}
-	return &Engine{cfg: cfg, maxTurns: maxTurns}
+	return &Engine{cfg: cfg, maxTurns: maxTurns, constructionErr: validateForcedTool(cfg)}
+}
+
+// validateForcedTool checks force mode at construction: the forced tool
+// must be among the registry's tools. The other modes need nothing.
+func validateForcedTool(cfg EngineConfig) error {
+	if cfg.ToolChoice == nil || cfg.ToolChoice.Mode != llm.ToolChoiceForce {
+		return nil
+	}
+	name := cfg.ToolChoice.ForceTool
+	if cfg.Tools != nil && slices.ContainsFunc(cfg.Tools.Definitions(), func(t llm.Tool) bool { return t.Name == name }) {
+		return nil
+	}
+	return fmt.Errorf("forced tool %q is not among the agent's granted tools", name)
 }
 
 // RunTurn appends the user message and loops API calls and tool executions
@@ -137,6 +164,10 @@ func New(cfg EngineConfig) *Engine {
 // The returned text is all assistant text produced during the turn:
 // content emitted alongside tool calls plus the final message, in order.
 func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(Event) error) (final string, err error) {
+	if e.constructionErr != nil {
+		return "", e.constructionErr
+	}
+
 	e.currentCalls = 0
 	historyLen := len(e.history)
 	e.history = append(e.history, llm.NewTextMessage(llm.RoleUser, userMessage))
@@ -156,10 +187,24 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 	}
 
 	var text strings.Builder
+	// forcedCalled tracks whether the forced tool has been called this
+	// turn: force mode polices the model until the forced tool runs, and
+	// the follow-up calls that execute it must be free to produce the
+	// final answer.
+	forcedCalled := false
 	for {
 		resp, streamed, err := e.call(ctx, onEvent)
 		if err != nil {
 			return "", err
+		}
+
+		if e.cfg.ToolChoice != nil && e.cfg.ToolChoice.Mode == llm.ToolChoiceForce && !forcedCalled {
+			for _, tc := range resp.Message.ToolCalls {
+				if tc.FunctionName == e.cfg.ToolChoice.ForceTool {
+					forcedCalled = true
+					break
+				}
+			}
 		}
 
 		// When the response was streamed the fragments were already
@@ -180,6 +225,17 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 		}
 
 		if len(resp.Message.ToolCalls) == 0 {
+			// In force mode, a response with no tool calls before the
+			// forced tool ran is a deviation: the model was told to call
+			// the forced tool and replied with text instead. The engine
+			// has no protocol-valid repair for this — there is no tool
+			// call to answer with a corrective tool result — so the turn
+			// fails naming the forced tool and what came back instead.
+			if e.cfg.ToolChoice != nil && e.cfg.ToolChoice.Mode == llm.ToolChoiceForce && !forcedCalled {
+				e.history = append(e.history, resp.Message)
+				return "", fmt.Errorf("forced tool %q was not called: the model replied with text instead: %s",
+					e.cfg.ToolChoice.ForceTool, resp.Message.Content)
+			}
 			// A length-truncated response is an incomplete answer, not a
 			// final one; surface it as a failed turn so the user knows the
 			// text was cut off, after emitting what did arrive.
@@ -241,7 +297,7 @@ func (e *Engine) call(ctx context.Context, onEvent func(Event) error) (resp *llm
 	}
 	messages = append(messages, e.history...)
 
-	req := llm.Request{Messages: messages, Sampling: e.cfg.Sampling}
+	req := llm.Request{Messages: messages, Sampling: e.cfg.Sampling, ToolChoice: e.cfg.ToolChoice}
 	if e.cfg.Tools != nil {
 		req.Tools = e.cfg.Tools.Definitions()
 	}

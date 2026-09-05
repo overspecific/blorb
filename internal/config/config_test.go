@@ -512,6 +512,11 @@ func TestLoadRejects(t *testing.T) {
 		{"model_ollama_format_array.json", []string{`format must be "json" or a JSON schema object`}},
 		{"model_format_on_openai_provider.json", []string{"format is not valid for models on openai-compatible providers"}},
 		{"model_keep_alive_on_openai_provider.json", []string{"keep_alive is not valid for models on openai-compatible providers"}},
+		{"model_tool_choice_force_missing_tool.json", []string{"forced_tool is required when tool_choice is \"force\""}},
+		{"model_tool_choice_auto_with_forced_tool.json", []string{"forced_tool is only valid when tool_choice is \"force\""}},
+		{"model_tool_choice_required_with_forced_tool.json", []string{"forced_tool is only valid when tool_choice is \"force\""}},
+		{"model_tool_choice_force_bad_name.json", []string{"forced_tool \"has space\" must match"}},
+		{"model_tool_choice_unknown.json", []string{"tool_choice"}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
 		{"tool_missing_type.json", []string{"type is required"}},
@@ -833,6 +838,47 @@ func TestLoadOllamaKeepAliveValid(t *testing.T) {
 	// No keep_alive stays valid: the server default applies.
 	if _, err := loadTestdata(t, "model_ollama_valid.json"); err != nil {
 		t.Errorf("Load(model_ollama_valid.json) error = %v, want nil", err)
+	}
+}
+
+// TestLoadToolChoiceModesValid pins the four tool_choice modes: every
+// valid form loads and resolves to the neutral shape, absent resolves to
+// nil (auto).
+func TestLoadToolChoiceModesValid(t *testing.T) {
+	cases := []struct {
+		file     string
+		wantMode string
+		wantTool string
+	}{
+		{"model_tool_choice_none.json", "none", ""},
+		{"model_tool_choice_required.json", "required", ""},
+		{"model_tool_choice_force.json", "force", "echo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			cfg, err := loadTestdata(t, tc.file)
+			if err != nil {
+				t.Fatalf("Load(%s) error = %v, want nil", tc.file, err)
+			}
+			resolved := cfg.Models[0].ResolvedToolChoice()
+			if resolved == nil {
+				t.Fatalf("ResolvedToolChoice() = nil, want mode %q", tc.wantMode)
+			}
+			if string(resolved.Mode) != tc.wantMode || resolved.ForceTool != tc.wantTool {
+				t.Errorf("ResolvedToolChoice() = %q/%q, want %q/%q", resolved.Mode, resolved.ForceTool, tc.wantMode, tc.wantTool)
+			}
+		})
+	}
+
+	// Absent and explicit "auto" both resolve to nil: no steering.
+	for _, file := range []string{"model_tool_choice_auto.json", "model_ollama_valid.json"} {
+		cfg, err := loadTestdata(t, file)
+		if err != nil {
+			t.Fatalf("Load(%s) error = %v, want nil", file, err)
+		}
+		if got := cfg.Models[0].ResolvedToolChoice(); got != nil {
+			t.Errorf("%s: ResolvedToolChoice() = %+v, want nil (auto)", file, got)
+		}
 	}
 }
 

@@ -241,6 +241,38 @@ func TestRunProviderSamplingReachesEngine(t *testing.T) {
 	}
 }
 
+// TestRunModelToolChoiceReachesEngine pins the plumbing: the model entry's
+// tool_choice/forced_tool pair resolves and reaches the engine's request.
+func TestRunModelToolChoiceReachesEngine(t *testing.T) {
+	t.Parallel()
+
+	fc := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "the answer"), FinishReason: llm.FinishStop},
+	}}
+
+	cfg := runTestConfig(runTestAgent())
+	cfg.Models[0].ToolChoice = "none"
+
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &runSyncBuffer{},
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return fc, nil
+		},
+	}, "hello there")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if len(fc.requests) != 1 {
+		t.Fatalf("API calls = %d, want 1", len(fc.requests))
+	}
+	req := fc.requests[0]
+	if req.ToolChoice == nil || req.ToolChoice.Mode != llm.ToolChoiceNone {
+		t.Errorf("request ToolChoice = %+v, want none from the model entry", req.ToolChoice)
+	}
+}
+
 func TestRunStreamedReply(t *testing.T) {
 	t.Parallel()
 

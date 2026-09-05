@@ -438,6 +438,82 @@ func TestWireRequestKeepAlive(t *testing.T) {
 	})
 }
 
+// TestWireRequestToolChoice pins the tool-choice mapping: auto (and nil)
+// omit the field entirely; none and required serialize as the bare
+// string; force serializes as the object form.
+func TestWireRequestToolChoice(t *testing.T) {
+	t.Parallel()
+
+	req := llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
+	}
+
+	t.Run("auto omitted", func(t *testing.T) {
+		t.Parallel()
+
+		wire, err := wireRequest(withToolChoice(req, &llm.ToolChoice{Mode: llm.ToolChoiceAuto}), "m", "", nil, "")
+		if err != nil {
+			t.Fatalf("wireRequest error = %v, want nil", err)
+		}
+		if got := decodeRequest(t, wire)["tool_choice"]; got != nil {
+			t.Errorf("wire tool_choice = %v, want the field omitted", got)
+		}
+	})
+
+	t.Run("nil omitted", func(t *testing.T) {
+		t.Parallel()
+
+		wire, err := wireRequest(req, "m", "", nil, "")
+		if err != nil {
+			t.Fatalf("wireRequest error = %v, want nil", err)
+		}
+		if got := decodeRequest(t, wire)["tool_choice"]; got != nil {
+			t.Errorf("wire tool_choice = %v, want the field omitted", got)
+		}
+	})
+
+	t.Run("none and required as bare strings", func(t *testing.T) {
+		t.Parallel()
+
+		for _, mode := range []llm.ToolChoiceMode{llm.ToolChoiceNone, llm.ToolChoiceRequired} {
+			wire, err := wireRequest(withToolChoice(req, &llm.ToolChoice{Mode: mode}), "m", "", nil, "")
+			if err != nil {
+				t.Fatalf("wireRequest error = %v, want nil", err)
+			}
+			if got := decodeRequest(t, wire)["tool_choice"]; got != string(mode) {
+				t.Errorf("wire tool_choice = %v, want %q", got, string(mode))
+			}
+		}
+	})
+
+	t.Run("force as the object form", func(t *testing.T) {
+		t.Parallel()
+
+		wire, err := wireRequest(withToolChoice(req, &llm.ToolChoice{Mode: llm.ToolChoiceForce, ForceTool: "echo"}), "m", "", nil, "")
+		if err != nil {
+			t.Fatalf("wireRequest error = %v, want nil", err)
+		}
+		got := decodeRequest(t, wire)
+		obj, ok := got["tool_choice"].(map[string]any)
+		if !ok {
+			t.Fatalf("wire tool_choice = %#v, want the object form", got["tool_choice"])
+		}
+		if obj["type"] != "function" {
+			t.Errorf("wire tool_choice type = %v, want function", obj["type"])
+		}
+		fn, _ := obj["function"].(map[string]any)
+		if fn == nil || fn["name"] != "echo" {
+			t.Errorf("wire tool_choice function = %#v, want name echo", obj["function"])
+		}
+	})
+}
+
+// withToolChoice returns req with tc set on the sampling-less copy.
+func withToolChoice(req llm.Request, tc *llm.ToolChoice) llm.Request {
+	req.ToolChoice = tc
+	return req
+}
+
 func TestNeutralResponseContentAndThinking(t *testing.T) {
 	t.Parallel()
 

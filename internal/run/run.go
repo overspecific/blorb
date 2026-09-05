@@ -159,6 +159,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		AgentName:    opts.Agent.Name,
 		Model:        model.ModelName,
 		Sampling:     provider.SamplingParams(),
+		ToolChoice:   model.ResolvedToolChoice(),
 	})
 
 	// With tracing, engine events map onto the turn's spans before

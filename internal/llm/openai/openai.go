@@ -128,6 +128,8 @@ func (c *Client) buildWireRequest(req llm.Request, streamed bool) wireRequest {
 		MaxTokens:        req.Sampling.MaxTokens,
 		FrequencyPenalty: req.Sampling.FrequencyPenalty,
 		PresencePenalty:  req.Sampling.PresencePenalty,
+
+		ToolChoice: wireToolChoice(req.ToolChoice),
 	}
 	if streamed {
 		body.Stream = true
@@ -563,12 +565,45 @@ type wireRequest struct {
 	MaxTokens        *int     `json:"max_tokens,omitempty"`
 	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
 	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+
+	// ToolChoice carries the request's tool-choice control: auto omits
+	// the field entirely; none/required serialize as the bare string;
+	// force serializes as the OpenAI object shape naming the function.
+	// nil means auto.
+	ToolChoice any `json:"tool_choice,omitempty"`
 }
 
 // streamOptions carries per-server streaming behaviour. IncludeUsage asks
 // the server to append a final chunk carrying token usage.
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+// wireToolChoice maps the neutral tool choice onto the wire: auto (and
+// nil) omits the field entirely; none and required serialize as the bare
+// string; force serializes as the OpenAI object shape
+// {"type":"function","function":{"name":...}}.
+func wireToolChoice(tc *llm.ToolChoice) any {
+	if tc == nil || tc.Mode == llm.ToolChoiceAuto {
+		return nil
+	}
+	switch tc.Mode {
+	case llm.ToolChoiceForce:
+		return wireForcedToolChoice{Type: "function", Function: wireForcedToolFn{Name: tc.ForceTool}}
+	default:
+		return string(tc.Mode)
+	}
+}
+
+// wireForcedToolChoice is the OpenAI forced-tool object shape, which
+// Ollama accepts identically, so both clients build it the same way.
+type wireForcedToolChoice struct {
+	Type     string           `json:"type"`
+	Function wireForcedToolFn `json:"function"`
+}
+
+type wireForcedToolFn struct {
+	Name string `json:"name"`
 }
 
 // post marshals the wire request and POSTs it to /chat/completions. The

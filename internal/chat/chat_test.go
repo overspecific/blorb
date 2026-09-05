@@ -219,6 +219,50 @@ func TestRunProviderSamplingReachesEngine(t *testing.T) {
 	}
 }
 
+// TestRunModelToolChoiceReachesEngine pins the plumbing: the model entry's
+// tool_choice/forced_tool pair resolves and reaches the engine's requests.
+func TestRunModelToolChoiceReachesEngine(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "hi"), FinishReason: llm.FinishStop},
+	}}
+
+	// The forced tool must be granted for the engine's construction check.
+	echo := config.ToolEntry{
+		Type:        config.ToolTypeCommand,
+		Name:        "echo",
+		Description: "Echoes.",
+		Command:     []string{"true"},
+	}
+	cfg := testConfig(testAgent(), echo)
+	cfg.Models[0].ToolChoice = "force"
+	cfg.Models[0].ForcedTool = "echo"
+
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("hello\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return fc, nil
+		},
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if len(fc.requests) != 1 {
+		t.Fatalf("API calls = %d, want 1", len(fc.requests))
+	}
+	req := fc.requests[0]
+	if req.ToolChoice == nil || req.ToolChoice.Mode != llm.ToolChoiceForce || req.ToolChoice.ForceTool != "echo" {
+		t.Errorf("request ToolChoice = %+v, want force/echo from the model entry", req.ToolChoice)
+	}
+}
+
 // TestRunScopesToolsToTheAgent verifies the registry only carries the
 // agent's granted tools: a top-level tool the agent does not list never
 // reaches the model, and granted tools arrive in the agent's listed order

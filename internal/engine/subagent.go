@@ -88,6 +88,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 		AgentName:    agent.Name,
 		Model:        model.ModelName,
 		Sampling:     provider.SamplingParams(),
+		ToolChoice:   model.ResolvedToolChoice(),
 	})
 
 	// Usage records are always collected — even when the caller wants no

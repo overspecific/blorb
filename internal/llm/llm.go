@@ -101,6 +101,40 @@ type Request struct {
 	// them onto their own wire shapes (openai top-level fields, ollama's
 	// nested options object).
 	Sampling SamplingParams `json:"sampling,omitempty"`
+	// ToolChoice controls whether and how the model must call tools. nil
+	// means auto: the model decides freely.
+	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`
+}
+
+// ToolChoiceMode is a tool-choice mode: how much freedom the model has to
+// call (or not call) tools on a request.
+type ToolChoiceMode string
+
+const (
+	// ToolChoiceAuto is the default: the model decides whether to call a
+	// tool or answer in text.
+	ToolChoiceAuto ToolChoiceMode = "auto"
+	// ToolChoiceNone forbids tool calls for the turn while keeping the
+	// tool definitions advertised. It exists for prompt-cache economy:
+	// keeping the tools in the request prefix leaves it byte-identical
+	// to the conversation so far, so provider prompt caches (OpenAI
+	// prefix caching, vLLM, llama.cpp warm KV) keep hitting — omitting
+	// the tool definitions would bust the cache. It forbids calls for a
+	// turn without paying the context reprocessing cost.
+	ToolChoiceNone ToolChoiceMode = "none"
+	// ToolChoiceRequired asks the server to force some tool call; which
+	// one is the server's choice.
+	ToolChoiceRequired ToolChoiceMode = "required"
+	// ToolChoiceForce forces one specific tool, named in
+	// ToolChoice.ForceTool.
+	ToolChoiceForce ToolChoiceMode = "force"
+)
+
+// ToolChoice carries a tool-choice mode and, for force mode, the tool the
+// model must call. ForceTool is meaningful only for ToolChoiceForce.
+type ToolChoice struct {
+	Mode      ToolChoiceMode `json:"mode"`
+	ForceTool string         `json:"force_tool,omitempty"`
 }
 
 // SamplingParams holds the shared generation knobs. nil/empty fields mean

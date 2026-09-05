@@ -210,6 +210,91 @@ func TestEngineSamplingParamsOnEveryRequest(t *testing.T) {
 	}
 }
 
+// TestEngineForcedToolMode pins the force-mode engine behavior: the
+// request carries the configured ToolChoice; the forced tool must be
+// granted at construction; a response calling the forced tool proceeds
+// normally; a plain-text response fails the turn naming the tool.
+func TestEngineForcedToolMode(t *testing.T) {
+	t.Parallel()
+
+	r := toolRegistry(t)
+
+	t.Run("construction rejects a forced tool that is not granted", func(t *testing.T) {
+		t.Parallel()
+
+		e := engine.New(engine.EngineConfig{
+			Client:     &fakeClient{},
+			Tools:      r,
+			ToolChoice: &llm.ToolChoice{Mode: llm.ToolChoiceForce, ForceTool: "no_such_tool"},
+		})
+		_, err := e.RunTurn(context.Background(), "go", func(engine.Event) error { return nil })
+		if err == nil || !strings.Contains(err.Error(), "no_such_tool") {
+			t.Errorf("error = %v, want a clear error naming the ungranted forced tool", err)
+		}
+	})
+
+	t.Run("request carries the configured ToolChoice", func(t *testing.T) {
+		t.Parallel()
+
+		choice := &llm.ToolChoice{Mode: llm.ToolChoiceForce, ForceTool: "echo"}
+		fc := &fakeClient{responses: []llm.Response{
+			toolCallResp(call("call_1", "echo", `{"msg":"hello"}`)),
+			textResp("done"),
+		}}
+		e := engine.New(engine.EngineConfig{Client: fc, Tools: r, ToolChoice: choice})
+
+		if _, err := e.RunTurn(context.Background(), "go", func(engine.Event) error { return nil }); err != nil {
+			t.Fatalf("RunTurn error = %v, want nil", err)
+		}
+		if len(fc.requests) != 2 {
+			t.Fatalf("API calls = %d, want 2", len(fc.requests))
+		}
+		for i, req := range fc.requests {
+			if req.ToolChoice != choice {
+				t.Errorf("request %d ToolChoice = %+v, want the configured choice on every call", i, req.ToolChoice)
+			}
+		}
+	})
+
+	t.Run("force mode proceeds when the model calls the forced tool", func(t *testing.T) {
+		t.Parallel()
+
+		fc := &fakeClient{responses: []llm.Response{
+			toolCallResp(call("call_1", "echo", `{"msg":"hello"}`)),
+			textResp("done"),
+		}}
+		e := engine.New(engine.EngineConfig{
+			Client:     fc,
+			Tools:      r,
+			ToolChoice: &llm.ToolChoice{Mode: llm.ToolChoiceForce, ForceTool: "echo"},
+		})
+
+		final, err := e.RunTurn(context.Background(), "go", func(engine.Event) error { return nil })
+		if err != nil {
+			t.Fatalf("RunTurn error = %v, want nil", err)
+		}
+		if final != "done" {
+			t.Errorf("final = %q, want %q", final, "done")
+		}
+	})
+
+	t.Run("force mode fails the turn on a plain-text response", func(t *testing.T) {
+		t.Parallel()
+
+		fc := &fakeClient{responses: []llm.Response{textResp("I would rather not")}}
+		e := engine.New(engine.EngineConfig{
+			Client:     fc,
+			Tools:      r,
+			ToolChoice: &llm.ToolChoice{Mode: llm.ToolChoiceForce, ForceTool: "echo"},
+		})
+
+		_, err := e.RunTurn(context.Background(), "go", func(engine.Event) error { return nil })
+		if err == nil || !strings.Contains(err.Error(), "echo") || !strings.Contains(err.Error(), "I would rather not") {
+			t.Errorf("error = %v, want an error naming the forced tool and what came back instead", err)
+		}
+	})
+}
+
 func TestRunTurnSingleToolCall(t *testing.T) {
 	t.Parallel()
 

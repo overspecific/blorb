@@ -306,6 +306,17 @@ type Model struct {
 	// accepts is the server's business, matching the reasoning_effort
 	// rule. Empty means the server default applies.
 	KeepAlive string `json:"keep_alive,omitempty"`
+	// ToolChoice is how the model is steered around tools: "auto" (the
+	// default and the absent field's meaning), "none" (calls forbidden
+	// for a turn, tools still advertised — keeps the request prefix
+	// byte-identical so provider prompt caches keep hitting), "required"
+	// (the server forces some tool call), or "force" (the model must
+	// call forced_tool). Models on both provider types support the knob.
+	ToolChoice string `json:"tool_choice,omitempty"`
+	// ForcedTool names the tool the model must call when tool_choice is
+	// "force". Required in force mode and an error otherwise. Must match
+	// NamePattern.
+	ForcedTool string `json:"forced_tool,omitempty"`
 	// ReasoningEffort is the optional thinking effort the backend is
 	// asked for. Empty means the server default applies. Accepted values
 	// are the union of the OpenAI and Ollama scales; see
@@ -771,7 +782,54 @@ func (m *Model) validate(providers []Provider) error {
 	if err := validateFormat(m.Format, providers[idx].Type); err != nil {
 		return err
 	}
-	return validateKeepAlive(m.KeepAlive, providers[idx].Type)
+	if err := validateKeepAlive(m.KeepAlive, providers[idx].Type); err != nil {
+		return err
+	}
+	return validateToolChoice(m)
+}
+
+// validateToolChoice checks the tool_choice/forced_tool pair: tool_choice
+// must be one of the four modes; forced_tool is required in force mode and
+// an error otherwise, and must match NamePattern. Models on both provider
+// types support the knob.
+func validateToolChoice(m *Model) error {
+	switch m.ToolChoice {
+	case "", string(llm.ToolChoiceAuto):
+		if m.ForcedTool != "" {
+			return fmt.Errorf("forced_tool is only valid when tool_choice is \"force\"")
+		}
+	case string(llm.ToolChoiceNone), string(llm.ToolChoiceRequired):
+		if m.ForcedTool != "" {
+			return fmt.Errorf("forced_tool is only valid when tool_choice is \"force\"")
+		}
+	case string(llm.ToolChoiceForce):
+		if m.ForcedTool == "" {
+			return fmt.Errorf("forced_tool is required when tool_choice is \"force\"")
+		}
+		if !NamePattern.MatchString(m.ForcedTool) {
+			return fmt.Errorf("forced_tool %q must match %s", m.ForcedTool, NamePattern)
+		}
+	default:
+		return fmt.Errorf("tool_choice %q must be one of: %s", m.ToolChoice, strings.Join(SupportedToolChoiceModes(), ", "))
+	}
+	return nil
+}
+
+// ResolvedToolChoice resolves the model's tool_choice/forced_tool pair into the
+// neutral vocabulary: nil for auto (the absent field's meaning), the mode
+// (with the forced tool named) otherwise. Absent and explicit "auto" are
+// the same thing.
+func (m *Model) ResolvedToolChoice() *llm.ToolChoice {
+	if m.ToolChoice == "" || m.ToolChoice == string(llm.ToolChoiceAuto) {
+		return nil
+	}
+	return &llm.ToolChoice{Mode: llm.ToolChoiceMode(m.ToolChoice), ForceTool: m.ForcedTool}
+}
+
+// SupportedToolChoiceModes lists the tool_choice modes, sorted
+// alphabetically.
+func SupportedToolChoiceModes() []string {
+	return []string{"auto", "force", "none", "required"}
 }
 
 // validateKeepAlive checks the ollama-only keep_alive knob: the string

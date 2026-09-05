@@ -256,6 +256,77 @@ func TestChatSamplingOnWire(t *testing.T) {
 	}
 }
 
+// TestChatToolChoiceOnWire pins the tool-choice mapping: auto (and nil)
+// omit the field entirely; none and required serialize as the bare
+// string; force serializes as the object form.
+func TestChatToolChoiceOnWire(t *testing.T) {
+	t.Parallel()
+
+	for _, streamed := range []bool{false, true} {
+		name := "chat"
+		if streamed {
+			name = "chat_stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cases := []struct {
+				name    string
+				choice  *llm.ToolChoice
+				want    any // expected decoded value; nil = field must be absent
+				present bool
+			}{
+				{name: "auto omitted", choice: &llm.ToolChoice{Mode: llm.ToolChoiceAuto}, present: false},
+				{name: "nil omitted", choice: nil, present: false},
+				{name: "none bare string", choice: &llm.ToolChoice{Mode: llm.ToolChoiceNone}, want: "none", present: true},
+				{name: "required bare string", choice: &llm.ToolChoice{Mode: llm.ToolChoiceRequired}, want: "required", present: true},
+				{
+					name:    "force object form",
+					choice:  &llm.ToolChoice{Mode: llm.ToolChoiceForce, ForceTool: "echo"},
+					want:    map[string]any{"type": "function", "function": map[string]any{"name": "echo"}},
+					present: true,
+				},
+			}
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					var gotReq map[string]any
+					srv := httptest.NewServer(captureRequest(t, &gotReq, streamed))
+					defer srv.Close()
+
+					c := newTestClient(t, srv.URL)
+					req := llm.Request{
+						Model:      "gpt-4o-mini",
+						Messages:   []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
+						ToolChoice: tc.choice,
+					}
+					if streamed {
+						if _, err := c.ChatStream(context.Background(), req, func(llm.Delta) error { return nil }); err != nil {
+							t.Fatalf("ChatStream error = %v, want nil", err)
+						}
+					} else {
+						if _, err := c.Chat(context.Background(), req); err != nil {
+							t.Fatalf("Chat error = %v, want nil", err)
+						}
+					}
+
+					got, present := gotReq["tool_choice"]
+					if !tc.present {
+						if present {
+							t.Errorf("wire tool_choice = %v, want the field omitted", got)
+						}
+						return
+					}
+					gotJSON, _ := json.Marshal(got)
+					wantJSON, _ := json.Marshal(tc.want)
+					if string(gotJSON) != string(wantJSON) {
+						t.Errorf("wire tool_choice = %s, want %s", gotJSON, wantJSON)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestChatToolResultMessagesOnWire(t *testing.T) {
 	t.Parallel()
 

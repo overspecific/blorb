@@ -49,6 +49,11 @@ type chatRequest struct {
 	// which duration forms the server accepts is the server's business.
 	// Empty (unset) omits the field — server default.
 	KeepAlive string `json:"keep_alive,omitempty"`
+	// ToolChoice carries the request's tool-choice control: auto omits
+	// the field entirely; none/required serialize as the bare string;
+	// force serializes as the OpenAI object shape (which Ollama accepts)
+	// naming the function. nil means auto.
+	ToolChoice any `json:"tool_choice,omitempty"`
 }
 
 // wireOptions is Ollama's nested generation-options object. All fields

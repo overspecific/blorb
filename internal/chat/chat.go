@@ -130,7 +130,6 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-
 	// The engine suppresses whole-message events when it streams; only
 	// claim streaming when the real (inner) client can stream — the
 	// holder implements ChatStream unconditionally, so asserting on it
@@ -176,6 +175,7 @@ func Run(ctx context.Context, opts Options) error {
 		AgentName:    opts.Agent.Name,
 		Model:        model.ModelName,
 		Sampling:     sampling,
+		ToolChoice:   model.ResolvedToolChoice(),
 	})
 
 	// Session-level tracing: register and start the Prefactor instance

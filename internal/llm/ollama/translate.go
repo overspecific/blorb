@@ -38,14 +38,43 @@ func wireRequest(req llm.Request, defaultModel, reasoningEffort string, format j
 	}
 
 	return chatRequest{
-		Model:     model,
-		Messages:  msgs,
-		Think:     thinkValue(reasoningEffort),
-		Tools:     wireTools(req.Tools),
-		Options:   wireSamplingOptions(req.Sampling),
-		Format:    format,
-		KeepAlive: keepAlive,
+		Model:      model,
+		Messages:   msgs,
+		Think:      thinkValue(reasoningEffort),
+		Tools:      wireTools(req.Tools),
+		Options:    wireSamplingOptions(req.Sampling),
+		Format:     format,
+		KeepAlive:  keepAlive,
+		ToolChoice: wireToolChoice(req.ToolChoice),
 	}, nil
+}
+
+// wireToolChoice maps the neutral tool choice onto the wire: auto (and
+// nil) omits the field entirely; none and required serialize as the bare
+// string; force serializes as the OpenAI object shape
+// {"type":"function","function":{"name":...}}, which Ollama accepts
+// identically, so both clients build it the same way.
+func wireToolChoice(tc *llm.ToolChoice) any {
+	if tc == nil || tc.Mode == llm.ToolChoiceAuto {
+		return nil
+	}
+	switch tc.Mode {
+	case llm.ToolChoiceForce:
+		return wireForcedToolChoice{Type: "function", Function: wireForcedToolFn{Name: tc.ForceTool}}
+	default:
+		return string(tc.Mode)
+	}
+}
+
+// wireForcedToolChoice is the OpenAI forced-tool object shape, which
+// Ollama accepts identically, so both clients build it the same way.
+type wireForcedToolChoice struct {
+	Type     string           `json:"type"`
+	Function wireForcedToolFn `json:"function"`
+}
+
+type wireForcedToolFn struct {
+	Name string `json:"name"`
 }
 
 // wireSamplingOptions maps the neutral sampling parameters onto Ollama's
