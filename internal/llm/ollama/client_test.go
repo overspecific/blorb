@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -334,6 +335,121 @@ func TestNewRejectsBadBaseURL(t *testing.T) {
 	}
 }
 
+// TestChatRetriesEOFBeforeResponse pins the keep-alive recovery: a server
+// that closes the connection without responding (a connection the server
+// FINs after its previous response, handed to the next request by the
+// transport's idle pool) surfaces as io.EOF from the POST. The client
+// retries once — the request never reached the server — and succeeds.
+func TestChatRetriesEOFBeforeResponse(t *testing.T) {
+	t.Parallel()
+
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			// Simulate a pooled connection the server already closed:
+			// take over the socket and drop it without responding.
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("test server does not support hijacking")
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","message":{"role":"assistant","content":"recovered"},"done":true,"done_reason":"stop"}`))
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).Chat(context.Background(), sampleRequest())
+	if err != nil {
+		t.Fatalf("Chat error = %v, want the EOF retry to recover", err)
+	}
+	if resp.Message.Content != "recovered" {
+		t.Errorf("content = %q, want %q", resp.Message.Content, "recovered")
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Errorf("requests = %d, want 2 (dropped connection retried once)", got)
+	}
+}
+
+// TestChatStreamRetriesEOFBeforeResponse is the streaming variant of the
+// keep-alive recovery test: the same dropped-then-retried connection, but
+// the recovering response is an NDJSON body.
+func TestChatStreamRetriesEOFBeforeResponse(t *testing.T) {
+	t.Parallel()
+
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("test server does not support hijacking")
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		ndjsonChunks(w,
+			`{"model":"m","message":{"role":"assistant","content":"recovered"}}`,
+			`{"model":"m","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`,
+		)
+	}))
+	defer srv.Close()
+
+	var got strings.Builder
+	resp, err := newTestClient(t, srv.URL).ChatStream(context.Background(), sampleRequest(), func(d llm.Delta) error {
+		got.WriteString(d.Content)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want the EOF retry to recover", err)
+	}
+	if resp.Message.Content != "recovered" {
+		t.Errorf("content = %q, want %q", resp.Message.Content, "recovered")
+	}
+	if got.String() != "recovered" {
+		t.Errorf("streamed text = %q, want %q", got.String(), "recovered")
+	}
+	if n := atomic.LoadInt32(&requests); n != 2 {
+		t.Errorf("requests = %d, want 2 (dropped connection retried once)", n)
+	}
+}
+
+// TestChatDoesNotRetryNonEOF pins that only io.EOF triggers the retry: a
+// request that reaches the server and gets a real error response must not
+// be sent twice.
+func TestChatDoesNotRetryNonEOF(t *testing.T) {
+	t.Parallel()
+
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error": "boom"}`))
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), sampleRequest())
+	if err == nil || !strings.Contains(err.Error(), "unexpected status 500") {
+		t.Fatalf("Chat error = %v, want an unexpected-status error", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Errorf("requests = %d, want 1 (no retry for a delivered error)", got)
+	}
+}
+
 func TestChatLogsRequestAndResponse(t *testing.T) {
 	t.Parallel()
 
@@ -498,8 +614,9 @@ func TestChatStreamReasoningDeltas(t *testing.T) {
 		t.Fatalf("ChatStream error = %v, want nil", err)
 	}
 
-	// Deltas interleave in chunk order: content and reasoning fragments
-	// from the same chunk surface together, content first.
+	// Deltas interleave in chunk order: content and reasoning
+	// fragments from the same chunk surface together, reasoning first
+	// (thinking precedes text in generation order).
 	var reasoning strings.Builder
 	var content strings.Builder
 	for _, d := range deltas {
@@ -873,12 +990,10 @@ func TestChatStreamLogsRequestAndAssembledResponse(t *testing.T) {
 			Content  string `json:"content"`
 			Thinking string `json:"thinking"`
 		} `json:"message"`
-		Done       bool   `json:"done"`
-		DoneReason string `json:"done_reason"`
-		Usage      struct {
-			PromptTokens     int `json:"prompt_eval_count"`
-			CompletionTokens int `json:"eval_count"`
-		} `json:"-"`
+		Done            bool   `json:"done"`
+		DoneReason      string `json:"done_reason"`
+		PromptEvalCount int    `json:"prompt_eval_count"`
+		EvalCount       int    `json:"eval_count"`
 	}
 	if err := json.Unmarshal(respRec.Body, &wire); err != nil {
 		t.Fatalf("response body is not assembled JSON: %v (body: %s)", err, respRec.Body)
@@ -888,6 +1003,9 @@ func TestChatStreamLogsRequestAndAssembledResponse(t *testing.T) {
 	}
 	if wire.Message.Content != "Hello" || wire.Message.Role != "assistant" {
 		t.Errorf("assembled message = %+v, want assistant Hello", wire.Message)
+	}
+	if wire.PromptEvalCount != 3 || wire.EvalCount != 2 {
+		t.Errorf("assembled counts = %d/%d, want 3/2", wire.PromptEvalCount, wire.EvalCount)
 	}
 }
 
