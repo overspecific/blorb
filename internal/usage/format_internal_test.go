@@ -20,6 +20,13 @@ func TestHumanBytes(t *testing.T) {
 		{"exact megabyte", 1048576, "1MB"},
 		{"exact gigabyte", 1073741824, "1GB"},
 		{"sub-kilobyte fraction stays bytes", 1023, "1023B"},
+		// A value just under a boundary rounds up to the boundary at
+		// one decimal place; the unit promotes so it never renders as
+		// 1024KB or 1024MB.
+		{"just under a megabyte promotes to 1MB", 1048575, "1MB"},
+		{"rounds to just under a boundary stays", 1048063, "1023.5KB"},
+		{"just under a gigabyte promotes to 1GB", 1073741823, "1GB"},
+		{"beyond a gigabyte caps at GB", 1610612736, "1.5GB"},
 	}
 
 	for _, tt := range tests {

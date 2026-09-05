@@ -25,7 +25,7 @@ import (
 //	tool_result     {type, name, output, failed}    — tool result; output is always the full body
 //	usage           {type, agent, model, usage, stats} — one completed LLM call's token usage and call stats
 //	subagent_*      — the same vocabulary prefixed subagent_, with agent and depth fields added
-//	done            {type, text?, usage, stats?, rates?, agents} — terminal on success; text is the final assistant text
+//	done            {type, text?, usage, stats, rates?, agents} — terminal on success; text is the final assistant text
 //	error           {type, error}                   — terminal on failure; no done follows
 //
 // The stream contract:
@@ -82,8 +82,9 @@ type ndjsonEvent struct {
 	// Usage is the token usage (usage, subagent_usage, done).
 	Usage *llm.Usage `json:"usage,omitempty"`
 	// Stats is the stats of one call (usage, subagent_usage) and the
-	// summed stats (done). Nil omits it; per-call events always carry
-	// it (zero included — "the client did not measure").
+	// summed stats (done); always carried on those types, zero
+	// included — zero is "the client did not measure". The pointer and
+	// omitempty keep other event types free of the field.
 	Stats *llm.CallStats `json:"stats,omitempty"`
 	// Rates is the derived throughput (done), omitted when no time was
 	// measured. Zero fields mean no time was measured.

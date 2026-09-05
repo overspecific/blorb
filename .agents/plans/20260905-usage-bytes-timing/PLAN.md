@@ -23,7 +23,32 @@ Scope decisions:
 - [x] Commit 6: footer rendering with rates
 - [x] Commit 7: ndjson events carry stats
 - [x] Commit 8: prefactor span payload
-- [x] Commit 9: docs
+- [x] Commit 9: docs (README example numbers corrected in a later review pass)
+- [x] Post-plan revision: footer elapsed time to one decimal place (52f1018)
+- [x] Post-plan revision: usage footer one line per agent plus a total (4677a3f)
+
+---
+
+## Post-plan revisions (recorded after execution)
+
+Two follow-up commits revised the footer shape after the plan's nine stages landed. They supersede commit 6's rendered shape; everything else in the plan stands as written.
+
+**52f1018 — footer elapsed time to one decimal place.** Commit 6 specified `Duration.String()` for the elapsed figure; in practice its nanosecond form (`4.000000123s`) was too noisy for a footer. Replaced with a `humanDuration` helper (format.go): seconds with one decimal place and a trailing `.0` dropped (`4s`, `12.3s`, `90s` — minutes stay seconds).
+
+**4677a3f — usage footer: one summary line per agent plus a total.** Commit 6 specified a session-wide `stats:` second line with no per-agent split. Replaced with a per-agent line design, now the shipped shape:
+
+```
+(blank line)
+---
+main: 123 prompt, 456 completion, 579 total, 4s, 9.2KB output (6KB text, 2KB reasoning, 1.2KB tools), 20.0 tok/s, 2.3KB/s
+worker: 23 prompt, 156 completion, 179 total, 2s, 1.1KB output, 11.5 tok/s, 550B/s
+total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1KB/s
+```
+
+- One line per agent (tokens plus, when the agent's calls measured anything, its stats part: elapsed, output bytes with split, derived rates) and a `total:` line; a single agent renders just its line. `FormatSession` is the same block with a `session ` prefix on each label.
+- Each line's stats part renders independently — an agent whose client measured nothing shows tokens only, so measured and unmeasured agents mix cleanly (the old session-wide line could not express that).
+- The split's `text` component is omitted: content-only output is all text, so there is nothing to attribute. Only non-zero components render within the paren.
+- The old commit 6 rationale "the token line's exact shape is untouched" no longer applies; the footer tests were all updated to the new shape, as were the README example and the chat/run integration tests.
 
 ---
 

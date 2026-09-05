@@ -91,9 +91,9 @@ Each turn ends with a usage footer: one line per agent that made a call (multipl
 
 ```
 ---
-main: 123 prompt, 456 completion, 579 total, 4s, 9.2KB output (6KB text, 2KB reasoning, 1.2KB tools), 20.0 tok/s, 2.3KB/s
-worker: 23 prompt, 156 completion, 179 total, 2s, 1.1KB output, 11.5 tok/s, 550B/s
-total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1KB/s
+main: 123 prompt, 456 completion, 579 total, 4s, 8.2KB output (5KB text, 2KB reasoning, 1.2KB tools), 114.0 tok/s, 2.1KB/s
+worker: 23 prompt, 156 completion, 179 total, 2s, 1.1KB output, 78.0 tok/s, 563B/s
+total: 146 prompt, 612 completion, 758 total, 6s, 9.3KB output, 102.0 tok/s, 1.6KB/s
 ```
 
 When the session ends, chat prints the same block with a `session ` prefix on each line. A zero token count means the provider did not report usage; a line's stats part is omitted when nothing was measured. Note that for reasoning models the rates are end-to-end — thinking time is included in both the elapsed span and the output bytes — so they read as "delivered per wall-clock second".
@@ -140,11 +140,11 @@ thinking        {type, thinking}                   whole reasoning (with --no-st
 tool_call       {type, name, arguments}            whole tool call (with --no-stream)
 tool_result     {type, name, output, failed}       tool result; output is always the full body
 usage           {type, agent, model, usage, stats} one LLM call's token usage and call stats
-done            {type, text?, usage, stats?, rates?, agents}  terminal on success
+done            {type, text?, usage, stats, rates?, agents}  terminal on success
 error           {type, error}                      terminal on failure
 ```
 
-The `stats` object on `usage`, `subagent_usage`, and `done` carries the measured output bytes — `{"output":{"content_bytes":...,"reasoning_bytes":...,"tool_call_bytes":...},"elapsed_ns":...}`; derive the total by summing the three components. `done.agents[].stats` is each agent's summed stats. `done.rates` (`{"tokens_per_sec":...,"bytes_per_sec":...}`) is a convenience derived from the summed stats — consumers can compute their own rates from the raw fields — and is omitted when no time was measured.
+The `stats` object on `usage`, `subagent_usage`, and `done` always carries the measured output bytes — `{"output":{"content_bytes":...,"reasoning_bytes":...,"tool_call_bytes":...},"elapsed_ns":...}`; derive the total by summing the three components. `done.agents[].stats` is each agent's summed stats. `done.rates` (`{"tokens_per_sec":...,"bytes_per_sec":...}`) is a convenience derived from the summed stats — consumers can compute their own rates from the raw fields — and is omitted when no time was measured.
 
 For example, to print just the assistant's text as it streams:
 

@@ -114,23 +114,26 @@ func formatStatsPart(stats llm.CallStats, completionTokens int) string {
 
 // humanBytes renders a byte count compactly: B below 1024, then KB, MB,
 // and GB, dividing by 1024 with one decimal place and a trailing .0
-// dropped (512B, 4KB, 4.5KB, 1MB). Values at or beyond 1024GB cap at a
-// GB figure.
+// dropped (512B, 4KB, 4.5KB, 1MB). The unit is chosen after rounding, so
+// a value that rounds up to a boundary promotes into the next unit (1MB,
+// not 1024KB). Values at or beyond 1024GB cap at a GB figure.
 func humanBytes(n int) string {
 	if n < 1024 {
 		return fmt.Sprintf("%dB", n)
 	}
-	value := float64(n)
 	units := []string{"KB", "MB", "GB"}
-	for i, unit := range units {
+	// Scale to the largest unit the value still rounds down from, so a
+	// value just under a boundary (1023.999KB) can round up and promote
+	// to the next unit rather than render as 1024KB.
+	value := float64(n) / 1024
+	unit := units[0]
+	for i := 1; i < len(units) && value >= 1023.95; i++ {
 		value /= 1024
-		if value < 1024 || i == len(units)-1 {
-			s := fmt.Sprintf("%.1f", value)
-			s = strings.TrimSuffix(s, ".0")
-			return s + unit
-		}
+		unit = units[i]
 	}
-	return fmt.Sprintf("%dB", n)
+	s := fmt.Sprintf("%.1f", value)
+	s = strings.TrimSuffix(s, ".0")
+	return s + unit
 }
 
 // humanDuration renders a duration compactly in seconds with one decimal
