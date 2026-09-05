@@ -100,6 +100,16 @@ type chatResponse struct {
 	EvalCount       int `json:"eval_count"`
 }
 
+// wireTagsResponse is the Ollama /api/tags response: the server's
+// installed-model list.
+type wireTagsResponse struct {
+	Models []struct {
+		Name       string `json:"name"`
+		ModifiedAt string `json:"modified_at"`
+		Size       int64  `json:"size"`
+	} `json:"models"`
+}
+
 // thinkValue maps the model's reasoning effort onto Ollama's think field.
 // Empty omits it (server default); "none" becomes the boolean false
 // because Ollama rejects the string "none"; every other value passes

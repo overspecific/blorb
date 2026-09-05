@@ -803,6 +803,181 @@ func TestRunPrefactorMissingEnvVarExits(t *testing.T) {
 	}
 }
 
+// --- models command tests ---
+
+// runModelsCommand runs the models subcommand against cfgPath and returns
+// its stdout plus the outcome error. The models command's output is written
+// through cmd.Writer, so this harness captures that rather than os.Stdout.
+func runModelsCommand(t *testing.T, cfgPath string, env map[string]string) (string, error) {
+	t.Helper()
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+
+	cmd := rootCommand()
+	out := &bytes.Buffer{}
+	cmd.Writer = out
+	errOut := &bytes.Buffer{}
+	cmd.ExitErrHandler = capturingExitHandler(errOut)
+
+	runErr := cmd.Run(context.Background(), []string{"blorb", "models", "-c", cfgPath})
+	if errOut.Len() > 0 {
+		return out.String(), errors.New(errOut.String())
+	}
+	return out.String(), runErr
+}
+
+// writeModelsConfig writes an openai-compatible provider pointing at
+// baseURL with the named models; withOffline adds a second, unreachable
+// ollama provider. Returns the config path.
+func writeModelsConfig(t *testing.T, baseURL string, withOffline bool, modelNames ...string) string {
+	t.Helper()
+
+	models := make([]map[string]any, len(modelNames))
+	for i, name := range modelNames {
+		models[i] = map[string]any{
+			"name":       name,
+			"provider":   "local",
+			"model_name": "model-" + name,
+		}
+	}
+	providers := []map[string]any{
+		{"name": "local", "type": "openai-compatible", "base_url": baseURL},
+	}
+	if withOffline {
+		providers = append(providers, map[string]any{
+			"name": "offline", "type": "ollama", "base_url": "http://localhost:1",
+		})
+	}
+	base := map[string]any{
+		"providers": providers,
+		"models":    models,
+		"agents": []map[string]any{{
+			"name":          "helper",
+			"system_prompt": "You are helpful.",
+			"model":         modelNames[0],
+			"max_turns":     1,
+		}},
+	}
+
+	data, err := json.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "blorb.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+// newFakeModelsServer serves an OpenAI /models list containing the given
+// model ids.
+func newFakeModelsServer(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	entries := make([]string, len(ids))
+	for i, id := range ids {
+		entries[i] = fmt.Sprintf(`{"id":%q,"created":1700000000,"owned_by":"org"}`, id)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"object":"list","data":[%s]}`, strings.Join(entries, ","))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestModelsCommandAllInstalled(t *testing.T) {
+	srv := newFakeModelsServer(t, "model-helper", "model-extra")
+	cfgPath := writeModelsConfig(t, srv.URL, false, "helper")
+
+	out, err := runModelsCommand(t, cfgPath, nil)
+	if err != nil {
+		t.Fatalf("models command error = %v, want nil", err)
+	}
+	if !strings.Contains(out, "provider local (openai-compatible, "+srv.URL+")") {
+		t.Errorf("output %q missing the provider block heading", out)
+	}
+	if !strings.Contains(out, "model-helper (installed)") {
+		t.Errorf("output %q missing the installed marking", out)
+	}
+	if !strings.Contains(out, "model-extra\n") {
+		t.Errorf("output %q missing the unconfigured server model", out)
+	}
+	if !strings.Contains(out, "provider local (openai-compatible, "+srv.URL+")") && strings.Count(out, "provider ") != 1 {
+		t.Errorf("output %q should carry exactly one provider block", out)
+	}
+}
+
+func TestModelsCommandTypoedModelExitsNonZero(t *testing.T) {
+	// The server lists only model-helper; the config also declares a
+	// misspelled model the server does not have.
+	srv := newFakeModelsServer(t, "model-helper")
+	cfgPath := writeModelsConfig(t, srv.URL, false, "helper", "helper-mistyped")
+
+	out, err := runModelsCommand(t, cfgPath, nil)
+	if err == nil {
+		t.Fatalf("models command succeeded, want exit 1 (typo detection is the point)\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, "model-helper (installed)") {
+		t.Errorf("output %q missing the installed marking", out)
+	}
+	if !strings.Contains(out, "model-helper-mistyped (NOT INSTALLED)") {
+		t.Errorf("output %q missing the NOT INSTALLED marking", out)
+	}
+}
+
+func TestModelsCommandListingFailureReportsAndContinues(t *testing.T) {
+	// The first provider's server errors on /models; the second is the
+	// offline ollama provider, which fails to connect. Both failures are
+	// reported and the command still exits non-zero.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server says no", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	cfgPath := writeModelsConfig(t, srv.URL, true, "helper")
+
+	out, err := runModelsCommand(t, cfgPath, nil)
+	if err == nil {
+		t.Fatalf("models command succeeded, want exit 1 (listing failed)\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, "server says no") {
+		t.Errorf("output %q missing the listing error", out)
+	}
+	if !strings.Contains(out, "provider offline (ollama") {
+		t.Errorf("output %q missing the second provider's block", out)
+	}
+}
+
+func TestModelsCommandMissingAPIKeyEnv(t *testing.T) {
+	srv := newFakeModelsServer(t, "model-helper")
+	cfgPath := writeModelsConfig(t, srv.URL, false, "helper")
+
+	// Add an api_key_env to the local provider, unset in the environment.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	updated := strings.Replace(string(data),
+		`"base_url":`,
+		`"api_key_env": "BLORB_TEST_MODELS_KEY", "base_url":`, 1)
+	if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runModelsCommand(t, cfgPath, map[string]string{"BLORB_TEST_MODELS_KEY": ""})
+	if err == nil {
+		t.Fatalf("models command succeeded, want exit 1 (missing env)\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, "BLORB_TEST_MODELS_KEY") {
+		t.Errorf("output %q missing the missing-env error", out)
+	}
+}
+
 // --- run --format flag tests ---
 
 // TestRunFormatFlagDefaults pins that the run command has a --format flag

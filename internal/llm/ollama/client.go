@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,8 @@ import (
 )
 
 const chatPath = "/api/chat"
+
+const tagsPath = "/api/tags"
 
 // maxErrorBodyLen bounds how much of an error response body is included in
 // error messages.
@@ -65,10 +68,11 @@ type Client struct {
 	cfg Config
 }
 
-// Client satisfies both provider seams.
+// Client satisfies both provider seams, plus the model-lister capability.
 var (
 	_ llm.Client          = (*Client)(nil)
 	_ llm.StreamingClient = (*Client)(nil)
+	_ llm.ModelLister     = (*Client)(nil)
 )
 
 func (c *Client) httpClient() *http.Client {
@@ -158,6 +162,54 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 	}
 	resp.Stats = llm.CallStats{Output: resp.Message.OutputBytes(), Elapsed: elapsed}
 	return resp, nil
+}
+
+// ListModels enumerates the models the Ollama server has installed, via
+// GET /api/tags, sorted by name so display is deterministic. It implements
+// llm.ModelLister.
+func (c *Client) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	endpoint, err := url.JoinPath(strings.TrimSuffix(c.cfg.BaseURL, "/"), tagsPath)
+	if err != nil {
+		return nil, fmt.Errorf("join base_url %q: %w", c.cfg.BaseURL, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	if c.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+
+	httpResp, err := c.httpClient().Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("ollama tags: %w", err)
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, httpResp.Body)
+		_ = httpResp.Body.Close()
+	}()
+
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxBodyLen))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
+		return nil, fmt.Errorf("ollama tags: unexpected status %d: %s",
+			httpResp.StatusCode, truncate(respBody, maxErrorBodyLen))
+	}
+
+	var wire wireTagsResponse
+	if err := json.Unmarshal(respBody, &wire); err != nil {
+		return nil, fmt.Errorf("decode response: %w (body: %s)", err, truncate(respBody, maxErrorBodyLen))
+	}
+
+	out := make([]llm.ModelInfo, 0, len(wire.Models))
+	for _, m := range wire.Models {
+		out = append(out, llm.ModelInfo{Name: m.Name, ModifiedAt: m.ModifiedAt, SizeBytes: m.Size})
+	}
+	slices.SortFunc(out, func(a, b llm.ModelInfo) int { return strings.Compare(a.Name, b.Name) })
+	return out, nil
 }
 
 // maxContentLen bounds how much content is accumulated across a stream, so

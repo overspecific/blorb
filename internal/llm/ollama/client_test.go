@@ -202,6 +202,81 @@ func TestChatBearerHeader(t *testing.T) {
 	}
 }
 
+func TestListModels(t *testing.T) {
+	t.Parallel()
+
+	t.Run("decodes, populates fields, and sorts by name", func(t *testing.T) {
+		t.Parallel()
+
+		var gotPath string
+		var gotMethod string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			gotMethod = r.Method
+			_, _ = w.Write([]byte(`{"models":[
+				{"name":"zeta","modified_at":"2026-01-02T03:04:05Z","size":123},
+				{"name":"alpha","modified_at":"2026-01-01T00:00:00Z","size":456}
+			]}`))
+		}))
+		defer srv.Close()
+
+		c := newTestClient(t, srv.URL)
+		got, err := c.ListModels(context.Background())
+		if err != nil {
+			t.Fatalf("ListModels error = %v, want nil", err)
+		}
+		if gotPath != "/api/tags" {
+			t.Errorf("request path = %q, want %q", gotPath, "/api/tags")
+		}
+		if gotMethod != http.MethodGet {
+			t.Errorf("request method = %q, want GET", gotMethod)
+		}
+		if len(got) != 2 {
+			t.Fatalf("got %d models, want 2", len(got))
+		}
+		if got[0].Name != "alpha" || got[1].Name != "zeta" {
+			t.Errorf("names = [%s %s], want [alpha zeta] (sorted by name)", got[0].Name, got[1].Name)
+		}
+		if got[0].ModifiedAt != "2026-01-01T00:00:00Z" || got[0].SizeBytes != 456 {
+			t.Errorf("alpha = %q/%d, want the modified_at and size fields", got[0].ModifiedAt, got[0].SizeBytes)
+		}
+	})
+
+	t.Run("bearer header present when the key is set", func(t *testing.T) {
+		t.Parallel()
+
+		var gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte(`{"models":[]}`))
+		}))
+		defer srv.Close()
+
+		c := newTestClient(t, srv.URL, func(cfg *Config) { cfg.APIKey = "sekrit" })
+		if _, err := c.ListModels(context.Background()); err != nil {
+			t.Fatalf("ListModels error = %v, want nil", err)
+		}
+		if gotAuth != "Bearer sekrit" {
+			t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer sekrit")
+		}
+	})
+
+	t.Run("non-2xx carries status and body snippet", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "server says no", http.StatusForbidden)
+		}))
+		defer srv.Close()
+
+		c := newTestClient(t, srv.URL)
+		_, err := c.ListModels(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "server says no") {
+			t.Errorf("error = %v, want a status and body snippet", err)
+		}
+	})
+}
+
 func TestChatToolCallsRoundTrip(t *testing.T) {
 	t.Parallel()
 

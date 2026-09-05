@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,8 @@ import (
 )
 
 const chatCompletionsPath = "/chat/completions"
+
+const modelsPath = "/models"
 
 // maxErrorBodyLen bounds how much of an error response body is included in
 // error messages.
@@ -75,6 +78,13 @@ type Config struct {
 type Client struct {
 	cfg Config
 }
+
+// Client satisfies both provider seams, plus the model-lister capability.
+var (
+	_ llm.Client          = (*Client)(nil)
+	_ llm.StreamingClient = (*Client)(nil)
+	_ llm.ModelLister     = (*Client)(nil)
+)
 
 func (c *Client) httpClient() *http.Client {
 	if c.cfg.HTTPClient != nil {
@@ -729,6 +739,64 @@ type wireResponse struct {
 		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage llm.Usage `json:"usage"`
+}
+
+// ListModels enumerates the models the server has installed, via GET
+// /models, sorted by name so display is deterministic. It implements
+// llm.ModelLister. OpenAI-compatible list entries carry only the model id;
+// ModifiedAt and SizeBytes stay zero.
+func (c *Client) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	endpoint, err := url.JoinPath(strings.TrimSuffix(c.cfg.BaseURL, "/"), modelsPath)
+	if err != nil {
+		return nil, fmt.Errorf("join base_url %q: %w", c.cfg.BaseURL, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	if c.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+
+	httpResp, err := c.httpClient().Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("models: %w", err)
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, httpResp.Body)
+		_ = httpResp.Body.Close()
+	}()
+
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxBodyLen))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
+		return nil, fmt.Errorf("models: unexpected status %d: %s",
+			httpResp.StatusCode, truncate(respBody, maxErrorBodyLen))
+	}
+
+	var wire wireModelsResponse
+	if err := json.Unmarshal(respBody, &wire); err != nil {
+		return nil, fmt.Errorf("decode response: %w (body: %s)", err, truncate(respBody, maxErrorBodyLen))
+	}
+
+	out := make([]llm.ModelInfo, 0, len(wire.Data))
+	for _, m := range wire.Data {
+		out = append(out, llm.ModelInfo{Name: m.ID})
+	}
+	slices.SortFunc(out, func(a, b llm.ModelInfo) int { return strings.Compare(a.Name, b.Name) })
+	return out, nil
+}
+
+// wireModelsResponse is the OpenAI list envelope for GET /models.
+type wireModelsResponse struct {
+	Data []struct {
+		ID      string `json:"id"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	} `json:"data"`
 }
 
 func validateBaseURL(baseURL string) error {

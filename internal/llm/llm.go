@@ -205,6 +205,24 @@ type StreamingClient interface {
 	ChatStream(ctx context.Context, req Request, onDelta func(Delta) error) (*Response, error)
 }
 
+// ModelInfo is one model installed on a server, as reported by its
+// listing endpoint. ModifiedAt and SizeBytes are only populated by
+// servers that track them; server-formatted strings pass through
+// unchanged.
+type ModelInfo struct {
+	Name       string `json:"name"`
+	ModifiedAt string `json:"modified_at,omitempty"`
+	SizeBytes  int64  `json:"size_bytes,omitempty"`
+}
+
+// ModelLister is the optional capability for clients whose servers can
+// enumerate their installed models. Consumers type-assert on it exactly
+// like StreamingClient: a client that does not implement it runs on a
+// server with no listing endpoint, and listing is simply unavailable.
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]ModelInfo, error)
+}
+
 // NewTextMessage builds a message with a string content body.
 func NewTextMessage(role Role, content string) Message {
 	return Message{Role: role, Content: content}

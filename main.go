@@ -13,6 +13,8 @@ import (
 
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/run"
 )
@@ -38,6 +40,7 @@ func rootCommand() *cli.Command {
 		Commands: []*cli.Command{
 			chatCommand(),
 			runCommand(),
+			modelsCommand(),
 			{
 				Name:   "version",
 				Usage:  "Print the version",
@@ -45,6 +48,92 @@ func rootCommand() *cli.Command {
 			},
 		},
 	}
+}
+
+// modelsCommand builds the models subcommand: for each provider in the
+// config, list the models its server has installed and mark the provider's
+// configured models installed or missing. Typo detection is the point: the
+// command exits non-zero when any listing failed or any configured model
+// is missing from its server.
+func modelsCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "models",
+		Usage: "List the models each provider's server has installed",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Value:   config.DefaultPath,
+				Usage:   "Path to blorb.json",
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			cfg, err := config.Load(cmd.String("config"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("models: %v", err), 1)
+			}
+
+			w := cmd.Root().Writer
+			exitCode := 0
+			for _, provider := range cfg.Providers {
+				models := providerModels(cfg, provider.Name)
+
+				fmt.Fprintf(w, "provider %s (%s, %s)\n", provider.Name, provider.Type, provider.BaseURL)
+
+				client, err := chat.NewProviderClient(cfg, provider.Name, os.Getenv, logging.NewNop())
+				if err != nil {
+					fmt.Fprintf(w, "  error: %v\n", err)
+					exitCode = 1
+					continue
+				}
+
+				lister, ok := client.(llm.ModelLister)
+				if !ok {
+					fmt.Fprintf(w, "  error: provider type %q cannot list installed models\n", provider.Type)
+					exitCode = 1
+					continue
+				}
+
+				installed, err := lister.ListModels(ctx)
+				if err != nil {
+					fmt.Fprintf(w, "  error: %v\n", err)
+					exitCode = 1
+					continue
+				}
+
+				installedSet := make(map[string]struct{}, len(installed))
+				for _, mi := range installed {
+					fmt.Fprintf(w, "  %s\n", mi.Name)
+					installedSet[mi.Name] = struct{}{}
+				}
+				for _, m := range models {
+					if _, ok := installedSet[m.ModelName]; ok {
+						fmt.Fprintf(w, "  %s (installed)\n", m.ModelName)
+					} else {
+						fmt.Fprintf(w, "  %s (NOT INSTALLED)\n", m.ModelName)
+						exitCode = 1
+					}
+				}
+			}
+
+			if exitCode != 0 {
+				return cli.Exit("", 1)
+			}
+			return nil
+		},
+	}
+}
+
+// providerModels returns the config's model entries that name the given
+// provider.
+func providerModels(cfg config.Config, providerName string) []config.Model {
+	var out []config.Model
+	for _, m := range cfg.Models {
+		if m.Provider == providerName {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // chatCommand builds the chat subcommand.
