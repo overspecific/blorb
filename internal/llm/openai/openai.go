@@ -1,12 +1,23 @@
 // Package openai implements llm.Client and llm.StreamingClient for
 // OpenAI-compatible /chat/completions servers over plain net/http + JSON
-// (SSE when streaming).
+// (SSE when streaming), plus llm.ModelLister over GET /models.
 //
 // Wire contract highlights:
 //
 //   - The model's reasoning_effort, when set, is sent as the request's
 //     reasoning_effort field on both the Chat and ChatStream paths; empty
 //     omits the field and the server default applies.
+//   - The request's sampling parameters map onto top-level fields
+//     (temperature, top_p, seed, stop, max_tokens, frequency_penalty,
+//     presence_penalty); unset fields are omitted. max_tokens is sent as
+//     max_tokens — not max_completion_tokens — for widest compatibility
+//     with the llama-server/vLLM class of servers.
+//   - tool_choice maps auto (and nil) to an omitted field, none and
+//     required to the bare string, and force to the object shape
+//     {"type":"function","function":{"name":...}}.
+//   - The client-config logprobs/top_logprobs pair is sent on both paths;
+//     the response's logprobs decode into Response.Logprobs on the
+//     non-streaming Chat path only (see ChatStream).
 //   - Server-extracted chain-of-thought (reasoning_content) decodes to
 //     llm.Message.Reasoning and is re-sent only with assistant messages
 //     that carry tool calls, keeping the model's thinking continuous

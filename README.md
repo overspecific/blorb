@@ -20,7 +20,8 @@ Tools are plain executables declared in the config, built-ins implemented inside
 - Usage stats: every turn ends with a usage footer — one line per agent (tokens plus, when the client measures, elapsed time, output bytes with a text/reasoning/tool-call split, and derived throughput) and a `total:` line; chat prints the same session totals at exit
 - Full wire logging: every LLM request/response and tool call/result is written to a timestamped file per session, so a plain sort of the filenames replays a turn in order (see [Logging](#logging))
 - Tools as local subprocesses, built-ins (`read`, `grep`), or subagents — one agent delegating to another defined in the same config, with JSON Schema argument declarations
-- Any OpenAI-compatible chat completions endpoint as the LLM backend
+- OpenAI-compatible chat completions endpoints and Ollama servers (local or cloud) as LLM backends, with provider-level sampling defaults, structured output, tool-choice control, and per-token logprobs
+- `blorb models` — per provider, what the server has installed, flagging configured models that are missing
 - Optional tracing of every run to [Prefactor](https://prefactor.ai) (see [Prefactor tracing](#prefactor-tracing))
 - Per-tool 30s timeout, process-group cleanup, and stderr capture
 - A single Go binary
@@ -44,13 +45,13 @@ Tools are plain executables declared in the config, built-ins implemented inside
 
    This produces the `blorb` binary in the repo root.
 
-4. Run the example agent. It talks to whatever OpenAI-compatible chat completions endpoint you point it at, so adjust `base_url` and `model_name` in the `models` list in [examples/simple/blorb.json](examples/simple/blorb.json) to match yours (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...):
+4. Run the example agent. It talks to whatever OpenAI-compatible chat completions endpoint you point it at, so adjust the provider's `base_url` and the model's `model_name` in [examples/simple/blorb.json](examples/simple/blorb.json) to match yours (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...):
 
    ```sh
    ./blorb chat --config examples/simple/blorb.json
    ```
 
-   Then try prompts like `what's a jammie dodger?` or `which biscuits survive a long dunking?`.
+   Then try prompts like `what's a jammie dodger?` or `which biscuits survive a long dunking?`. `./blorb models --config examples/simple/blorb.json` lists what the server has installed.
 
 The `bin/` scripts add mise's shims to `PATH` if present, so you don't need to activate mise yourself to run them.
 
@@ -64,6 +65,7 @@ Commands:
 
 - `chat` — chat with an agent defined in `blorb.json`
 - `run` — run one agent turn and exit
+- `models` — list the models each provider's server has installed
 - `version` — print the version
 - `help` — print help
 
@@ -121,7 +123,7 @@ git diff | ./blorb run @-
 
 The prompt argument is required and exactly one is accepted: omitting it or passing extra arguments is a usage error (a scripting tool must not appear to hang when its arguments are forgotten, so stdin is only read when explicitly requested with `-` or `@-`).
 
-`run` takes the same flags as `chat` (`-c | --config <path>`, `--agent <name>`, `--no-stream`, `--tool-output`) plus `--format <chat|plain|ndjson>`.
+`run` takes the same flags as `chat` (`-c | --config <path>`, `--agent <name>`, `--no-stream`, `--tool-output`) plus `--format <chat|plain|ndjson>` and `--logprobs` (with `--format plain`, print one line per token after the response body — see [Models](#models), **logprobs**).
 
 **`chat`** (the default) is identical to chat output — everything on stdout, `>>>` headings, streamed fragments, and the per-turn usage footer.
 
@@ -135,12 +137,12 @@ Event types (subagent activity uses the same vocabulary prefixed `subagent_`, wi
 text_delta      {type, text}                       assistant text fragment (streaming)
 thinking_delta  {type, thinking}                   reasoning fragment (streaming)
 tool_call_delta {type, index, name?, arguments}    tool call fragment; assemble by index, concatenating arguments
-text            {type, text}                       whole assistant message (with --no-stream)
+text            {type, text, logprobs?}            whole assistant message (with --no-stream); logprobs when the model reported them
 thinking        {type, thinking}                   whole reasoning (with --no-stream)
 tool_call       {type, name, arguments}            whole tool call (with --no-stream)
 tool_result     {type, name, output, failed}       tool result; output is always the full body
 usage           {type, agent, model, usage, stats} one LLM call's token usage and call stats
-done            {type, text?, usage, stats, rates?, agents}  terminal on success
+done            {type, text?, logprobs?, usage, stats, rates?, agents}  terminal on success
 error           {type, error}                      terminal on failure
 ```
 
@@ -156,20 +158,55 @@ Streaming applies across all formats: `--no-stream` switches to whole-message ev
 
 Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
 
+### Listing installed models
+
+`blorb models` enumerates, per provider in the config, what that provider's server has installed — a quick check that every configured `model_name` is actually served:
+
+```sh
+./blorb models --config examples/simple/blorb.json
+```
+
+```
+provider local (openai-compatible, http://localhost:13305/v1)
+  Gemma-4-E4B-it-GGUF (installed)
+  Qwen3-32B-GGUF
+provider local-llama (ollama, http://localhost:11434)
+  llama3.1:latest (installed)
+  gemma4:31b
+  mxbai-embed-large (NOT INSTALLED)
+```
+
+Each provider prints one block — name, type, base_url — followed by the server's installed models (from `GET /models` on openai-compatible servers, `/api/tags` on Ollama) with each of the provider's configured models marked `installed` or `NOT INSTALLED` by `model_name`. API keys resolve through the same path as a real session, so a missing key or a listing failure is reported per provider and does not stop the others.
+
+Exit codes: `0` when every provider that could be listed shows all its configured models installed; `1` when any listing failed or any model is missing — typo detection is the point.
+
 ## Configuration
 
-A `blorb.json` defines the shared model and tool vocabularies and the agents that use them:
+A `blorb.json` defines the shared provider, model, and tool vocabularies and the agents that use them:
 
 ```json
 {
   "default_agent": "simple",
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:13305/v1",
+      "api_key_env": "MY_API_KEY",
+      "temperature": 0.7
+    }
+  ],
   "models": [
     {
       "name": "local-gemma",
-      "type": "openai-compatible",
-      "model": "Gemma-4-E4B-it-GGUF",
-      "base_url": "http://localhost:13305/v1",
-      "api_key_env": "MY_API_KEY"
+      "provider": "local",
+      "model_name": "Gemma-4-E4B-it-GGUF"
+    },
+    {
+      "name": "local-gemma-strict",
+      "provider": "local",
+      "model_name": "Gemma-4-E4B-it-GGUF",
+      "reasoning_effort": "medium"
     }
   ],
   "agents": [
@@ -183,7 +220,7 @@ A `blorb.json` defines the shared model and tool vocabularies and the agents tha
     {
       "name": "quiet",
       "system_prompt": "You answer in one short sentence.",
-      "model": "local-gemma",
+      "model": "local-gemma-strict",
       "tools": ["echo"]
     }
   ],
@@ -212,17 +249,28 @@ A `blorb.json` defines the shared model and tool vocabularies and the agents tha
 }
 ```
 
-With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb chat --agent quiet` runs the quiet one, and `./blorb chat --agent nope` fails naming the defined agents. Both agents share the `echo` tool; only `simple` also uses the `read` builtin.
+With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb chat --agent quiet` runs the quiet one, and `./blorb chat --agent nope` fails naming the defined agents. Both agents share the `echo` tool; only `simple` also uses the `read` builtin. Both models share one provider — one server declaration, two model entries.
 
-An `ollama` model entry looks like this instead:
+An `ollama` provider, with a model on it, looks like this instead:
 
 ```json
 {
-  "name": "local-llama",
-  "type": "ollama",
-  "model_name": "llama3.1:latest",
-  "base_url": "http://localhost:11434",
-  "reasoning_effort": "medium"
+  "providers": [
+    {
+      "name": "ollama-cloud",
+      "type": "ollama",
+      "base_url": "https://ollama.com",
+      "api_key_env": "OLLAMA_API_KEY"
+    }
+  ],
+  "models": [
+    {
+      "name": "local-llama",
+      "provider": "ollama-cloud",
+      "model_name": "llama3.1:latest",
+      "reasoning_effort": "medium"
+    }
+  ]
 }
 ```
 
@@ -230,6 +278,7 @@ An `ollama` model entry looks like this instead:
 
 | Field           | Required | Description                                                                        |
 | --------------- | -------- | ------------------------------------------------------------------------------------ |
+| `providers`     | yes      | The named LLM server connections, shared by models (see below).                       |
 | `models`        | yes      | The named LLM backend declarations (see below).                                       |
 | `agents`        | yes      | The agent definitions (see below).                                                   |
 | `default_agent` | no       | Name of the agent commands use when none is given; must name a defined agent.        |
@@ -237,22 +286,75 @@ An `ollama` model entry looks like this instead:
 | `logging`       | no       | Wire logging config (see below).                                                     |
 | `prefactor`     | no       | Prefactor tracing config (see below).                                                |
 
-### Models
+### Providers
 
-Each model entry declares one named LLM backend. Agents reference it by name in their `model` field; the declarations live once at the top level and are shared.
+Each provider entry declares one named LLM server connection: the facts every model on that server shares. Models reference it by name in their `provider` field; the declarations live once at the top level and are shared — several models can point at one server.
 
-The `type` discriminator determines which fields are recognized; this is the extension point for future backend types.
+The `type` discriminator determines which fields are recognized; this is the extension point for future connection types.
 
 Currently supported: `openai-compatible` — any OpenAI-compatible chat completions API (OpenAI, Lemonade, LM Studio, vLLM, ...); and `ollama` — Ollama's native `/api/chat` API, for a local Ollama server or Ollama cloud.
+
+| Field              | Required | Description                                                                                                           |
+| ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------- |
+| `name`             | yes      | Identifier models reference; unique within the config, must match `^[a-zA-Z0-9_-]+$`.                                  |
+| `type`             | yes      | Must be `openai-compatible` or `ollama`.                                                                               |
+| `base_url`         | yes      | For `openai-compatible`, the API root with `/chat/completions` appended, e.g. `http://localhost:13305/v1`. For `ollama`, the bare Ollama server root with `/api/chat` appended, e.g. `http://localhost:11434`. Must be http or https with a host. |
+| `api_key_env`      | no       | Name of the environment variable containing the API key, if the endpoint needs one. Optional for `ollama`: local Ollama needs no key, Ollama cloud does.                 |
+| `temperature`      | no       | Server-wide generation defaults (all seven below): empty means the server default applies. See the sampling table.     |
+| `top_p`            | no       | ↷ see the sampling table below.                                                                                        |
+| `seed`             | no       | ↷ see the sampling table below.                                                                                        |
+| `stop`             | no       | ↷ see the sampling table below.                                                                                        |
+| `max_tokens`       | no       | ↷ see the sampling table below.                                                                                        |
+| `frequency_penalty`| no       | ↷ see the sampling table below.                                                                                        |
+| `presence_penalty` | no       | ↷ see the sampling table below.                                                                                        |
+
+**Sampling fields** — the seven optional generation knobs are server-wide defaults applied to every model on the provider (every request the engine sends, on the initial call and after every tool round). Empty/absent means the server default applies; the numeric fields are pointers, so an explicit `"temperature": 0` is honored, not ignored.
+
+| Field               | Range        | Wire mapping                                                                                     |
+| ------------------- | ------------ | ------------------------------------------------------------------------------------------------ |
+| `temperature`       | >= 0         | openai-compatible: top-level `temperature`. ollama: `options.temperature`.                        |
+| `top_p`             | (0, 1]       | openai-compatible: top-level `top_p`. ollama: `options.top_p`.                                    |
+| `seed`              | >= 0         | openai-compatible: top-level `seed`. ollama: `options.seed`.                                      |
+| `stop`              | non-empty entries | openai-compatible: top-level `stop`. ollama: `options.stop`.                                 |
+| `max_tokens`        | >= 1         | openai-compatible: top-level `max_tokens` (not `max_completion_tokens`, for llama-server/vLLM-class compatibility). ollama: `options.num_predict`. |
+| `frequency_penalty` | [-2, 2]      | openai-compatible: top-level `frequency_penalty`. ollama: `options.frequency_penalty`.            |
+| `presence_penalty`  | [-2, 2]      | openai-compatible: top-level `presence_penalty`. ollama: `options.presence_penalty`.              |
+
+### Models
+
+Each model entry declares one named LLM backend: a provider connection (by name) plus the model-level facts that distinguish this model within it. Agents reference the model by name in their `model` field; the declarations live once at the top level and are shared.
 
 | Field            | Required | Description                                                                                                           |
 | ---------------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
 | `name`           | yes      | Identifier agents reference; unique within the config, and free-form to the config author.                             |
-| `type`           | yes      | Must be `openai-compatible` or `ollama`.                                                                               |
+| `provider`       | yes      | Name of a defined top-level provider entry carrying the connection.                                                    |
 | `model_name`     | yes      | Model name passed to the API (for ollama, the Ollama tag, e.g. `llama3.1:latest`).                                     |
-| `base_url`       | yes      | For `openai-compatible`, the API root with `/chat/completions` appended, e.g. `http://localhost:13305/v1`. For `ollama`, the bare Ollama server root with `/api/chat` appended, e.g. `http://localhost:11434`. Must be http or https. |
-| `api_key_env`    | no       | Name of the environment variable containing the API key, if the endpoint needs one. Optional for `ollama`: local Ollama needs no key, Ollama cloud does.                 |
 | `reasoning_effort` | no     | The thinking effort the backend is asked for: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Empty (the default) means the server default applies. The value is passed through verbatim on both paths — which values a given model accepts is the server's business — except that `none` becomes `think: false` on the ollama path, since Ollama rejects the string `none`. Thinking output surfaces as reasoning, streamed live for both types (`reasoning_content` over SSE for openai-compatible, `thinking` over Ollama's NDJSON for ollama). |
+| `format`         | no       | **Ollama-only** (a model on an `openai-compatible` provider is rejected): Ollama's structured-output setting, either the JSON string `"json"` or a JSON schema object. Anything else — arrays, scalars, invalid JSON — is a config error. |
+| `keep_alive`     | no       | **Ollama-only** (rejected on `openai-compatible`): how long the model stays loaded after the request, passed through verbatim (e.g. `"5m"`); which duration forms a given server accepts is the server's business. |
+| `tool_choice`    | no       | How the model is steered around tools: `auto` (the default), `none`, `required`, or `force`. See below.                 |
+| `forced_tool`    | only with `tool_choice: "force"` | The tool the model must call in force mode; an error anywhere else. Must match `^[a-zA-Z0-9_-]+$`. |
+| `logprobs`       | no       | Ask the server for per-token log probabilities of the response's content tokens. Models on both provider types.          |
+| `top_logprobs`   | no       | How many top alternative tokens to report per position, in [0, 20]; settable only when `logprobs` is true.               |
+
+**tool_choice.** The four modes:
+
+- `auto` (the default, and the absent field's meaning): the model decides freely.
+- `none`: tool calls are forbidden for the turn, while the tool definitions stay advertised. The request prefix stays byte-identical to the conversation so far, so provider prompt caches (OpenAI prefix caching, vLLM, llama.cpp warm KV) keep hitting — omitting the tool definitions would bust the cache. It forbids calls for a turn without paying the context reprocessing cost.
+- `required`: the server is asked to force some tool call; which one is the server's choice, and blorb does not police the result.
+- `force`: the model must call `forced_tool`. The engine checks at construction that the forced tool is among the agent's granted tools, and if the model replies with text instead of the call, the turn fails with a clear error naming the tool and what came back instead.
+
+On the wire, `none` and `required` serialize as the bare string and `force` as the OpenAI object shape `{"type":"function","function":{"name":...}}` — which Ollama accepts identically. `auto` omits the field.
+
+**logprobs.** A non-streaming feature: with `logprobs: true` the server reports one entry per content token, decoded into the neutral response and surfaced two ways. In `run --format ndjson`, the `text` and `done` events carry a `logprobs` array. In `run --format plain --logprobs`, one line prints after the response body per token — the token, its logprob, and the top alternative when present:
+
+```
+Hi there
+  "Hi" logprob=-0.2500 (top: "Hi" -0.2500)
+  " there" logprob=-0.1000
+```
+
+Streamed responses do not decode logprob data, so with streaming on the flag simply prints nothing. Chat gains no display.
 
 ### Agents
 
@@ -271,10 +373,6 @@ Tools are shared vocabulary: they are declared once at the top level, and each a
 Models work the same way: an agent's `model` must name a defined top-level model entry.
 
 `default_agent` is optional; when set it must name a defined agent, and when absent `blorb chat` requires an explicit `--agent`.
-
-### Provider
-
-Removed in favor of the top-level `models` list (see [Models](#models)).
 
 ### Tools
 

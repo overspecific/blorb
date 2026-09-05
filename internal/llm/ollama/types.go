@@ -2,6 +2,7 @@
 // Ollama's native /api/chat API over plain net/http + JSON. Non-streaming
 // requests return one JSON object; streaming requests return NDJSON — one
 // chatResponse object per line, terminating with a done:true line.
+// llm.ModelLister is implemented over GET /api/tags.
 //
 // Wire contract highlights:
 //
@@ -9,6 +10,18 @@
 //     empty omits it (server default), "none" becomes think: false (Ollama
 //     rejects the string "none"), and every other value passes through
 //     verbatim as the level string.
+//   - The request's sampling parameters map onto Ollama's nested options
+//     object (num_predict carrying max_tokens); a request with no sampling
+//     overrides at all omits options entirely.
+//   - The model entry's format (structured output) and keep_alive pass
+//     through verbatim onto the request's format and keep_alive fields;
+//     empty/nil omits them.
+//   - tool_choice maps auto (and nil) to an omitted field, none and
+//     required to the bare string, and force to the OpenAI object shape,
+//     which Ollama accepts.
+//   - The client-config logprobs/top_logprobs pair is sent on both paths;
+//     the response's logprobs decode into Response.Logprobs on the
+//     non-streaming Chat path only (see ChatStream).
 //   - Server thinking (message.thinking) decodes to llm.Message.Reasoning;
 //     reasoning is never re-sent to the server, matching the openai
 //     client's rule that a final answer's reasoning is stale by the next

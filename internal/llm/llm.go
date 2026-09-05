@@ -2,6 +2,15 @@
 // tools, chat, and all client implementations. Types here are wire-agnostic;
 // provider packages convert to and from their own wire formats. Nothing in
 // this package talks to the network.
+//
+// The seam is Client (whole-message chat). Two optional capabilities extend
+// it, and consumers type-assert on them exactly like they assert on the
+// client itself:
+//
+//   - StreamingClient: incremental responses (see Delta).
+//   - ModelLister: enumerating the models a server has installed (see
+//     ModelInfo), backed by the listing endpoints the provider packages
+//     know (openai-compatible /models, ollama /api/tags).
 package llm
 
 import (
