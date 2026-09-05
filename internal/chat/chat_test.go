@@ -2197,6 +2197,12 @@ func TestRunUsageFooterPerTurnAndSession(t *testing.T) {
 		Message:      llm.NewTextMessage(llm.RoleAssistant, "second"),
 		FinishReason: llm.FinishStop,
 		Usage:        llm.Usage{PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27},
+		// The second turn's client measured stats: its footer carries a
+		// stats line, the first turn's (unmeasured) does not.
+		Stats: llm.CallStats{
+			Output:  llm.OutputBytes{Content: 4096},
+			Elapsed: 4 * time.Second,
+		},
 	}
 	o, stdout := newTestOptions(testConfig(testAgent()), "one\ntwo\nexit\n", turnOne, turnTwo)
 
@@ -2216,6 +2222,17 @@ func TestRunUsageFooterPerTurnAndSession(t *testing.T) {
 	session := "session tokens: 30 prompt, 12 completion, 42 total"
 	if !strings.Contains(out, session) {
 		t.Errorf("stdout = %q, want the session totals line %q", out, session)
+	}
+	statsLine := "stats: 4s, 4KB output, "
+	if n := strings.Count(out, statsLine); n != 2 {
+		t.Errorf("stdout = %q, want the stats line twice (second turn + session), got %d", out, n)
+	}
+	// Turn rate: 7 completion tokens over 4s; session rate: 12 over 4s.
+	if !strings.Contains(out, "1.8 tok/s") || !strings.Contains(out, "3.0 tok/s") {
+		t.Errorf("stdout = %q, want both the turn rate 1.8 tok/s and the session rate 3.0 tok/s", out)
+	}
+	if strings.Contains(out, "tokens: 10 prompt, 5 completion, 15 total\nstats:") {
+		t.Errorf("stdout = %q, want no stats line on the unmeasured first turn's footer", out)
 	}
 	if strings.LastIndex(out, firstFooter) > strings.Index(out, secondFooter) {
 		t.Errorf("stdout = %q, want the first turn's footer before the second's", out)

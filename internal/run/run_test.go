@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/config"
@@ -1409,6 +1410,12 @@ func TestRunUsageFooterHappyPath(t *testing.T) {
 					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
 					FinishReason: llm.FinishStop,
 					Usage:        llm.Usage{PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46},
+					// The client measured stats: the footer carries a
+					// stats line after the token line.
+					Stats: llm.CallStats{
+						Output:  llm.OutputBytes{Content: 2048, Reasoning: 1024},
+						Elapsed: 2 * time.Second,
+					},
 				},
 			}}, nil
 		},
@@ -1421,8 +1428,9 @@ func TestRunUsageFooterHappyPath(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.HasSuffix(out, "tokens: 12 prompt, 34 completion, 46 total\n") {
-		t.Errorf("stdout = %q, want it to end with the usage footer", out)
+	wantFooter := "tokens: 12 prompt, 34 completion, 46 total\nstats: 2s, 3KB output (2KB text, 1KB reasoning), 17.0 tok/s, 1.5KB/s\n"
+	if !strings.HasSuffix(out, wantFooter) {
+		t.Errorf("stdout = %q, want it to end with the usage footer and stats line", out)
 	}
 	if strings.Contains(out, "session tokens:") {
 		t.Errorf("stdout = %q, want no session line (run has no session totals)", out)

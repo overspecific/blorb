@@ -20,7 +20,7 @@ Scope decisions:
 - [x] Commit 3: Ollama client captures stats
 - [x] Commit 4: engine and subagent propagation
 - [x] Commit 5: `internal/usage` accumulates stats
-- [ ] Commit 6: footer rendering with rates
+- [x] Commit 6: footer rendering with rates
 - [ ] Commit 7: ndjson events carry stats
 - [ ] Commit 8: prefactor span payload
 - [ ] Commit 9: docs
