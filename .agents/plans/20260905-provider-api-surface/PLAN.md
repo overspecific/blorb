@@ -11,7 +11,7 @@ Restructures the config first: provider-level facts (type, base_url, api_key_env
 - [x] Commit 5: Ollama format (structured output)
 - [x] Commit 6: Ollama keep_alive
 - [x] Commit 7: tool_choice from config to wire, with engine forced-tool behavior
-- [ ] Commit 8: Logprobs end to end
+- [x] Commit 8: Logprobs end to end
 - [ ] Commit 9: README and docs
 
 ---
