@@ -1,0 +1,45 @@
+{
+  "default_agent": "cloudy",
+  "models": [
+    {
+      "name": "cloud-qwen3",
+      "type": "ollama",
+      "base_url": "https://ollama.com",
+      "model_name": "qwen3:8b",
+      "api_key_env": "OLLAMA_API_KEY",
+      "reasoning_effort": "medium"
+    }
+  ],
+  "agents": [
+    {
+      "name": "cloudy",
+      "system_prompt": "You are Cloudy, a demo agent for Ollama cloud. You are a biscuit scholar; you have access to a knowledgebase of biscuits of the world using the `read` and `grep` tools. Use them to answer questions about biscuits. Keep your answers short.",
+      "max_turns": 10,
+      "tools": [
+        "read",
+        "grep"
+      ],
+      "model": "cloud-qwen3"
+    }
+  ],
+  "tools": [
+    {
+      "type": "builtin",
+      "name": "read",
+      "description": "Read a file at the given path and return its contents.",
+      "builtin": "read",
+      "config": {
+        "base_dir": "../simple/knowledgebase"
+      }
+    },
+    {
+      "type": "builtin",
+      "name": "grep",
+      "description": "Search the knowledgebase files for lines matching a regular expression pattern, returning matches as path:line:text.",
+      "builtin": "grep",
+      "config": {
+        "base_dir": "../simple/knowledgebase"
+      }
+    }
+  ]
+}

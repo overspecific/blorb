@@ -391,6 +391,8 @@ See [examples/simple](examples/simple) for a two-agent config sharing one tool s
 
 See [examples/prefactor-tracing](examples/prefactor-tracing) for a single-agent variant with just the `read`/`grep` builtins (sharing simple's `knowledgebase/`) and Prefactor tracing enabled.
 
+See [examples/ollama-cloud](examples/ollama-cloud) for a single-agent variant pointed at Ollama cloud (native `ollama` model type, API key via `api_key_env`, `reasoning_effort` on a thinking model).
+
 ## Development
 
 - `mise.toml` — pins the toolchain (`mise install` to set it up)
