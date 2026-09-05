@@ -2057,24 +2057,54 @@ func TestRunFormatUnknownFailsBeforeLLMCall(t *testing.T) {
 
 // --- ndjson format tests ---
 
+// ndjsonStats mirrors the llm.CallStats JSON shape as parsed from a line.
+type ndjsonStats struct {
+	Output struct {
+		ContentBytes   int `json:"content_bytes"`
+		ReasoningBytes int `json:"reasoning_bytes"`
+		ToolCallBytes  int `json:"tool_call_bytes"`
+	} `json:"output"`
+	ElapsedNS int64 `json:"elapsed_ns"`
+}
+
+// callStats converts the parsed stats into llm.CallStats for comparison
+// with the fixture's stats.
+func (s *ndjsonStats) callStats() llm.CallStats {
+	var out llm.CallStats
+	if s == nil {
+		return out
+	}
+	out.Output.Content = s.Output.ContentBytes
+	out.Output.Reasoning = s.Output.ReasoningBytes
+	out.Output.ToolCalls = s.Output.ToolCallBytes
+	out.Elapsed = time.Duration(s.ElapsedNS)
+	return out
+}
+
 // ndjsonLine is one parsed line of an ndjson stream: the type plus the
 // per-type fields the tests care about.
 type ndjsonLine struct {
-	Type      string     `json:"type"`
-	Text      string     `json:"text"`
-	Thinking  string     `json:"thinking"`
-	Name      string     `json:"name"`
-	Index     *int       `json:"index"`
-	Arguments string     `json:"arguments"`
-	Output    string     `json:"output"`
-	Failed    bool       `json:"failed"`
-	Agent     string     `json:"agent"`
-	Model     string     `json:"model"`
-	Depth     *int       `json:"depth"`
-	Usage     *llm.Usage `json:"usage"`
-	Agents    []struct {
-		Agent string    `json:"agent"`
-		Usage llm.Usage `json:"usage"`
+	Type      string       `json:"type"`
+	Text      string       `json:"text"`
+	Thinking  string       `json:"thinking"`
+	Name      string       `json:"name"`
+	Index     *int         `json:"index"`
+	Arguments string       `json:"arguments"`
+	Output    string       `json:"output"`
+	Failed    bool         `json:"failed"`
+	Agent     string       `json:"agent"`
+	Model     string       `json:"model"`
+	Depth     *int         `json:"depth"`
+	Usage     *llm.Usage   `json:"usage"`
+	Stats     *ndjsonStats `json:"stats"`
+	Rates     *struct {
+		TokensPerSec float64 `json:"tokens_per_sec"`
+		BytesPerSec  float64 `json:"bytes_per_sec"`
+	} `json:"rates"`
+	Agents []struct {
+		Agent string       `json:"agent"`
+		Usage llm.Usage    `json:"usage"`
+		Stats *ndjsonStats `json:"stats"`
 	} `json:"agents"`
 	Error string `json:"error"`
 }
@@ -2163,6 +2193,178 @@ func TestRunFormatNDJSONNonStreamedToolRound(t *testing.T) {
 
 	if diag := stderr.String(); diag != "" {
 		t.Errorf("stderr = %q, want ndjson diagnostics silent for this run", diag)
+	}
+}
+
+// TestRunFormatNDJSONStats pins the stats surface: per-call events carry
+// the call's stats, done carries the summed stats, per-agent sums, and the
+// derived rates. Existing event types gained fields — no new types — which
+// consumers already tolerate by the ignore-unknown contract.
+func TestRunFormatNDJSONStats(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	wantStats := llm.CallStats{
+		Output:  llm.OutputBytes{Content: 100, Reasoning: 20, ToolCalls: 5},
+		Elapsed: 2 * time.Second,
+	}
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: []llm.Response{
+				{
+					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
+					FinishReason: llm.FinishStop,
+					Usage:        llm.Usage{PromptTokens: 10, CompletionTokens: 100, TotalTokens: 110},
+					Stats:        wantStats,
+				},
+			}}, nil
+		},
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	if got := ndjsonTypes(lines); !slicesEqual(got, []string{"usage", "text", "done"}) {
+		t.Fatalf("line types = %v, want [usage text done]", got)
+	}
+
+	// The per-call usage event carries the call's full stats.
+	if got := lines[0].Stats.callStats(); got != wantStats {
+		t.Errorf("usage stats = %+v, want %+v", got, wantStats)
+	}
+
+	// done carries the summed stats, the per-agent sums, and the rates.
+	done := lines[2]
+	if got := done.Stats.callStats(); got != wantStats {
+		t.Errorf("done.stats = %+v, want %+v", got, wantStats)
+	}
+	if len(done.Agents) != 1 || done.Agents[0].Agent != "tester" {
+		t.Fatalf("done.agents = %+v, want the tester entry", done.Agents)
+	}
+	if got := done.Agents[0].Stats.callStats(); got != wantStats {
+		t.Errorf("done.agents[0].stats = %+v, want %+v", got, wantStats)
+	}
+	if done.Rates == nil {
+		t.Fatalf("done.rates = nil, want the derived rates")
+	}
+	// 100 completion tokens over 2s; 125 output bytes over 2s.
+	if done.Rates.TokensPerSec != 50 {
+		t.Errorf("done.rates.tokens_per_sec = %v, want 50", done.Rates.TokensPerSec)
+	}
+	if done.Rates.BytesPerSec != 62.5 {
+		t.Errorf("done.rates.bytes_per_sec = %v, want 62.5", done.Rates.BytesPerSec)
+	}
+}
+
+// TestRunFormatNDJSONSubagentUsageStats pins that subagent_usage lines
+// carry the nested call's stats like usage lines do.
+func TestRunFormatNDJSONSubagentUsageStats(t *testing.T) {
+	t.Parallel()
+
+	cfg := runSubagentConfig(t)
+	parent := &runFakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_p", Type: "function", FunctionName: "ask_worker", FunctionArgs: `{"prompt":"do it"}`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+			Usage:        llm.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110},
+		},
+		{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "parent done"),
+			FinishReason: llm.FinishStop,
+			Usage:        llm.Usage{PromptTokens: 130, CompletionTokens: 20, TotalTokens: 150},
+		},
+	}}
+	wantStats := llm.CallStats{
+		Output:  llm.OutputBytes{Content: 55},
+		Elapsed: time.Second,
+	}
+	worker := &runFakeClient{responses: []llm.Response{
+		{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "worker done"),
+			FinishReason: llm.FinishStop,
+			Usage:        llm.Usage{PromptTokens: 11, CompletionTokens: 5, TotalTokens: 16},
+			Stats:        wantStats,
+		},
+	}}
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "worker" {
+				return worker, nil
+			}
+			return parent, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	for _, l := range lines {
+		if l.Type == "subagent_usage" {
+			if got := l.Stats.callStats(); got != wantStats {
+				t.Errorf("subagent_usage stats = %+v, want %+v", got, wantStats)
+			}
+			return
+		}
+	}
+	t.Errorf("stream missing subagent_usage:\n%s", stdout.String())
+}
+
+// TestRunFormatNDJSONNoStatsOmitsRates pins the unmeasured shape: usage
+// lines carry zero stats (the client did not measure) and done omits rates
+// when no time was measured.
+func TestRunFormatNDJSONNoStatsOmitsRates(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: []llm.Response{
+				{
+					Message:      llm.NewTextMessage(llm.RoleAssistant, "the answer"),
+					FinishReason: llm.FinishStop,
+					Usage:        llm.Usage{PromptTokens: 10, CompletionTokens: 100, TotalTokens: 110},
+				},
+			}}, nil
+		},
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	done := lines[len(lines)-1]
+	if done.Type != "done" {
+		t.Fatalf("last line type = %q, want done", done.Type)
+	}
+	if done.Stats == nil {
+		t.Fatal("done.stats = nil, want zero stats present")
+	}
+	if got := done.Stats.callStats(); got != (llm.CallStats{}) {
+		t.Errorf("done.stats = %+v, want zero", got)
+	}
+	if done.Rates != nil {
+		t.Errorf("done.rates = %+v, want it omitted with no measured time", done.Rates)
 	}
 }
 

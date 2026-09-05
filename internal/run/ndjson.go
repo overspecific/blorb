@@ -23,9 +23,9 @@ import (
 //	thinking        {type, thinking}                — whole reasoning (non-streaming)
 //	tool_call       {type, name, arguments}         — whole tool call
 //	tool_result     {type, name, output, failed}    — tool result; output is always the full body
-//	usage           {type, agent, model, usage}     — one completed LLM call's token usage
+//	usage           {type, agent, model, usage, stats} — one completed LLM call's token usage and call stats
 //	subagent_*      — the same vocabulary prefixed subagent_, with agent and depth fields added
-//	done            {type, text?, usage, agents}    — terminal on success; text is the final assistant text
+//	done            {type, text?, usage, stats?, rates?, agents} — terminal on success; text is the final assistant text
 //	error           {type, error}                   — terminal on failure; no done follows
 //
 // The stream contract:
@@ -35,7 +35,8 @@ import (
 //     start) emits no lines at all; the error goes to stderr via main's
 //     reporting.
 //   - Success ends with done, carrying the final text (absent when empty)
-//     and the usage totals with the per-agent split.
+//     and the usage totals with the per-agent split, plus the summed call
+//     stats and — when any time was measured — the derived rates.
 //   - Failure (the run failed, turn error or post-turn tracer failure)
 //     ends with error carrying the run error's message and no done; the
 //     exit codes are unchanged (main maps them).
@@ -80,6 +81,13 @@ type ndjsonEvent struct {
 	Depth *int `json:"depth,omitempty"`
 	// Usage is the token usage (usage, subagent_usage, done).
 	Usage *llm.Usage `json:"usage,omitempty"`
+	// Stats is the stats of one call (usage, subagent_usage) and the
+	// summed stats (done). Nil omits it; per-call events always carry
+	// it (zero included — "the client did not measure").
+	Stats *llm.CallStats `json:"stats,omitempty"`
+	// Rates is the derived throughput (done), omitted when no time was
+	// measured. Zero fields mean no time was measured.
+	Rates *ndjsonRates `json:"rates,omitempty"`
 	// Agents is the per-agent usage split (done), mirroring
 	// usage.Account.AgentTotals.
 	Agents []ndjsonAgentUsage `json:"agents,omitempty"`
@@ -91,6 +99,16 @@ type ndjsonEvent struct {
 type ndjsonAgentUsage struct {
 	Agent string    `json:"agent"`
 	Usage llm.Usage `json:"usage"`
+	// Stats is the agent's summed call stats; always present, zero
+	// included — "measured nothing".
+	Stats llm.CallStats `json:"stats"`
+}
+
+// ndjsonRates is the derived throughput on done, computed from the
+// summed stats. Zero fields mean no time was measured.
+type ndjsonRates struct {
+	TokensPerSec float64 `json:"tokens_per_sec"`
+	BytesPerSec  float64 `json:"bytes_per_sec"`
 }
 
 // ndjsonSink writes the ndjson event stream: printEvent and onSubagent
@@ -135,7 +153,8 @@ func (s *ndjsonSink) printEvent(ev engine.Event) error {
 		return s.emit(ndjsonEvent{Type: "tool_result", Name: ev.Name, Output: ev.Output, Failed: ev.Failed})
 	case engine.EventUsage:
 		usage := ev.Usage
-		return s.emit(ndjsonEvent{Type: "usage", Agent: ev.AgentName, Model: ev.Model, Usage: &usage})
+		stats := ev.Stats
+		return s.emit(ndjsonEvent{Type: "usage", Agent: ev.AgentName, Model: ev.Model, Usage: &usage, Stats: &stats})
 	default:
 		return nil
 	}
@@ -161,7 +180,8 @@ func (s *ndjsonSink) onSubagent(ev tools.SubagentEvent) error {
 	case tools.SubagentToolResult:
 		e = ndjsonEvent{Type: "subagent_tool_result", Name: ev.Name, Output: ev.Output, Failed: ev.Failed}
 	case tools.SubagentUsage:
-		e = ndjsonEvent{Type: "subagent_usage", Model: ev.Model, Usage: &ev.Usage}
+		stats := ev.Stats
+		e = ndjsonEvent{Type: "subagent_usage", Model: ev.Model, Usage: &ev.Usage, Stats: &stats}
 	default:
 		return nil
 	}
@@ -182,8 +202,16 @@ func (s *ndjsonSink) finish(final string, runErr error) error {
 	}
 	total := s.account.Total()
 	done := ndjsonEvent{Type: "done", Text: final, Usage: &total}
+	stats := s.account.TotalStats()
+	done.Stats = &stats
+	if stats.Elapsed > 0 {
+		done.Rates = &ndjsonRates{
+			TokensPerSec: s.account.TokensPerSec(),
+			BytesPerSec:  s.account.BytesPerSec(),
+		}
+	}
 	for _, at := range s.account.AgentTotals() {
-		done.Agents = append(done.Agents, ndjsonAgentUsage{Agent: at.Agent, Usage: at.Usage})
+		done.Agents = append(done.Agents, ndjsonAgentUsage{Agent: at.Agent, Usage: at.Usage, Stats: at.Stats})
 	}
 	return s.emit(done)
 }
