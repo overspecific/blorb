@@ -19,7 +19,7 @@ Scope decisions:
 - [x] Commit 2: OpenAI client captures stats
 - [x] Commit 3: Ollama client captures stats
 - [x] Commit 4: engine and subagent propagation
-- [ ] Commit 5: `internal/usage` accumulates stats
+- [x] Commit 5: `internal/usage` accumulates stats
 - [ ] Commit 6: footer rendering with rates
 - [ ] Commit 7: ndjson events carry stats
 - [ ] Commit 8: prefactor span payload

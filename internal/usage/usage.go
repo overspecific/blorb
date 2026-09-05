@@ -18,12 +18,17 @@ type Record struct {
 	Agent string
 	Model string
 	Usage llm.Usage
+	// Stats holds the call's stats; zero when the provider client did
+	// not measure.
+	Stats llm.CallStats
 }
 
 // AgentTotal is one agent's summed usage.
 type AgentTotal struct {
 	Agent string
 	Usage llm.Usage
+	// Stats is the agent's summed call stats.
+	Stats llm.CallStats
 }
 
 // Account accumulates usage records for one turn or one session.
@@ -51,6 +56,7 @@ func (a *Account) Records() []Record {
 // AgentTotals returns per-agent summed usage sorted by agent name.
 func (a *Account) AgentTotals() []AgentTotal {
 	byAgent := make(map[string]llm.Usage)
+	statsByAgent := make(map[string]llm.CallStats)
 	order := make([]string, 0, len(a.records))
 	for _, rec := range a.records {
 		if _, seen := byAgent[rec.Agent]; !seen {
@@ -61,12 +67,19 @@ func (a *Account) AgentTotals() []AgentTotal {
 		u.CompletionTokens += rec.Usage.CompletionTokens
 		u.TotalTokens += rec.Usage.TotalTokens
 		byAgent[rec.Agent] = u
+
+		s := statsByAgent[rec.Agent]
+		s.Output.Content += rec.Stats.Output.Content
+		s.Output.Reasoning += rec.Stats.Output.Reasoning
+		s.Output.ToolCalls += rec.Stats.Output.ToolCalls
+		s.Elapsed += rec.Stats.Elapsed
+		statsByAgent[rec.Agent] = s
 	}
 
 	sort.Strings(order)
 	totals := make([]AgentTotal, 0, len(order))
 	for _, agent := range order {
-		totals = append(totals, AgentTotal{Agent: agent, Usage: byAgent[agent]})
+		totals = append(totals, AgentTotal{Agent: agent, Usage: byAgent[agent], Stats: statsByAgent[agent]})
 	}
 	return totals
 }
@@ -78,6 +91,18 @@ func (a *Account) Total() llm.Usage {
 		total.PromptTokens += rec.Usage.PromptTokens
 		total.CompletionTokens += rec.Usage.CompletionTokens
 		total.TotalTokens += rec.Usage.TotalTokens
+	}
+	return total
+}
+
+// TotalStats returns the summed call stats across all records.
+func (a *Account) TotalStats() llm.CallStats {
+	var total llm.CallStats
+	for _, rec := range a.records {
+		total.Output.Content += rec.Stats.Output.Content
+		total.Output.Reasoning += rec.Stats.Output.Reasoning
+		total.Output.ToolCalls += rec.Stats.Output.ToolCalls
+		total.Elapsed += rec.Stats.Elapsed
 	}
 	return total
 }

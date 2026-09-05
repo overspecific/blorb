@@ -28,7 +28,7 @@ import (
 func usageWrap(print func(engine.Event) error, account *usage.Account) func(engine.Event) error {
 	return func(ev engine.Event) error {
 		if ev.Kind == engine.EventUsage {
-			account.Add(usage.Record{Agent: ev.AgentName, Model: ev.Model, Usage: ev.Usage})
+			account.Add(usage.Record{Agent: ev.AgentName, Model: ev.Model, Usage: ev.Usage, Stats: ev.Stats})
 		}
 		if print == nil {
 			return nil
@@ -44,7 +44,7 @@ func usageWrap(print func(engine.Event) error, account *usage.Account) func(engi
 func subagentUsageWrap(print func(tools.SubagentEvent) error, account *usage.Account) func(tools.SubagentEvent) error {
 	return func(ev tools.SubagentEvent) error {
 		if ev.Kind == tools.SubagentUsage {
-			account.Add(usage.Record{Agent: ev.Agent, Model: ev.Model, Usage: ev.Usage})
+			account.Add(usage.Record{Agent: ev.Agent, Model: ev.Model, Usage: ev.Usage, Stats: ev.Stats})
 		}
 		if print == nil {
 			return nil
