@@ -1917,3 +1917,80 @@ func sinkStream(t *testing.T, c *openai.Client) (*llm.Response, error) {
 		return nil
 	})
 }
+
+func TestChatCapturesCallStats(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"the answer","reasoning_content":"hmm","tool_calls":[{"id":"call_1","type":"function","function":{"name":"ls","arguments":"{\"path\":\".\"}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).Chat(context.Background(), sampleRequest())
+	if err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+
+	// Recomputed from the fixture's expected content/reasoning/tool
+	// call, pinning the component numbers themselves.
+	wantOutput := llm.OutputBytes{
+		Content:   len("the answer"),
+		Reasoning: len("hmm"),
+		ToolCalls: len("ls") + len(`{"path":"."}`),
+	}
+	if resp.Stats.Output != wantOutput {
+		t.Errorf("Stats.Output = %+v, want %+v", resp.Stats.Output, wantOutput)
+	}
+	if resp.Stats.Elapsed <= 0 {
+		t.Errorf("Stats.Elapsed = %v, want > 0", resp.Stats.Elapsed)
+	}
+	if resp.Stats.Output.Total() != resp.Stats.Output.Content+resp.Stats.Output.Reasoning+resp.Stats.Output.ToolCalls {
+		t.Errorf("Output total %d inconsistent with components", resp.Stats.Output.Total())
+	}
+}
+
+func TestChatStreamCapturesCallStats(t *testing.T) {
+	t.Parallel()
+
+	// Multi-chunk stream: deltas concatenate to the same message the
+	// whole-message path would return, so streamed and non-streamed
+	// stats must agree — the cross-path consistency pin.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseChunks(w,
+			`{"id":"r","choices":[{"delta":{"reasoning_content":"think "},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{"reasoning_content":"hard"},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{"content":"Hello, "},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{"content":"world"},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ls","arguments":"{\"pa"}}]},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\".\"}"}}]},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		)
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).ChatStream(context.Background(), sampleRequest(), func(d llm.Delta) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want nil", err)
+	}
+
+	wantOutput := llm.OutputBytes{
+		Content:   len("Hello, world"),
+		Reasoning: len("think hard"),
+		ToolCalls: len("ls") + len(`{"path":"."}`),
+	}
+	if resp.Stats.Output != wantOutput {
+		t.Errorf("Stats.Output = %+v, want %+v", resp.Stats.Output, wantOutput)
+	}
+	if resp.Stats.Elapsed <= 0 {
+		t.Errorf("Stats.Elapsed = %v, want > 0", resp.Stats.Elapsed)
+	}
+	// Cross-path consistency: the assembled message measures the same
+	// as the helper says it should.
+	if got := resp.Message.OutputBytes(); got != wantOutput {
+		t.Errorf("Message.OutputBytes() = %+v, want %+v", got, wantOutput)
+	}
+}

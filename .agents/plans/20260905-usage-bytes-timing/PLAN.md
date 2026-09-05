@@ -16,7 +16,7 @@ Scope decisions:
 ## Todo
 
 - [x] Commit 1: `llm.CallStats` and `llm.OutputBytes` types
-- [ ] Commit 2: OpenAI client captures stats
+- [x] Commit 2: OpenAI client captures stats
 - [ ] Commit 3: Ollama client captures stats
 - [ ] Commit 4: engine and subagent propagation
 - [ ] Commit 5: `internal/usage` accumulates stats
