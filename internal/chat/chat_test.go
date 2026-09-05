@@ -1624,6 +1624,46 @@ func TestNewClientWithGetenvNilSink(t *testing.T) {
 	}
 }
 
+// TestNewClientPlumbsReasoningEffort verifies a model entry carrying
+// reasoning_effort builds a client that sends the effort on the wire: the
+// httptest round trip goes through NewClientWithGetenv and the real openai
+// client, covering the plumbing end to end.
+func TestNewClientPlumbsReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	var gotEffort any
+	var sawEffort bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var gotReq map[string]any
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotReq); err != nil {
+			t.Errorf("unmarshal request: %v", err)
+		}
+		gotEffort, sawEffort = gotReq["reasoning_effort"]
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	m := testModel()
+	m.BaseURL = srv.URL
+	m.ReasoningEffort = "high"
+	cfg := config.Config{
+		Models: []config.Model{m},
+		Agents: []config.Agent{testAgent()},
+	}
+
+	client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
+	if err != nil || client == nil {
+		t.Fatalf("NewClientWithGetenv error = %v, want a client", err)
+	}
+	if _, err := client.Chat(context.Background(), llm.Request{}); err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+	if !sawEffort || gotEffort != "high" {
+		t.Errorf("wire reasoning_effort = %v (present: %v), want %q", gotEffort, sawEffort, "high")
+	}
+}
+
 // subagentTestConfig builds a two-agent config: parent granted a subagent
 // tool targeting worker, and worker granted a trivial command tool so a
 // nested tool round trip is exercised.

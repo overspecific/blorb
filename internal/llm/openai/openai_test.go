@@ -454,6 +454,67 @@ func TestChatAPIKeyHeader(t *testing.T) {
 	}
 }
 
+// TestChatReasoningEffort pins the thinking-effort request field: set on
+// Config it reaches the wire on both the Chat and ChatStream paths, and
+// unset it is omitted entirely so the server default applies.
+func TestChatReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var gotReq map[string]any
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotReq); err != nil {
+			t.Errorf("unmarshal request: %v", err)
+		}
+		if got, ok := gotReq["reasoning_effort"]; ok {
+			if got != "max" {
+				t.Errorf("reasoning_effort = %v, want %q", got, "max")
+			}
+		} else {
+			t.Error("request carries no reasoning_effort field, want it set")
+		}
+		if got, _ := gotReq["stream"].(bool); got {
+			w.Header().Set("Content-Type", "text/event-stream")
+			sseChunks(w, `{"id":"r","choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.ReasoningEffort = "max" })
+	if _, err := c.Chat(context.Background(), llm.Request{Model: "m"}); err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+	if _, err := c.ChatStream(context.Background(), llm.Request{Model: "m"}, func(llm.Delta) error { return nil }); err != nil {
+		t.Fatalf("ChatStream error = %v, want nil", err)
+	}
+}
+
+// TestChatNoReasoningEffortOmitted pins that an unset reasoning effort
+// leaves the field off the wire entirely.
+func TestChatNoReasoningEffortOmitted(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var gotReq map[string]any
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotReq); err != nil {
+			t.Errorf("unmarshal request: %v", err)
+		}
+		if _, ok := gotReq["reasoning_effort"]; ok {
+			t.Error("request carries reasoning_effort, want it omitted when unset")
+		}
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{Model: "m"}); err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+}
+
 func TestChatInvalidJSONResponse(t *testing.T) {
 	t.Parallel()
 

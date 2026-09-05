@@ -760,10 +760,11 @@ func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(stri
 			}
 		}
 		return openai.New(openai.Config{
-			BaseURL: model.BaseURL,
-			Model:   model.ModelName,
-			APIKey:  apiKey,
-			Sink:    sink,
+			BaseURL:         model.BaseURL,
+			Model:           model.ModelName,
+			APIKey:          apiKey,
+			ReasoningEffort: model.ReasoningEffort,
+			Sink:            sink,
 		})
 	default:
 		return nil, fmt.Errorf("model type %q is not supported (supported: %v)", model.Type, config.SupportedModelTypes())

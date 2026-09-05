@@ -227,6 +227,29 @@ type Model struct {
 	// a pointer so an explicit "api_key_env": "" is distinguishable from
 	// an absent field: empty is a config error, absent means no key.
 	APIKeyEnv *string `json:"api_key_env,omitempty"`
+	// ReasoningEffort is the optional thinking effort the backend is
+	// asked for. Empty means the server default applies. Accepted values
+	// are the union of the OpenAI and Ollama scales; see
+	// validateReasoningEffort.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
+// reasoningEfforts is the accepted set of reasoning_effort values: the
+// union of OpenAI's and Ollama's scales. Which values a given model
+// actually accepts is the server's business; validation only rejects
+// obvious typos.
+var reasoningEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// validateReasoningEffort rejects any non-empty reasoning_effort outside
+// the accepted value set, naming the allowed values.
+func validateReasoningEffort(effort string) error {
+	if effort == "" {
+		return nil
+	}
+	if !slices.Contains(reasoningEfforts, effort) {
+		return fmt.Errorf("reasoning_effort %q must be one of: %s", effort, strings.Join(reasoningEfforts, ", "))
+	}
+	return nil
 }
 
 // APIKeyEnvOrDefault returns the configured api_key_env, or "" when unset.
@@ -574,6 +597,9 @@ func (m *Model) validate() error {
 		}
 		if m.APIKeyEnv != nil && *m.APIKeyEnv == "" {
 			return fmt.Errorf("api_key_env must not be empty when set")
+		}
+		if err := validateReasoningEffort(m.ReasoningEffort); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("unknown type %q (supported: %v)", m.Type, SupportedModelTypes())

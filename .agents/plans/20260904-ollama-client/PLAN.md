@@ -6,7 +6,7 @@ Thinking is supported end to end: a new optional `reasoning_effort` field on mod
 
 ## Todo
 
-- [ ] Commit 1: OpenAI thinking: reasoning_effort from config to wire
+- [x] Commit 1: OpenAI thinking: reasoning_effort from config to wire
 - [ ] Commit 2: Ollama wire types and translation
 - [ ] Commit 3: Ollama client: non-streaming Chat with wire logging
 - [ ] Commit 4: Ollama streaming: ChatStream over NDJSON

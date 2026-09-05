@@ -256,6 +256,36 @@ func TestValidateAcceptsMissingAPIKeyEnv(t *testing.T) {
 	}
 }
 
+// TestLoadReasoningEffort pins the thinking effort setting: every accepted
+// value loads, a garbage value is rejected with the allowed set named, and
+// an absent field stays valid (the server default applies).
+func TestLoadReasoningEffort(t *testing.T) {
+	cfg, err := loadTestdata(t, "model_reasoning_effort_valid.json")
+	if err != nil {
+		t.Fatalf("Load(model_reasoning_effort_valid.json) error = %v, want nil", err)
+	}
+	if got := cfg.Models[0].ReasoningEffort; got != "max" {
+		t.Errorf("ReasoningEffort = %q, want %q", got, "max")
+	}
+
+	// Every value in the union scale is valid on a programmatic model too.
+	for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		m := validModel()
+		m.ReasoningEffort = effort
+		effortCfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{validAgent()}}
+		if err := effortCfg.Validate(); err != nil {
+			t.Errorf("Validate(reasoning_effort %q) error = %v, want nil", effort, err)
+		}
+	}
+
+	// Absent stays valid: the server default applies.
+	m := validModel()
+	cfg = config.Config{Models: []config.Model{m}, Agents: []config.Agent{validAgent()}}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate error = %v, want nil with reasoning_effort absent", err)
+	}
+}
+
 // validModel returns the canonical single valid model for programmatic
 // configs.
 func validModel() config.Model {
@@ -408,6 +438,7 @@ func TestLoadRejects(t *testing.T) {
 		{"model_missing_base_url.json", []string{"base_url"}},
 		{"model_bad_base_url_scheme.json", []string{"ftp", "http or https"}},
 		{"model_empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
+		{"model_reasoning_effort_invalid.json", []string{`reasoning_effort "ultra" must be one of`}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
 		{"tool_missing_type.json", []string{"type is required"}},

@@ -45,6 +45,12 @@ type Config struct {
 	Model string
 	// APIKey, when non-empty, is sent as a Bearer token.
 	APIKey string
+	// ReasoningEffort, when non-empty, is sent as the request's
+	// reasoning_effort field, asking the backend for a given thinking
+	// effort. Empty omits the field and the server default applies. It is
+	// a per-model setting, not a per-request override. Which values a
+	// given model accepts is the server's business.
+	ReasoningEffort string
 	// HTTPClient is optional; a client with a 5 minute timeout is used
 	// when nil, so a hung server cannot block a turn forever.
 	HTTPClient *http.Client
@@ -88,9 +94,10 @@ func New(cfg Config) (*Client, error) {
 // response.
 func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
 	body := wireRequest{
-		Model:    firstNonEmpty(req.Model, c.cfg.Model),
-		Messages: wireMessages(req.Messages),
-		Tools:    wireTools(req.Tools),
+		Model:           firstNonEmpty(req.Model, c.cfg.Model),
+		Messages:        wireMessages(req.Messages),
+		Tools:           wireTools(req.Tools),
+		ReasoningEffort: c.cfg.ReasoningEffort,
 	}
 
 	httpResp, endpoint, err := c.post(ctx, body)
@@ -343,11 +350,12 @@ func wireMessageForLog(m llm.Message) wireMessage {
 // implements llm.StreamingClient.
 func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
 	body := wireRequest{
-		Model:         firstNonEmpty(req.Model, c.cfg.Model),
-		Messages:      wireMessages(req.Messages),
-		Tools:         wireTools(req.Tools),
-		Stream:        true,
-		StreamOptions: &streamOptions{IncludeUsage: true},
+		Model:           firstNonEmpty(req.Model, c.cfg.Model),
+		Messages:        wireMessages(req.Messages),
+		Tools:           wireTools(req.Tools),
+		Stream:          true,
+		StreamOptions:   &streamOptions{IncludeUsage: true},
+		ReasoningEffort: c.cfg.ReasoningEffort,
 	}
 
 	httpResp, endpoint, err := c.post(ctx, body)
@@ -487,6 +495,11 @@ type wireRequest struct {
 	// leaves them unset so the server returns a whole-message response.
 	Stream        bool           `json:"stream,omitempty"`
 	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	// ReasoningEffort, when non-empty, asks the backend for a given
+	// thinking effort; empty omits the field and the server default
+	// applies. Populated from Config on both the Chat and ChatStream
+	// paths, which share request building.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // streamOptions carries per-server streaming behaviour. IncludeUsage asks
