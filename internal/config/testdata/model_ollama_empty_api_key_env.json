@@ -1,0 +1,19 @@
+{
+  "models": [
+    {
+      "name": "local-llama",
+      "type": "ollama",
+      "base_url": "http://localhost:11434",
+      "model_name": "llama3.1:latest",
+      "api_key_env": ""
+    }
+  ],
+  "agents": [
+    {
+      "name": "helper",
+      "system_prompt": "You are helpful.",
+      "max_turns": 1,
+      "model": "local-llama"
+    }
+  ]
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/engine"
 	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/llm/ollama"
 	"github.com/overspecific/blorb/internal/llm/openai"
 	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/prefactor"
@@ -740,18 +741,16 @@ func resolveSink(opts Options) (logging.Sink, error) {
 	return opts.resolveSink()
 }
 
-// NewClientWithGetenv builds the LLM client described by the named
-// top-level model entry, switching on the model's type. When a second
-// model type lands this graduates to a registry map. getenv is the
-// environment lookup, injectable for tests; pass os.Getenv in
-// production. sink receives LLM wire logs; nil disables them.
-func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
-	model, ok := cfg.Model(agent.Model)
-	if !ok {
-		return nil, fmt.Errorf("agent %q: model %q is not a defined model", agent.Name, agent.Model)
-	}
-	switch model.Type {
-	case config.ModelTypeOpenAI:
+// clientFactory builds the LLM client for one model type: it resolves the
+// model's api_key_env through getenv and constructs the provider client.
+// sink receives LLM wire logs; nil disables them.
+type clientFactory func(model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error)
+
+// clientFactories is the model-type registry: one entry per supported
+// model type. Adding a model type means adding a config constant, a
+// validation case, and an entry here — nothing else changes.
+var clientFactories = map[string]clientFactory{
+	config.ModelTypeOpenAI: func(model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
 		apiKey := ""
 		if envName := model.APIKeyEnvOrDefault(); envName != "" {
 			apiKey = getenv(envName)
@@ -766,9 +765,39 @@ func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(stri
 			ReasoningEffort: model.ReasoningEffort,
 			Sink:            sink,
 		})
-	default:
+	},
+	config.ModelTypeOllama: func(model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+		apiKey := ""
+		if envName := model.APIKeyEnvOrDefault(); envName != "" {
+			apiKey = getenv(envName)
+			if apiKey == "" {
+				return nil, fmt.Errorf("api_key_env %q is set but the environment variable is empty", envName)
+			}
+		}
+		return ollama.New(ollama.Config{
+			BaseURL:         model.BaseURL,
+			Model:           model.ModelName,
+			ReasoningEffort: model.ReasoningEffort,
+			APIKey:          apiKey,
+			Sink:            sink,
+		})
+	},
+}
+
+// NewClientWithGetenv builds the LLM client described by the named
+// top-level model entry, dispatching through the model-type registry.
+// getenv is the environment lookup, injectable for tests; pass os.Getenv
+// in production. sink receives LLM wire logs; nil disables them.
+func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+	model, ok := cfg.Model(agent.Model)
+	if !ok {
+		return nil, fmt.Errorf("agent %q: model %q is not a defined model", agent.Name, agent.Model)
+	}
+	factory, ok := clientFactories[model.Type]
+	if !ok {
 		return nil, fmt.Errorf("model type %q is not supported (supported: %v)", model.Type, config.SupportedModelTypes())
 	}
+	return factory(model, getenv, sink)
 }
 
 // NewClient builds the LLM client described by the named top-level model

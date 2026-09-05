@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -439,6 +440,10 @@ func TestLoadRejects(t *testing.T) {
 		{"model_bad_base_url_scheme.json", []string{"ftp", "http or https"}},
 		{"model_empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
 		{"model_reasoning_effort_invalid.json", []string{`reasoning_effort "ultra" must be one of`}},
+		{"model_ollama_missing_model_name.json", []string{"model_name is required"}},
+		{"model_ollama_bad_base_url.json", []string{"ftp", "http or https"}},
+		{"model_ollama_empty_api_key_env.json", []string{"api_key_env must not be empty when set"}},
+		{"model_ollama_bad_reasoning_effort.json", []string{`reasoning_effort "ultra" must be one of`}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
 		{"tool_missing_type.json", []string{"type is required"}},
@@ -644,6 +649,36 @@ func TestLoadBuiltinBaseDirRelativeToConfig(t *testing.T) {
 			t.Errorf("error = %v, want a base_dir resolution error", err)
 		}
 	})
+}
+
+// TestLoadOllamaModelValid pins the parsed shape of an ollama model entry.
+func TestLoadOllamaModelValid(t *testing.T) {
+	cfg, err := loadTestdata(t, "model_ollama_valid.json")
+	if err != nil {
+		t.Fatalf("Load(model_ollama_valid.json) error = %v, want nil", err)
+	}
+	m := cfg.Models[0]
+	if m.Type != config.ModelTypeOllama {
+		t.Errorf("Type = %q, want %q", m.Type, config.ModelTypeOllama)
+	}
+	if m.ModelName != "llama3.1:latest" || m.BaseURL != "http://localhost:11434" {
+		t.Errorf("ModelName/BaseURL = %q/%q, want llama3.1:latest/http://localhost:11434", m.ModelName, m.BaseURL)
+	}
+	if m.ReasoningEffort != "medium" {
+		t.Errorf("ReasoningEffort = %q, want medium", m.ReasoningEffort)
+	}
+}
+
+// TestSupportedModelTypes pins the alphabetically sorted list the unknown
+// type errors name.
+func TestSupportedModelTypes(t *testing.T) {
+	got := config.SupportedModelTypes()
+	if fmt.Sprint(got) != fmt.Sprint([]string{"ollama", "openai-compatible"}) {
+		t.Errorf("SupportedModelTypes() = %v, want [ollama openai-compatible]", got)
+	}
+	if !slices.Contains(got, config.ModelTypeOllama) || !slices.Contains(got, config.ModelTypeOpenAI) {
+		t.Errorf("SupportedModelTypes() = %v, want both ollama and openai-compatible", got)
+	}
 }
 
 func TestLoadErrors(t *testing.T) {

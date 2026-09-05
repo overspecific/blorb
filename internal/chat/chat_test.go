@@ -21,6 +21,7 @@ import (
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/llm/ollama"
 )
 
 // fakeClient returns canned responses in order and records requests.
@@ -1662,6 +1663,115 @@ func TestNewClientPlumbsReasoningEffort(t *testing.T) {
 	if !sawEffort || gotEffort != "high" {
 		t.Errorf("wire reasoning_effort = %v (present: %v), want %q", gotEffort, sawEffort, "high")
 	}
+}
+
+// ollamaTestModel returns the canonical ollama model entry for tests.
+func ollamaTestModel() config.Model {
+	return config.Model{
+		Name:      "local-llama",
+		Type:      config.ModelTypeOllama,
+		ModelName: "llama3.1:latest",
+		BaseURL:   "http://localhost:11434",
+	}
+}
+
+// TestNewClientOllama covers the ollama entry of the model-type registry:
+// an ollama model entry builds an *ollama.Client that talks to /api/chat,
+// the api_key_env pointer rule applies (missing env errors, absent env
+// builds a key-less client), and reasoning_effort reaches the wire as the
+// mapped think field.
+func TestNewClientOllama(t *testing.T) {
+	t.Parallel()
+
+	agent := testAgent()
+	agent.Model = "local-llama"
+
+	t.Run("builds an ollama client and hits /api/chat", func(t *testing.T) {
+		t.Parallel()
+
+		var gotPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			_, _ = w.Write([]byte(`{"model":"llama3.1:latest","message":{"role":"assistant","content":"hi"},"done":true,"done_reason":"stop"}`))
+		}))
+		defer srv.Close()
+
+		m := ollamaTestModel()
+		m.BaseURL = srv.URL
+		cfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{agent}}
+
+		client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
+		if err != nil || client == nil {
+			t.Fatalf("NewClientWithGetenv error = %v, want a client", err)
+		}
+		if _, ok := client.(*ollama.Client); !ok {
+			t.Fatalf("client = %T, want *ollama.Client", client)
+		}
+		if _, err := client.Chat(context.Background(), llm.Request{}); err != nil {
+			t.Fatalf("Chat error = %v, want nil", err)
+		}
+		if gotPath != "/api/chat" {
+			t.Errorf("request path = %q, want %q", gotPath, "/api/chat")
+		}
+	})
+
+	t.Run("api_key_env with empty env errors", func(t *testing.T) {
+		t.Parallel()
+
+		m := ollamaTestModel()
+		m.APIKeyEnv = ptr("BLORB_TEST_MISSING_OLLAMA_KEY")
+		cfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{agent}}
+
+		_, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
+		if err == nil || !strings.Contains(err.Error(), "BLORB_TEST_MISSING_OLLAMA_KEY") {
+			t.Errorf("error = %v, want a missing-env error naming the variable", err)
+		}
+	})
+
+	t.Run("api_key_env absent builds a client", func(t *testing.T) {
+		t.Parallel()
+
+		m := ollamaTestModel()
+		cfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{agent}}
+
+		client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
+		if err != nil || client == nil {
+			t.Fatalf("NewClientWithGetenv error = %v, want a client", err)
+		}
+	})
+
+	t.Run("reasoning_effort maps to think on the wire", func(t *testing.T) {
+		t.Parallel()
+
+		var gotThink any
+		var sawThink bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req map[string]any
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("unmarshal request: %v", err)
+			}
+			gotThink, sawThink = req["think"]
+			_, _ = w.Write([]byte(`{"model":"llama3.1:latest","message":{"role":"assistant","content":"hi"},"done":true,"done_reason":"stop"}`))
+		}))
+		defer srv.Close()
+
+		m := ollamaTestModel()
+		m.BaseURL = srv.URL
+		m.ReasoningEffort = "none"
+		cfg := config.Config{Models: []config.Model{m}, Agents: []config.Agent{agent}}
+
+		client, err := chat.NewClientWithGetenv(cfg, cfg.Agents[0], os.Getenv, nil)
+		if err != nil || client == nil {
+			t.Fatalf("NewClientWithGetenv error = %v, want a client", err)
+		}
+		if _, err := client.Chat(context.Background(), llm.Request{}); err != nil {
+			t.Fatalf("Chat error = %v, want nil", err)
+		}
+		if !sawThink || gotThink != false {
+			t.Errorf("wire think = %v (present: %v), want false (none maps to the boolean)", gotThink, sawThink)
+		}
+	})
 }
 
 // subagentTestConfig builds a two-agent config: parent granted a subagent

@@ -51,6 +51,10 @@ const (
 	// ModelTypeOpenAI selects an OpenAI-compatible chat completions API.
 	ModelTypeOpenAI = "openai-compatible"
 
+	// ModelTypeOllama selects Ollama's native /api/chat API: a local
+	// Ollama server or Ollama cloud.
+	ModelTypeOllama = "ollama"
+
 	// DefaultPrefactorAPIURL is the Prefactor API base URL used when
 	// api_url is unset in the prefactor config block.
 	DefaultPrefactorAPIURL = "https://app.prefactorai.com/api/v1"
@@ -219,7 +223,10 @@ type Model struct {
 	// unique within the config.
 	Name string `json:"name"`
 
-	// Fields for type "openai-compatible".
+	// Fields for the endpoint-backed types "openai-compatible" and
+	// "ollama". For openai-compatible, base_url is the API root with
+	// /chat/completions appended; for ollama it is the bare Ollama server
+	// root with /api/chat appended.
 	Type      string `json:"type"`
 	ModelName string `json:"model_name,omitempty"`
 	BaseURL   string `json:"base_url,omitempty"`
@@ -312,9 +319,10 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// SupportedModelTypes lists the model types this build recognizes.
+// SupportedModelTypes lists the model types this build recognizes, sorted
+// alphabetically.
 func SupportedModelTypes() []string {
-	return []string{ModelTypeOpenAI}
+	return []string{ModelTypeOllama, ModelTypeOpenAI}
 }
 
 // MaxTurnsOrDefault returns MaxTurns, or DefaultMaxTurns when unset (zero).
@@ -581,30 +589,38 @@ func (m *Model) validate() error {
 		return fmt.Errorf("name is required")
 	}
 	switch m.Type {
-	case ModelTypeOpenAI:
-		if m.ModelName == "" {
-			return fmt.Errorf("model_name is required")
-		}
-		u, err := url.Parse(m.BaseURL)
-		if err != nil {
-			return fmt.Errorf("base_url %q: %w", m.BaseURL, err)
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("base_url %q must use http or https scheme", m.BaseURL)
-		}
-		if u.Host == "" {
-			return fmt.Errorf("base_url %q must include a host", m.BaseURL)
-		}
-		if m.APIKeyEnv != nil && *m.APIKeyEnv == "" {
-			return fmt.Errorf("api_key_env must not be empty when set")
-		}
-		if err := validateReasoningEffort(m.ReasoningEffort); err != nil {
+	case ModelTypeOpenAI, ModelTypeOllama:
+		if err := validateEndpointModel(m); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unknown type %q (supported: %v)", m.Type, SupportedModelTypes())
 	}
 	return nil
+}
+
+// validateEndpointModel checks the fields shared by the endpoint-backed
+// model types (openai-compatible, ollama): model_name, an http(s) base_url
+// with a host, the api_key_env pointer rule, and the reasoning_effort value
+// set. It does not check the model name or type.
+func validateEndpointModel(m *Model) error {
+	if m.ModelName == "" {
+		return fmt.Errorf("model_name is required")
+	}
+	u, err := url.Parse(m.BaseURL)
+	if err != nil {
+		return fmt.Errorf("base_url %q: %w", m.BaseURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("base_url %q must use http or https scheme", m.BaseURL)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("base_url %q must include a host", m.BaseURL)
+	}
+	if m.APIKeyEnv != nil && *m.APIKeyEnv == "" {
+		return fmt.Errorf("api_key_env must not be empty when set")
+	}
+	return validateReasoningEffort(m.ReasoningEffort)
 }
 
 // SupportedToolTypes lists the tool types this build recognizes, sorted
