@@ -277,6 +277,58 @@ func TestChatToolCallsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTruncate pins the error-body truncation helper: short bodies pass
+// through unchanged, long ones cut at the limit — backing off to a rune
+// boundary so multibyte sequences are not split — and gain a marker.
+func TestTruncate(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		data  string
+		limit int
+		want  string
+	}{
+		{name: "short body passes through", data: "small", limit: 10, want: "small"},
+		{name: "exactly the limit passes through", data: "12345", limit: 5, want: "12345"},
+		{
+			name:  "ascii cut at the limit",
+			data:  "abcdefghij",
+			limit: 4,
+			want:  "abcd...(truncated)",
+		},
+		{
+			name:  "multibyte rune not split",
+			data:  "héllo",
+			limit: 2,
+			want:  "h...(truncated)",
+		},
+		{
+			name:  "cut landing mid-rune backs off",
+			data:  "éééé",
+			limit: 3,
+			want:  "é...(truncated)",
+		},
+		{
+			name:  "empty body",
+			data:  "",
+			limit: 4,
+			want:  "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := truncate([]byte(tc.data), tc.limit)
+			if got != tc.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tc.data, tc.limit, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestChatNotFoundBodyInError(t *testing.T) {
 	t.Parallel()
 
@@ -294,6 +346,108 @@ func TestChatNotFoundBodyInError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "model not found") {
 		t.Errorf("error = %q, want the body snippet", err)
+	}
+}
+
+// TestChatBodyOverLimitErrors pins the response-size cap: a 2xx body
+// larger than the read limit errors instead of accumulating unbounded.
+func TestChatBodyOverLimitErrors(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		chunk := `{"model":"m","message":{"role":"assistant","content":"x"}}`
+		// maxBodyLen worth of payload plus padding: well over the cap.
+		_, _ = io.WriteString(w, strings.Repeat(chunk, maxBodyLen/len(chunk)+2))
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{})
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error = %v, want an exceeds-limit error", err)
+	}
+}
+
+// TestChatBodyReadError pins the mid-body failure path: a server that
+// drops the connection after a partial response surfaces as a read
+// error, not a decode of the truncated body.
+func TestChatBodyReadError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","mes`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Drop the connection mid-body: the client's body read fails.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("test server does not support hijacking")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{})
+	if err == nil || !strings.Contains(err.Error(), "read response body") {
+		t.Errorf("error = %v, want a read-response-body error", err)
+	}
+}
+
+// TestChatInvalidJSONResponse pins the decode-error path: a 2xx body that
+// is not a chatResponse surfaces as a decode error carrying the body.
+func TestChatInvalidJSONResponse(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`not json at all`))
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{})
+	if err == nil || !strings.Contains(err.Error(), "decode response") || !strings.Contains(err.Error(), "not json at all") {
+		t.Errorf("error = %v, want a decode error carrying the body", err)
+	}
+}
+
+// TestChatInvalidToolCallArgsError pins the request-building failure path:
+// a history tool call whose arguments are not valid JSON errors before any
+// request is sent.
+func TestChatInvalidToolCallArgsError(t *testing.T) {
+	t.Parallel()
+
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+	}))
+	defer srv.Close()
+
+	req := llm.Request{
+		Messages: []llm.Message{{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{
+				{ID: "call_1", Type: "function", FunctionName: "ping", FunctionArgs: `{oops`},
+			},
+		}},
+	}
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Errorf("Chat error = %v, want an invalid-arguments error", err)
+	}
+	_, err = newTestClient(t, srv.URL).ChatStream(context.Background(), req, func(llm.Delta) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Errorf("ChatStream error = %v, want an invalid-arguments error", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Errorf("requests = %d, want 0 (the failure precedes the POST)", got)
 	}
 }
 
@@ -328,7 +482,7 @@ func TestChatToolCallWithoutNameErrors(t *testing.T) {
 func TestNewRejectsBadBaseURL(t *testing.T) {
 	t.Parallel()
 
-	for _, base := range []string{"", "ftp://example.com", "http://"} {
+	for _, base := range []string{"", "ftp://example.com", "http://", "http://[::1"} {
 		if _, err := New(Config{BaseURL: base}); err == nil {
 			t.Errorf("New(base_url %q) succeeded, want error", base)
 		}
@@ -759,6 +913,58 @@ func TestChatStreamNon2xx(t *testing.T) {
 	}
 }
 
+// TestChatStreamNon2xxBodyOverLimitErrors is the streaming variant of the
+// response-size cap: an error body larger than the read limit errors
+// instead of accumulating unbounded.
+func TestChatStreamNon2xxBodyOverLimitErrors(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		chunk := `{"error":"boom"}`
+		// maxBodyLen worth of payload plus padding: well over the cap.
+		_, _ = io.WriteString(w, strings.Repeat(chunk, maxBodyLen/len(chunk)+2))
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{}, func(llm.Delta) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error = %v, want an exceeds-limit error", err)
+	}
+}
+
+// TestChatStreamNon2xxBodyReadError is the streaming variant of the
+// mid-body failure path: an error response whose body drops mid-read
+// surfaces as a read error.
+func TestChatStreamNon2xxBodyReadError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"bo`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("test server does not support hijacking")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{}, func(llm.Delta) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "read response body") {
+		t.Errorf("error = %v, want a read-response-body error", err)
+	}
+}
+
 func TestChatStreamOnDeltaErrorAborts(t *testing.T) {
 	t.Parallel()
 
@@ -777,6 +983,122 @@ func TestChatStreamOnDeltaErrorAborts(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, boom) {
 		t.Errorf("error = %v, want the onDelta error", err)
+	}
+}
+
+// TestChatStreamOnDeltaErrorOnReasoningAndToolCall pins the remaining
+// abort paths: an onDelta error raised by a reasoning fragment and by a
+// tool call fragment both abort the stream and surface the error.
+func TestChatStreamOnDeltaErrorOnReasoningAndToolCall(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		chunks []string
+	}{
+		{
+			name: "reasoning fragment",
+			chunks: []string{
+				`{"model":"m","message":{"role":"assistant","thinking":"pondering"}}`,
+				`{"model":"m","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`,
+			},
+		},
+		{
+			name: "tool call fragment",
+			chunks: []string{
+				`{"model":"m","message":{"role":"assistant","tool_calls":[{"id":"srv-1","function":{"name":"ls","arguments":{"path":"."}}}]},"done":true,"done_reason":"tool_calls"}`,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ndjsonChunks(w, tc.chunks...)
+			}))
+			defer srv.Close()
+
+			boom := errors.New("boom")
+			_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{}, func(llm.Delta) error {
+				return boom
+			})
+			if err == nil || !errors.Is(err, boom) {
+				t.Errorf("error = %v, want the onDelta error", err)
+			}
+		})
+	}
+}
+
+// TestChatStreamToolCallIDFilledInLater pins the fragment-accumulation
+// rule: a first fragment without an id followed by a later fragment that
+// carries one adopts the later id. (Within one NDJSON line a chunk's
+// arguments must be a complete JSON value, so the realistic split is the
+// name in the first chunk and the id and arguments in the second.)
+func TestChatStreamToolCallIDFilledInLater(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ndjsonChunks(w,
+			`{"model":"m","message":{"role":"assistant","tool_calls":[{"function":{"name":"ls"}}]}}`,
+			`{"model":"m","message":{"role":"assistant","tool_calls":[{"id":"srv-9","function":{"arguments":{"path":"."}}}]},"done":true,"done_reason":"tool_calls"}`,
+		)
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{}, func(llm.Delta) error { return nil })
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want nil", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.Message.ToolCalls))
+	}
+	tc := resp.Message.ToolCalls[0]
+	if tc.ID != "srv-9" {
+		t.Errorf("tool call id = %q, want the later fragment's id", tc.ID)
+	}
+	if got, want := tc.FunctionArgs, `{"path":"."}`; got != want {
+		t.Errorf("FunctionArgs = %q, want %q", got, want)
+	}
+}
+
+// TestChatStreamLengthFinishReasonLogged pins the assembled log record's
+// done_reason inversion: a length-limited stream logs "length".
+func TestChatStreamLengthFinishReasonLogged(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ndjsonChunks(w,
+			`{"model":"m","message":{"role":"assistant","content":"trunc"}}`,
+			`{"model":"m","message":{"role":"assistant","content":""},"done":true,"done_reason":"length","prompt_eval_count":1,"eval_count":2}`,
+		)
+	}))
+	defer srv.Close()
+
+	sink := logging.NewBuffered(0)
+	c := newTestClient(t, srv.URL, func(cfg *Config) { cfg.Sink = sink })
+	resp, err := c.ChatStream(context.Background(), llm.Request{}, func(llm.Delta) error { return nil })
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want nil", err)
+	}
+	if resp.FinishReason != llm.FinishLength {
+		t.Fatalf("FinishReason = %q, want %q", resp.FinishReason, llm.FinishLength)
+	}
+
+	recs := sink.Records()
+	if len(recs) != 2 {
+		t.Fatalf("records = %d, want 2", len(recs))
+	}
+	var wire chatResponse
+	if err := json.Unmarshal(recs[1].Body, &wire); err != nil {
+		t.Fatalf("assembled log body not JSON: %v (%s)", err, recs[1].Body)
+	}
+	if wire.DoneReason != "length" {
+		t.Errorf("logged done_reason = %q, want length (the inverted finish reason)", wire.DoneReason)
+	}
+	if wire.PromptEvalCount != 1 || wire.EvalCount != 2 {
+		t.Errorf("logged counts = %d/%d, want 1/2", wire.PromptEvalCount, wire.EvalCount)
 	}
 }
 

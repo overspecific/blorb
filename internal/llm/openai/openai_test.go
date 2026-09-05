@@ -566,6 +566,55 @@ func TestChatToolCallMissingID(t *testing.T) {
 	}
 }
 
+// TestChatEmptyRoleDefaultsAssistant pins the role fallback: a response
+// message with no role still decodes as an assistant message.
+func TestChatEmptyRoleDefaultsAssistant(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"content":"roleless"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+	if resp.Message.Role != llm.RoleAssistant {
+		t.Errorf("Role = %q, want %q (the fallback)", resp.Message.Role, llm.RoleAssistant)
+	}
+	if resp.Message.Content != "roleless" {
+		t.Errorf("Content = %q, want %q", resp.Message.Content, "roleless")
+	}
+}
+
+// TestChatStreamToolCallTypeDefaultsToFunction pins the assembled type
+// fallback: fragments without a type still assemble as function calls.
+func TestChatStreamToolCallTypeDefaultsToFunction(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseChunks(w,
+			`{"id":"r","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"ls","arguments":"{}"}}]},"finish_reason":null}]}`,
+			`{"id":"r","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		)
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{Model: "m"}, func(llm.Delta) error { return nil })
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want nil", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.Message.ToolCalls))
+	}
+	tc := resp.Message.ToolCalls[0]
+	if tc.Type != llm.ToolCallType {
+		t.Errorf("Type = %q, want %q (the fallback)", tc.Type, llm.ToolCallType)
+	}
+}
+
 func TestChatToolCallMissingName(t *testing.T) {
 	t.Parallel()
 
@@ -957,6 +1006,52 @@ func TestChatStreamOnDeltaErrorAborts(t *testing.T) {
 	}
 }
 
+// TestChatStreamOnDeltaErrorOnReasoningAndToolCall pins the remaining
+// abort paths: an onDelta error raised by a reasoning fragment and by a
+// tool call fragment both abort the stream and surface the error.
+func TestChatStreamOnDeltaErrorOnReasoningAndToolCall(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		chunks []string
+	}{
+		{
+			name: "reasoning fragment",
+			chunks: []string{
+				`{"id":"r","choices":[{"delta":{"reasoning_content":"pondering"},"finish_reason":null}]}`,
+				`{"id":"r","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			},
+		},
+		{
+			name: "tool call fragment",
+			chunks: []string{
+				`{"id":"r","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ls","arguments":"{}"}}]},"finish_reason":null}]}`,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				sseChunks(w, tc.chunks...)
+			}))
+			defer srv.Close()
+
+			wantErr := errors.New("stop streaming")
+			_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{Model: "m"}, func(d llm.Delta) error {
+				return wantErr
+			})
+			if err == nil || err != wantErr {
+				t.Errorf("error = %v, want %v (returned as-is)", err, wantErr)
+			}
+		})
+	}
+}
+
 func TestChatStreamDoneLessEOF(t *testing.T) {
 	t.Parallel()
 
@@ -1171,6 +1266,38 @@ func TestChatStreamToolCallArgumentsOverLimitErrors(t *testing.T) {
 	}
 }
 
+// TestChatStreamToolCallArgumentsOverLimitOnLaterFragment pins the
+// existing-index branch of the arguments cap: the first fragment is small,
+// and later fragments at the same index push the accumulation over. Each
+// fragment stays under the scanner's line cap; the sum crosses the limit.
+func TestChatStreamToolCallArgumentsOverLimitOnLaterFragment(t *testing.T) {
+	t.Parallel()
+
+	frag := strings.Repeat("y", 1<<20)
+	var payloads []string
+	payloads = append(payloads,
+		`{"id":"r","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ls","arguments":"{}"}}]},"finish_reason":null}]}`)
+	for range 16 {
+		payloads = append(payloads,
+			`{"id":"r","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"`+frag+`"}}]},"finish_reason":null}]}`)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseChunks(w, payloads...)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{Model: "m"}, func(d llm.Delta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("ChatStream succeeded, want a limit error")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Errorf("error = %q, want a limit mention", err)
+	}
+}
+
 func TestChatStreamEmptyBodyErrors(t *testing.T) {
 	t.Parallel()
 
@@ -1272,6 +1399,71 @@ func TestChatBodyOverLimitErrors(t *testing.T) {
 	}
 }
 
+// TestChatBodyReadError pins the mid-body failure path: a server that
+// drops the connection after a partial response surfaces as a read
+// error, not a decode of the truncated body.
+func TestChatBodyReadError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choi`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Drop the connection mid-body: the client's body read fails.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("test server does not support hijacking")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{Model: "m"})
+	if err == nil || !strings.Contains(err.Error(), "read response body") {
+		t.Errorf("error = %v, want a read-response-body error", err)
+	}
+}
+
+// TestChatStreamNon2xxBodyReadError is the streaming variant of the
+// mid-body failure path: an error response whose body drops mid-read
+// surfaces as a read error.
+func TestChatStreamNon2xxBodyReadError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"bo`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("test server does not support hijacking")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{Model: "m"}, func(llm.Delta) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "read response body") {
+		t.Errorf("error = %v, want a read-response-body error", err)
+	}
+}
+
 func TestChatHungServerTimesOut(t *testing.T) {
 	t.Parallel()
 
@@ -1318,6 +1510,29 @@ func TestChatNonFunctionToolCallTypePreserved(t *testing.T) {
 	}
 	if got := resp.Message.ToolCalls[0].Type; got != "custom_tool" {
 		t.Errorf("tool call type = %q, want the server-sent custom_tool", got)
+	}
+}
+
+// TestChatToolCallTypeDefaultsToFunction pins the decode fallback: a
+// non-streaming tool call with no type decodes as a function call.
+func TestChatToolCallTypeDefaultsToFunction(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","function":{"name":"ls","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL).Chat(context.Background(), llm.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("Chat error = %v, want nil", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.Message.ToolCalls))
+	}
+	if got := resp.Message.ToolCalls[0].Type; got != llm.ToolCallType {
+		t.Errorf("tool call type = %q, want %q (the fallback)", got, llm.ToolCallType)
 	}
 }
 
