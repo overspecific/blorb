@@ -1,6 +1,9 @@
 package usage
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestHumanBytes(t *testing.T) {
 	t.Parallel()
@@ -25,6 +28,32 @@ func TestHumanBytes(t *testing.T) {
 
 			if got := humanBytes(tt.n); got != tt.want {
 				t.Errorf("humanBytes(%d) = %q, want %q", tt.n, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHumanDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"whole seconds", 4 * time.Second, "4s"},
+		{"one decimal", 12345 * time.Millisecond, "12.3s"},
+		{"trailing .0 dropped", 90 * time.Second, "90s"},
+		{"sub-second keeps one decimal", 220 * time.Millisecond, "0.2s"},
+		{"minutes stay seconds", 90 * time.Second, "90s"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := humanDuration(tt.d); got != tt.want {
+				t.Errorf("humanDuration(%v) = %q, want %q", tt.d, got, tt.want)
 			}
 		})
 	}

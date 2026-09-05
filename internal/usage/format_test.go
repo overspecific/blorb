@@ -182,6 +182,20 @@ func TestFormatStatsLine(t *testing.T) {
 			want: "\n---\ntokens: 0 prompt, 80 completion, 80 total\nstats: 0s, 4KB output",
 		},
 		{
+			name: "sub-second elapsed renders one decimal",
+			records: []usage.Record{
+				{
+					Agent: "main",
+					Usage: llm.Usage{CompletionTokens: 40, TotalTokens: 40},
+					Stats: llm.CallStats{
+						Output:  llm.OutputBytes{Content: 2048},
+						Elapsed: 12345 * time.Millisecond,
+					},
+				},
+			},
+			want: "\n---\ntokens: 0 prompt, 40 completion, 40 total\nstats: 12.3s, 2KB output, 3.2 tok/s, 165B/s",
+		},
+		{
 			name: "records sum before rates compute",
 			records: []usage.Record{
 				{

@@ -3,6 +3,7 @@ package usage
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // FormatTurn renders a per-turn footer block: a blank line, a
@@ -62,7 +63,7 @@ func formatStats(a *Account) string {
 		return ""
 	}
 
-	parts := []string{stats.Elapsed.String()}
+	parts := []string{humanDuration(stats.Elapsed)}
 
 	out := fmt.Sprintf("%s output", humanBytes(stats.Output.Total()))
 	// The parenthesised split attributes output to reasoning or tools;
@@ -113,4 +114,12 @@ func humanBytes(n int) string {
 		}
 	}
 	return fmt.Sprintf("%dB", n)
+}
+
+// humanDuration renders a duration compactly in seconds with one decimal
+// place and a trailing .0 dropped (4s, 12.3s, 90s) — display-grade
+// precision, unlike Duration.String()'s nanosecond form.
+func humanDuration(d time.Duration) string {
+	s := fmt.Sprintf("%.1f", d.Seconds())
+	return strings.TrimSuffix(s, ".0") + "s"
 }
