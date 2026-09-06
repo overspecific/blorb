@@ -34,6 +34,17 @@ const ToolTypeBuiltin ToolType = "builtin"
 // its final assistant text.
 const ToolTypeSubagent ToolType = "subagent"
 
+// JudgeWhenEnd is the judge timing that runs after the judged agent
+// finishes: after the single turn in run mode, at session end in chat
+// mode. Currently the only supported timing.
+const JudgeWhenEnd = "end"
+
+// supportedJudgeWhens lists the supported judge timings, sorted
+// alphabetically.
+func supportedJudgeWhens() []string {
+	return []string{JudgeWhenEnd}
+}
+
 // NamePattern is the strict pattern agent and tool names must match so
 // they are valid function names for the API and safe to exec.
 var NamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -117,6 +128,46 @@ type Agent struct {
 	// Absent or empty means the agent has no tools. Every name must
 	// exist in the top-level tools; listing order is the agent's.
 	Tools []string `json:"tools,omitempty"`
+	// Judges lists the agents that judge this agent's run: once the
+	// agent finishes, each end-timing judge is invoked with a
+	// rendering of the run's transcript as its first user message.
+	// Validation guarantees every named agent is defined, every When
+	// is a supported timing, and no judge chain (judges, possibly
+	// combined with subagent edges) forms a cycle.
+	Judges []Judge `json:"judges,omitempty"`
+}
+
+// Judge names one agent that judges this agent's run, and when it
+// runs. When is JudgeWhenEnd when unset (the JSON field is optional).
+type Judge struct {
+	// Agent names the judge; it must be a defined agent in the
+	// same config.
+	Agent string `json:"agent"`
+	// When selects when the judge runs; empty means
+	// JudgeWhenEnd. Validation rejects unknown values.
+	When string `json:"when,omitempty"`
+}
+
+// WhenOrDefault returns When, or JudgeWhenEnd when unset (empty).
+func (j Judge) WhenOrDefault() string {
+	if j.When == "" {
+		return JudgeWhenEnd
+	}
+	return j.When
+}
+
+// JudgesWhen returns the judge entries whose timing is when, in
+// the agent's listed order. The "end" trigger sites use it to
+// select their judges; a future timing's trigger site does the
+// same with its own value.
+func (a Agent) JudgesWhen(when string) []Judge {
+	var out []Judge
+	for _, j := range a.Judges {
+		if j.WhenOrDefault() == when {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // Dir returns the directory of the file this Config was loaded from, or
@@ -554,7 +605,10 @@ func (c *Config) Validate() error {
 	if err := c.validateSubagentRefs(); err != nil {
 		return err
 	}
-	if err := c.validateSubagentCycles(); err != nil {
+	if err := c.validateJudgeRefs(); err != nil {
+		return err
+	}
+	if err := c.validateAgentCycles(); err != nil {
 		return err
 	}
 	return nil
@@ -575,11 +629,26 @@ func (c *Config) validateSubagentRefs() error {
 	return nil
 }
 
-// validateSubagentCycles builds the agent delegation graph — an edge from
-// an agent to each subagent tool target it is granted — and rejects any
-// cycle, including self-reference. A cycle anywhere is fatal: delegation
-// depth would otherwise be unbounded.
-func (c *Config) validateSubagentCycles() error {
+// validateJudgeRefs checks that every agent's judges name defined
+// agents. Runs after per-agent validation so all agent names are known.
+func (c *Config) validateJudgeRefs() error {
+	for _, a := range c.Agents {
+		for _, j := range a.Judges {
+			if _, ok := c.Agent(j.Agent); !ok {
+				return fmt.Errorf("agent %q: judge %q is not a defined agent", a.Name, j.Agent)
+			}
+		}
+	}
+	return nil
+}
+
+// validateAgentCycles builds the agent delegation graph - an edge from
+// an agent to each subagent tool target it is granted, plus an edge from
+// an agent to each of its judges (all timings: judges recurse
+// agent-to-agent regardless of when they run) - and rejects any cycle,
+// including self-reference. A cycle anywhere is fatal: both delegation
+// kinds recurse agent-to-agent, so depth would otherwise be unbounded.
+func (c *Config) validateAgentCycles() error {
 	// target[toolName] is the agent a subagent tool delegates to.
 	target := make(map[string]string, len(c.Tools))
 	for _, t := range c.Tools {
@@ -594,6 +663,9 @@ func (c *Config) validateSubagentCycles() error {
 			if to, ok := target[name]; ok {
 				edges[a.Name] = append(edges[a.Name], to)
 			}
+		}
+		for _, j := range a.Judges {
+			edges[a.Name] = append(edges[a.Name], j.Agent)
 		}
 	}
 
@@ -679,6 +751,20 @@ func (a *Agent) validate(models []Model, tools []ToolEntry) error {
 		seen[name] = struct{}{}
 		if !slices.ContainsFunc(tools, func(t ToolEntry) bool { return t.Name == name }) {
 			return fmt.Errorf("agent %q: unknown tool %q", a.Name, name)
+		}
+	}
+	seenJudges := make(map[string]struct{}, len(a.Judges))
+	for _, j := range a.Judges {
+		if j.Agent == "" {
+			return fmt.Errorf("agent %q: judge name is required", a.Name)
+		}
+		if _, ok := seenJudges[j.Agent]; ok {
+			return fmt.Errorf("agent %q: duplicate judge %q", a.Name, j.Agent)
+		}
+		seenJudges[j.Agent] = struct{}{}
+		when := j.WhenOrDefault()
+		if !slices.Contains(supportedJudgeWhens(), when) {
+			return fmt.Errorf("agent %q: judge %q: unknown when %q (supported: %s)", a.Name, j.Agent, j.When, strings.Join(supportedJudgeWhens(), ", "))
 		}
 	}
 	return nil

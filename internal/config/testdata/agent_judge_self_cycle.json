@@ -1,0 +1,30 @@
+{
+  "default_agent": "a",
+  "models": [
+    {
+      "name": "m",
+      "model_name": "m",
+      "provider": "local"
+    }
+  ],
+  "agents": [
+    {
+      "name": "a",
+      "system_prompt": "You are a.",
+      "max_turns": 3,
+      "judges": [
+        {
+          "agent": "a"
+        }
+      ],
+      "model": "m"
+    }
+  ],
+  "providers": [
+    {
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "name": "local"
+    }
+  ]
+}

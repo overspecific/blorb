@@ -1,0 +1,47 @@
+{
+  "default_agent": "a",
+  "models": [
+    {
+      "name": "m",
+      "model_name": "m",
+      "provider": "local"
+    }
+  ],
+  "agents": [
+    {
+      "name": "a",
+      "system_prompt": "You are a.",
+      "max_turns": 3,
+      "judges": [
+        {
+          "agent": "b"
+        }
+      ],
+      "model": "m"
+    },
+    {
+      "name": "b",
+      "system_prompt": "You are b.",
+      "max_turns": 3,
+      "tools": [
+        "ask_a"
+      ],
+      "model": "m"
+    }
+  ],
+  "tools": [
+    {
+      "type": "subagent",
+      "name": "ask_a",
+      "description": "Ask agent a.",
+      "agent": "a"
+    }
+  ],
+  "providers": [
+    {
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "name": "local"
+    }
+  ]
+}

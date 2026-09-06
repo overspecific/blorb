@@ -543,6 +543,13 @@ func TestLoadRejects(t *testing.T) {
 		{"tool_subagent_with_config.json", []string{"config is not valid for subagent tools"}},
 		{"tool_subagent_cycle.json", []string{`agent cycle detected: "a" -> "b" -> "a"`}},
 		{"tool_subagent_self_cycle.json", []string{`agent cycle detected: "a" -> "a"`}},
+		{"agent_judge_unknown.json", []string{`agent "main": judge "ghost" is not a defined agent`}},
+		{"agent_judge_missing_agent.json", []string{`agent "main": judge name is required`}},
+		{"agent_judge_bad_when.json", []string{`unknown when "mid-run"`, "supported: end"}},
+		{"agent_judge_duplicate.json", []string{`agent "main": duplicate judge "reviewer"`}},
+		{"agent_judge_cycle.json", []string{`agent cycle detected: "a" -> "b" -> "a"`}},
+		{"agent_judge_self_cycle.json", []string{`agent cycle detected: "a" -> "a"`}},
+		{"agent_judge_subagent_cycle.json", []string{"agent cycle detected", `"a"`, `"b"`}},
 		{"duplicate_tool_names.json", []string{"duplicate tool name"}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
 		{"prefactor_unknown_field.json", []string{"no_such_field"}},
@@ -583,6 +590,173 @@ func TestLoadSubagentValid(t *testing.T) {
 	}
 	if len(tool.Command) != 0 || tool.Builtin != "" || len(tool.Config) != 0 {
 		t.Errorf("command/builtin/config = %v/%q/%s, want empty for a subagent entry", tool.Command, tool.Builtin, tool.Config)
+	}
+}
+
+func TestLoadJudgeValid(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadTestdata(t, "agent_judge_valid.json")
+	if err != nil {
+		t.Fatalf("Load(agent_judge_valid.json) error = %v, want nil", err)
+	}
+	main := cfg.Agents[0]
+	if len(main.Judges) != 1 {
+		t.Fatalf("len(Judges) = %d, want 1", len(main.Judges))
+	}
+	judge := main.Judges[0]
+	if judge.Agent != "reviewer" {
+		t.Errorf("Judge.Agent = %q, want reviewer", judge.Agent)
+	}
+	if got := judge.WhenOrDefault(); got != config.JudgeWhenEnd {
+		t.Errorf("WhenOrDefault() = %q, want %q", got, config.JudgeWhenEnd)
+	}
+}
+
+func TestLoadJudgeWhenEndValid(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadTestdata(t, "agent_judge_when_end_valid.json")
+	if err != nil {
+		t.Fatalf("Load(agent_judge_when_end_valid.json) error = %v, want nil", err)
+	}
+	main := cfg.Agents[0]
+	if len(main.Judges) != 1 {
+		t.Fatalf("len(Judges) = %d, want 1", len(main.Judges))
+	}
+	if main.Judges[0].When != config.JudgeWhenEnd {
+		t.Errorf("Judge.When = %q, want %q", main.Judges[0].When, config.JudgeWhenEnd)
+	}
+	if got := main.Judges[0].WhenOrDefault(); got != config.JudgeWhenEnd {
+		t.Errorf("WhenOrDefault() = %q, want %q", got, config.JudgeWhenEnd)
+	}
+}
+
+// TestAgentJudgesWhen pins the timing-selection semantics the trigger
+// sites rely on: only entries whose When matches are returned, in listed
+// order, and an empty When selects as the "end" timing.
+func TestAgentJudgesWhen(t *testing.T) {
+	t.Parallel()
+
+	a := config.Agent{
+		Name: "main",
+		Judges: []config.Judge{
+			{Agent: "end-default"},
+			{Agent: "end-explicit", When: config.JudgeWhenEnd},
+			{Agent: "future", When: "future"},
+			{Agent: "end-last"},
+		},
+	}
+
+	end := a.JudgesWhen(config.JudgeWhenEnd)
+	if len(end) != 3 {
+		t.Fatalf("JudgesWhen(end) length = %d, want 3", len(end))
+	}
+	wantAgents := []string{"end-default", "end-explicit", "end-last"}
+	for i, want := range wantAgents {
+		if end[i].Agent != want {
+			t.Errorf("JudgesWhen(end)[%d].Agent = %q, want %q", i, end[i].Agent, want)
+		}
+	}
+
+	future := a.JudgesWhen("future")
+	if len(future) != 1 || future[0].Agent != "future" {
+		t.Errorf("JudgesWhen(future) = %v, want one entry for future", future)
+	}
+}
+
+// TestJudgeValidateRejectsBadWhen covers the judge-entry value checks that
+// cannot be exercised through Load fixtures: there is no JSON way to
+// express a judge entry whose When is a supported-but-not-the-only value,
+// and the entry-level duplicate and required-name checks are already
+// covered in TestLoadRejects.
+func TestJudgeValidateRejectsBadWhen(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel()},
+		Agents: []config.Agent{
+			validAgent(),
+			func() config.Agent {
+				a := validAgent()
+				a.Name = "reviewer"
+				return a
+			}(),
+		},
+	}
+	cfg.Agents[0].Judges = []config.Judge{{Agent: "reviewer", When: "mid-run"}}
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), `unknown when "mid-run"`) || !contains(err.Error(), "supported: end") {
+		t.Errorf("Validate error = %v, want an unknown-when error naming the supported values", err)
+	}
+}
+
+// TestValidateJudgeCycleMixedEdges covers the union-graph cycle check
+// programmatically: a judge edge out and a subagent edge back, each
+// direction, on top of the fixture coverage in TestLoadRejects.
+func TestValidateJudgeCycleMixedEdges(t *testing.T) {
+	t.Parallel()
+
+	base := func() config.Config {
+		return config.Config{
+			Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel()},
+			Agents: []config.Agent{validAgent()},
+		}
+	}
+
+	// Subagent tool granted to a, targeting b; b judges a.
+	cfg := base()
+	cfg.Agents[0].Name = "a"
+	b := validAgent()
+	b.Name = "b"
+	b.Judges = []config.Judge{{Agent: "a"}}
+	cfg.Agents = append(cfg.Agents, b)
+	cfg.Tools = []config.ToolEntry{{
+		Type:        config.ToolTypeSubagent,
+		Name:        "ask_b",
+		Description: "Ask b.",
+		Agent:       "b",
+	}}
+	cfg.Agents[0].Tools = []string{"ask_b"}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), `agent cycle detected: "a" -> "b" -> "a"`) {
+		t.Errorf("Validate error = %v, want a cycle naming a and b", err)
+	}
+}
+
+// TestValidateRejectsJudgeRefAndEntryErrors covers the per-agent judge
+// checks that Load fixtures also cover, kept programmatic for the
+// error-message shape.
+func TestValidateJudgeEntryErrors(t *testing.T) {
+	t.Parallel()
+
+	base := func() config.Config {
+		return config.Config{
+			Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel()},
+			Agents: []config.Agent{validAgent()},
+		}
+	}
+
+	emptyName := base()
+	emptyName.Agents[0].Judges = []config.Judge{{}}
+	if err := emptyName.Validate(); err == nil || !contains(err.Error(), `judge name is required`) {
+		t.Errorf("Validate error = %v, want a judge-name-required error", err)
+	}
+
+	dup := base()
+	reviewer := validAgent()
+	reviewer.Name = "reviewer"
+	dup.Agents = append(dup.Agents, reviewer)
+	dup.Agents[0].Judges = []config.Judge{{Agent: "reviewer"}, {Agent: "reviewer"}}
+	if err := dup.Validate(); err == nil || !contains(err.Error(), `agent "helper": duplicate judge "reviewer"`) {
+		t.Errorf("Validate error = %v, want a duplicate-judge error", err)
+	}
+
+	unknown := base()
+	unknown.Agents[0].Judges = []config.Judge{{Agent: "ghost"}}
+	if err := unknown.Validate(); err == nil || !contains(err.Error(), `judge "ghost" is not a defined agent`) {
+		t.Errorf("Validate error = %v, want an undefined-judge error", err)
 	}
 }
 

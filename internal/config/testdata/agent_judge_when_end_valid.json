@@ -1,0 +1,38 @@
+{
+  "default_agent": "main",
+  "models": [
+    {
+      "name": "m",
+      "model_name": "m",
+      "provider": "local"
+    }
+  ],
+  "agents": [
+    {
+      "name": "main",
+      "system_prompt": "You are helpful.",
+      "max_turns": 3,
+      "judges": [
+        {
+          "agent": "reviewer",
+          "when": "end"
+        }
+      ],
+      "model": "m"
+    },
+    {
+      "name": "reviewer",
+      "system_prompt": "You review runs.",
+      "max_turns": 3,
+      "tools": [],
+      "model": "m"
+    }
+  ],
+  "providers": [
+    {
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1",
+      "name": "local"
+    }
+  ]
+}
