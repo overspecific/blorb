@@ -4,7 +4,7 @@
 # Blorb
 ![Blorb](assets/blorb.jpg)
 
-A single-binary tool for making AI agents.
+A tool for making AI agents, shipped as a single binary.
 
 Blorb lets you define agents in a `blorb.json` file and chat with any of them. It's built for experimentation: try different system prompts and tool setups with minimal ceremony, using a plain JSON config — a single config can hold several named agents sharing one tool set, and you pick which one to run per invocation.
 
@@ -24,7 +24,6 @@ Tools are plain executables declared in the config, built-ins implemented inside
 - `blorb models` — per provider, what the server has installed, flagging configured models that are missing
 - Optional tracing of every run to [Prefactor](https://prefactor.ai) (see [Prefactor tracing](docs/configuration.md#prefactor-tracing))
 - Per-tool 30s timeout, process-group cleanup, and stderr capture
-- A single Go binary
 
 ## Getting started
 
