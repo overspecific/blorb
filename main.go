@@ -251,7 +251,7 @@ func runCommand() *cli.Command {
 			},
 			&cli.BoolFlag{
 				Name:  "logprobs",
-				Usage: "With --format plain, print one line per token after the response body: the token, its logprob, and the top alternative when present",
+				Usage: "Ask the server for per-token log probabilities and print one line per token after the response body (chat and plain formats); requires --no-stream",
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -293,22 +293,25 @@ func runCommand() *cli.Command {
 			// The final text is already printed by the event printer;
 			// nothing extra is output on success.
 			_, err = run.Run(sigCtx, run.Options{
-				Config:       cfg,
-				Agent:        agent,
-				Stdout:       os.Stdout,
-				Stderr:       os.Stderr,
-				Stream:       !cmd.Bool("no-stream"),
-				ToolOutput:   cmd.Bool("tool-output"),
-				ConfigPath:   cmd.String("config"),
-				Tracer:       tracer,
-				Format:       cmd.String("format"),
-				ShowLogprobs: cmd.Bool("logprobs"),
+				Config:     cfg,
+				Agent:      agent,
+				Stdout:     os.Stdout,
+				Stderr:     os.Stderr,
+				Stream:     !cmd.Bool("no-stream"),
+				ToolOutput: cmd.Bool("tool-output"),
+				ConfigPath: cmd.String("config"),
+				Tracer:     tracer,
+				Format:     cmd.String("format"),
+				Logprobs:   cmd.Bool("logprobs"),
 			}, prompt)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					return cli.Exit("run: interrupted", 130)
 				}
-				return cli.Exit(fmt.Sprintf("run: %v", err), 1)
+				// No "run: " prefix here: run.Run's errors already carry
+				// it (mapTurnOutcome and the tracer wrappers), and a
+				// second prefix would double up.
+				return cli.Exit(err.Error(), 1)
 			}
 			return nil
 		},

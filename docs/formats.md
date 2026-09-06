@@ -16,7 +16,7 @@ Hi there
   " there" logprob=-0.1000
 ```
 
-A non-streaming feature (`logprobs: true` in the model config — see [Models](configuration.md#models)): streamed responses do not decode logprob data, so with streaming on the flag simply prints nothing.
+A non-streaming feature: `--logprobs` both asks the server for the data (overriding `logprobs` in the model config — see [Models](configuration.md#models)) and prints the block, and it requires `--no-stream` — a `blorb run --logprobs` without it fails before any LLM call, because streamed responses do not decode logprob data. A server that accepts the request but returns none errors the run instead of printing an empty block (Ollama Cloud does exactly this; see [Models](configuration.md#models)).
 
 ## ndjson
 
@@ -43,7 +43,7 @@ error           {type, error}                      terminal on failure
 
 The `stats` object on `usage`, `subagent_usage`, and `done` always carries the measured output bytes — `{"output":{"content_bytes":...,"reasoning_bytes":...,"tool_call_bytes":...},"elapsed_ns":...}`; derive the total by summing the three components. `done.agents[].stats` is each agent's summed stats. `done.rates` (`{"tokens_per_sec":...,"bytes_per_sec":...}`) is a convenience derived from the summed stats — consumers can compute their own rates from the raw fields — and is omitted when no time was measured.
 
-With `logprobs: true` in the model config (a non-streaming feature), the `text` and `done` events carry a `logprobs` array — one entry per content token.
+With `--logprobs` (or `logprobs: true` in the model config; a non-streaming feature — see [plain logprobs](#plain-logprobs)), the `text` and `done` events carry a `logprobs` array — one entry per content token.
 
 For example, to print just the assistant's text as it streams:
 

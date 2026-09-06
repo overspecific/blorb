@@ -55,12 +55,13 @@ type Options struct {
 	// value and default), "plain", or "ndjson". An unknown value
 	// fails the run before any LLM call is made.
 	Format string
-	// ShowLogprobs enables the plain format's per-token logprob block,
-	// printed after the response body (one line per token: the token,
-	// its logprob, and the top alternative when present). It has no
-	// effect on the chat format, and only shows anything when the model
-	// reported logprobs — a non-streaming feature.
-	ShowLogprobs bool
+	// Logprobs enables the model's logprobs request — overriding the
+	// config's logprobs setting for this run — and the display of the
+	// per-token logprob block in the chat and plain formats (one line
+	// per token: the token, its logprob, and the top alternative when
+	// present). Logprobs are a non-streaming feature: a run that would
+	// stream fails before any LLM call; use --no-stream.
+	Logprobs bool
 }
 
 // Run executes exactly one agent turn for prompt and returns the final
@@ -71,9 +72,28 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 		return "", err
 	}
 
+	// --logprobs makes the run non-streaming: logprob data is only
+	// decoded on the non-streaming path, so a streamed run would silently
+	// print nothing — a no-op indistinguishable from a server that
+	// reported none. Fail early, with the remedy named. (A model config
+	// with logprobs on is a request the server may honor however it
+	// likes; only the flag promises a display that streaming cannot
+	// deliver.)
+	if opts.Logprobs && opts.Stream {
+		return "", errors.New("--logprobs requires --no-stream: logprobs are only decoded on non-streaming responses")
+	}
+
 	sink, err := chat.ResolveSink(opts.ConfigPath, opts.Config)
 	if err != nil {
 		return "", err
+	}
+
+	// --logprobs overrides the model's logprobs setting for this run: the
+	// flag both asks the server for the data and turns on the display of
+	// the per-token block. The override is applied to a copy of the config
+	// so the client build (through chat's factory) sees it.
+	if opts.Logprobs {
+		opts.Config = opts.withModelLogprobs(opts.Agent.Model)
 	}
 
 	client, err := opts.newClient(sink)
@@ -303,6 +323,21 @@ func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
 		getenv = os.Getenv
 	}
 	return chat.NewClientWithGetenv(o.Config, o.Agent, getenv, sink)
+}
+
+// withModelLogprobs returns a copy of the config with the named model's
+// logprobs turned on: the --logprobs override, applied before the client
+// build so the client factory sends the wire flags. Models are value
+// copies in the config slice, so the original is untouched.
+func (o Options) withModelLogprobs(name string) config.Config {
+	cfg := o.Config
+	for i := range cfg.Models {
+		if cfg.Models[i].Name == name {
+			cfg.Models[i].Logprobs = true
+			break
+		}
+	}
+	return cfg
 }
 
 // subagentRunner builds the engine-backed runner for the run's config,

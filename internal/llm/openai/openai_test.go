@@ -408,6 +408,39 @@ func TestChatLogprobs(t *testing.T) {
 			t.Errorf("wire top_logprobs = %v, want the field omitted", gotReq["top_logprobs"])
 		}
 	})
+
+	t.Run("requested but absent from a content response errors", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+		}))
+		defer srv.Close()
+
+		c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Logprobs = true })
+		_, err := c.Chat(context.Background(), llm.Request{Model: "m"})
+		if err == nil || !strings.Contains(err.Error(), "did not return logprobs") {
+			t.Errorf("error = %v, want the missing-logprobs error", err)
+		}
+	})
+
+	t.Run("requested but absent from a tool-call response is fine", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"ls","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+		}))
+		defer srv.Close()
+
+		c := newTestClient(t, srv.URL, func(cfg *openai.Config) { cfg.Logprobs = true })
+		resp, err := c.Chat(context.Background(), llm.Request{Model: "m"})
+		if err != nil {
+			t.Fatalf("Chat error = %v, want nil (a tool call generates no content tokens)", err)
+		}
+		if len(resp.Message.ToolCalls) != 1 {
+			t.Errorf("tool calls = %d, want 1", len(resp.Message.ToolCalls))
+		}
+	})
 }
 
 func TestChatToolResultMessagesOnWire(t *testing.T) {

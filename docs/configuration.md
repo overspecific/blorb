@@ -164,7 +164,7 @@ Each model entry declares one named LLM backend: a provider connection (by name)
 
 On the wire, `none` and `required` serialize as the bare string and `force` as the OpenAI object shape `{"type":"function","function":{"name":...}}` — which Ollama accepts identically. `auto` omits the field.
 
-**logprobs.** A non-streaming feature: with `logprobs: true` the server reports one entry per content token, decoded into the neutral response and surfaced two ways. In `run --format ndjson`, the `text` and `done` events carry a `logprobs` array. In `run --format plain --logprobs`, one line prints after the response body per token — the token, its logprob, and the top alternative when present:
+**logprobs.** A non-streaming feature: with `logprobs: true` the server reports one entry per content token, decoded into the neutral response and surfaced through `blorb run` (the `--logprobs` flag enables them for a run even when the config leaves them off, alongside the config setting). In `run --format ndjson`, the `text` and `done` events carry a `logprobs` array. In `run --format chat` and `run --format plain --logprobs`, one line prints after the response body per token — the token, its logprob, and the top alternative when present:
 
 ```
 Hi there
@@ -172,7 +172,9 @@ Hi there
   " there" logprob=-0.1000
 ```
 
-Streamed responses do not decode logprob data, so with streaming on the flag simply prints nothing. Chat does not display logprobs; they are surfaced through `blorb run` only. See the [output formats reference](formats.md) for the `run` flags.
+Streamed responses do not decode logprob data, so `blorb run --logprobs` requires `--no-stream`: a run with the flag and streaming on fails before any LLM call. See the [output formats reference](formats.md) for the `run` flags.
+
+A response that generated content tokens must carry the logprobs the request asked for; if a server accepts the request and returns none — Ollama Cloud silently drops the flags (ollama/ollama#13638), on both its native and OpenAI-compatible endpoints — the run fails with a "server did not return logprobs" error naming the body. Use a local Ollama server or an OpenAI-compatible server that implements the field.
 
 ## Agents
 

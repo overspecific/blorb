@@ -123,7 +123,8 @@ func New(cfg Config) (*Client, error) {
 
 // Chat sends a chat request and returns the provider-neutral response. The
 // non-streaming Ollama response is a single JSON object, which the decoder
-// accepts as-is.
+// accepts as-is. stream: false is sent explicitly on the wire (see
+// chatRequest.Stream).
 func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
 	wire, err := wireRequest(req, c.cfg.Model, c.cfg.ReasoningEffort, c.cfg.Format, c.cfg.KeepAlive, c.cfg.Logprobs, c.cfg.TopLogprobs)
 	if err != nil {
@@ -180,6 +181,15 @@ func (c *Client) Chat(ctx context.Context, req llm.Request) (*llm.Response, erro
 	resp := neutralResponse(&chunk)
 	if hasToolCallWithoutName(resp.Message.ToolCalls) {
 		return nil, fmt.Errorf("decode response: tool call missing name (body: %s)", truncate(respBody, maxErrorBodyLen))
+	}
+	// When the request asked for logprobs, silence is a server failure
+	// (a proxy that drops the flags, a backend without the feature), not
+	// an empty result: a response that generated content tokens must
+	// carry one entry per token. A tool-call response generates no
+	// content, so there is nothing to be silent about.
+	if c.cfg.Logprobs && resp.Message.Content != "" && len(resp.Logprobs) == 0 {
+		return nil, fmt.Errorf("decode response: server did not return logprobs (requested with logprobs: true) (body: %s)",
+			truncate(respBody, maxErrorBodyLen))
 	}
 	resp.Stats = llm.CallStats{Output: resp.Message.OutputBytes(), Elapsed: elapsed}
 	return resp, nil
@@ -415,7 +425,7 @@ func (c *Client) ChatStream(ctx context.Context, req llm.Request, onDelta func(l
 	if err != nil {
 		return nil, err
 	}
-	wire.Stream = true
+	wire.Stream = true // explicit; Chat sends stream: false the same way
 
 	httpResp, endpoint, startedAt, err := c.post(ctx, wire)
 	if err != nil {

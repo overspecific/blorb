@@ -50,6 +50,9 @@ func (o Options) diagnostics() io.Writer {
 // chat-style stream on stderr and tees only assistant text to stdout;
 // ndjson streams flat typed JSON events on stdout. The returned finish
 // callback (ndjson only) emits the stream's terminal done/error event.
+// Both chat and plain print the per-token logprob block after a whole
+// assistant message when Logprobs is on (streamed responses carry no
+// logprobs, and a --logprobs run cannot stream).
 func (o Options) events(account *usage.Account) (printEvent func(engine.Event) error, onSubagent func(tools.SubagentEvent) error, flush func(), finish func(final string, runErr error) error) {
 	switch o.Format {
 	case FormatNDJSON:
@@ -57,31 +60,44 @@ func (o Options) events(account *usage.Account) (printEvent func(engine.Event) e
 		return sink.printEvent, sink.onSubagent, func() {}, sink.finish
 	case FormatPlain:
 		diagPrint, diagSubagent, flush := chat.Events(o.stderrOr(), o.ToolOutput)
-		printEvent = func(ev engine.Event) error {
-			if err := diagPrint(ev); err != nil {
-				return err
-			}
-			// Only the assistant's own text is the run's output. The
-			// engine suppresses whole-message events when it streams, so
-			// the two kinds never double-write.
-			switch ev.Kind {
-			case engine.EventAssistantText, engine.EventAssistantTextDelta:
-				if _, err := o.Stdout.Write([]byte(ev.Text)); err != nil {
-					return err
-				}
-				// The logprob block prints after the whole response body;
-				// streamed responses carry no logprobs, so a streamed run
-				// with the flag prints nothing here.
-				if o.ShowLogprobs && ev.Kind == engine.EventAssistantText && len(ev.Logprobs) > 0 {
-					printLogprobs(o.Stdout, ev.Logprobs)
-				}
-			}
-			return nil
-		}
+		printEvent := o.logprobTee(diagPrint, func(ev engine.Event) error {
+			// Only the assistant's own text is the run's output.
+			_, err := o.Stdout.Write([]byte(ev.Text))
+			return err
+		})
 		return printEvent, diagSubagent, flush, nil
 	default:
 		printEvent, onSubagent, flush := chat.Events(o.Stdout, o.ToolOutput)
+		printEvent = o.logprobTee(printEvent, func(engine.Event) error { return nil })
 		return printEvent, onSubagent, flush, nil
+	}
+}
+
+// logprobTee wraps a chat-style event printer with the logprob block
+// behavior: after a whole assistant message event, when Logprobs is on and
+// the event carries logprobs, one line prints per token after the response
+// body (to stdout for plain — it is part of the run's output; alongside
+// the body for chat). The write callback emits the event's text for the
+// wrapped format's stdout handling; chat passes a no-op.
+func (o Options) logprobTee(printEvent func(engine.Event) error, writeText func(engine.Event) error) func(engine.Event) error {
+	return func(ev engine.Event) error {
+		if err := printEvent(ev); err != nil {
+			return err
+		}
+		switch ev.Kind {
+		case engine.EventAssistantText:
+			if err := writeText(ev); err != nil {
+				return err
+			}
+			if o.Logprobs && len(ev.Logprobs) > 0 {
+				printLogprobs(o.Stdout, ev.Logprobs)
+			}
+		case engine.EventAssistantTextDelta:
+			if err := writeText(ev); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }
 
@@ -106,5 +122,5 @@ func (o Options) validateFormat() error {
 		return nil
 	}
 	supported := strings.Join([]string{FormatChat, FormatPlain, FormatNDJSON}, ", ")
-	return fmt.Errorf("run: unknown format %q (supported: %s)", o.Format, supported)
+	return fmt.Errorf("unknown format %q (supported: %s)", o.Format, supported)
 }

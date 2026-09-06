@@ -2272,9 +2272,9 @@ func TestRunFormatNDJSONLogprobs(t *testing.T) {
 	}
 }
 
-// TestRunFormatPlainLogprobs pins the --logprobs flag: with it, the plain
-// format prints one line per token after the response body; without it,
-// nothing extra prints.
+// TestRunFormatPlainLogprobs pins the --logprobs flag: with it, the model
+// is asked for logprobs and the plain format prints one line per token
+// after the response body; without it, nothing extra prints.
 func TestRunFormatPlainLogprobs(t *testing.T) {
 	t.Run("with the flag prints the block", func(t *testing.T) {
 		t.Parallel()
@@ -2289,7 +2289,7 @@ func TestRunFormatPlainLogprobs(t *testing.T) {
 			Format: run.FormatPlain,
 			// Stream off so the whole-message event (which carries the
 			// logprobs) is emitted.
-			ShowLogprobs: true,
+			Logprobs: true,
 			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 				return &runFakeClient{responses: runLogprobResponses()}, nil
 			},
@@ -2331,6 +2331,188 @@ func TestRunFormatPlainLogprobs(t *testing.T) {
 			t.Errorf("stdout = %q, want no logprob block without the flag", stdout.String())
 		}
 	})
+}
+
+// TestRunLogprobsFlagEnablesRequest pins that --logprobs asks the server
+// for logprobs even when the model config does not set them: the real
+// client path carries the wire flags on the request.
+func TestRunLogprobsFlagEnablesRequest(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var wireLogprobs *bool
+	var wireTop *int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var probe struct {
+			Logprobs    *bool `json:"logprobs"`
+			TopLogprobs *int  `json:"top_logprobs"`
+		}
+		_ = json.Unmarshal(body, &probe)
+		mu.Lock()
+		wireLogprobs, wireTop = probe.Logprobs, probe.TopLogprobs
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message":       map[string]any{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+				"logprobs":      map[string]any{"content": []map[string]any{{"token": "ok", "logprob": -0.01}}},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	agent := runTestAgent()
+	cfg := runTestConfig(agent)
+	provider := runTestProvider()
+	provider.BaseURL = srv.URL
+	cfg.Providers = []config.Provider{provider}
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config:   cfg,
+		Agent:    cfg.Agents[0],
+		Stdout:   &stdout,
+		Logprobs: true,
+		// Stream off: logprobs cannot stream.
+	}, "hello")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	logprobs, top := wireLogprobs, wireTop
+	if logprobs == nil || !*logprobs {
+		t.Errorf("request logprobs = %v, want true on the wire", logprobs)
+	}
+	if top != nil {
+		t.Errorf("request top_logprobs = %d, want omitted (the config does not set it)", *top)
+	}
+}
+
+// TestRunLogprobsOverridesModelConfig pins the override semantics: the
+// flag turns logprobs on for a model whose config leaves them off, and
+// cannot turn them off for a model that sets them.
+func TestRunLogprobsOverridesModelConfig(t *testing.T) {
+	t.Run("flag on, model off: logprobs enabled", func(t *testing.T) {
+		t.Parallel()
+
+		model := runTestModel()
+		model.Logprobs = false
+		cfg := runTestConfig(runTestAgent())
+		cfg.Models = []config.Model{model}
+
+		var stdout runSyncBuffer
+		// The override happens in Run before the client build; with an
+		// injected client we cannot observe the wire, so assert via the
+		// display path: the run completes and the block prints when the
+		// response carries logprobs.
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Format: run.FormatPlain,
+			// Stream off so the whole-message event (which carries the
+			// logprobs) is emitted.
+			Logprobs: true,
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: runLogprobResponses()}, nil
+			},
+		}, "say hi")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if !strings.Contains(stdout.String(), `"Hi" logprob=-0.2500`) {
+			t.Errorf("stdout = %q, want the logprob block with the flag on", stdout.String())
+		}
+	})
+
+	t.Run("flag off, model on: config logprobs requested, block hidden", func(t *testing.T) {
+		t.Parallel()
+
+		model := runTestModel()
+		model.Logprobs = true
+		cfg := runTestConfig(runTestAgent())
+		cfg.Models = []config.Model{model}
+
+		var stdout runSyncBuffer
+		_, err := run.Run(context.Background(), run.Options{
+			Config: cfg,
+			Agent:  cfg.Agents[0],
+			Stdout: &stdout,
+			Format: run.FormatPlain,
+			NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+				return &runFakeClient{responses: runLogprobResponses()}, nil
+			},
+		}, "say hi")
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+		if strings.Contains(stdout.String(), "logprob=") {
+			t.Errorf("stdout = %q, want no logprob block without the flag", stdout.String())
+		}
+	})
+}
+
+// TestRunLogprobsWithStreamFails pins that --logprobs with streaming on
+// fails the run before any LLM call: logprobs are only decoded on the
+// non-streaming path, and a silent no-op would be indistinguishable from
+// a server that reported none.
+func TestRunLogprobsWithStreamFails(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	client := &runFakeClient{}
+	var stdout, stderr runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config:    cfg,
+		Agent:     cfg.Agents[0],
+		Stdout:    &stdout,
+		Stderr:    &stderr,
+		Stream:    true,
+		Logprobs:  true,
+		Format:    run.FormatNDJSON,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) { return client, nil },
+	}, "hello")
+	if err == nil || !strings.Contains(err.Error(), "--logprobs requires --no-stream") {
+		t.Errorf("error = %v, want the logprobs/streaming conflict error", err)
+	}
+	if len(client.requests) != 0 {
+		t.Errorf("LLM calls = %d, want 0 (fail before any call)", len(client.requests))
+	}
+}
+
+// TestRunFormatChatLogprobs pins that the chat format shows the logprob
+// block with --logprobs, printed after the response body on stdout.
+func TestRunFormatChatLogprobs(t *testing.T) {
+	t.Parallel()
+
+	cfg := runTestConfig(runTestAgent())
+	var stdout, stderr runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatChat,
+		// Stream off so the whole-message event (which carries the
+		// logprobs) is emitted.
+		Logprobs: true,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return &runFakeClient{responses: runLogprobResponses()}, nil
+		},
+	}, "say hi")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `"Hi" logprob=-0.2500 (top: "Hi" -0.2500)`) {
+		t.Errorf("stdout = %q, want the token line with its top alternative", out)
+	}
+	if !strings.Contains(out, `" there" logprob=-0.1000`) {
+		t.Errorf("stdout = %q, want the token line without alternatives", out)
+	}
+	if !strings.Contains(out, "Hi there") {
+		t.Errorf("stdout = %q, want the response body before the block", out)
+	}
 }
 
 // TestRunFormatNDJSONNonStreamedToolRound pins the exact line sequence of

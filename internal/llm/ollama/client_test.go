@@ -90,6 +90,13 @@ func TestChatSuccessRoundTrip(t *testing.T) {
 		t.Errorf("request model = %v, want %v", got, want)
 	}
 
+	// stream is always sent explicitly: Ollama defaults it to true when
+	// absent, and an omitted field would silently stream (a real-server
+	// regression that surfaced as "server did not finish the response").
+	if got, ok := gotReq["stream"].(bool); !ok || got {
+		t.Errorf("request stream = %v, want explicit false", gotReq["stream"])
+	}
+
 	messages, ok := gotReq["messages"].([]any)
 	if !ok || len(messages) != 2 {
 		t.Fatalf("request messages = %#v, want 2 entries", gotReq["messages"])
@@ -281,6 +288,40 @@ func TestChatLogprobs(t *testing.T) {
 		}
 		if _, present := gotReq["top_logprobs"]; present {
 			t.Errorf("wire top_logprobs = %v, want the field omitted", gotReq["top_logprobs"])
+		}
+	})
+
+	t.Run("requested but absent from a content response errors", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"model":"m","message":{"role":"assistant","content":"hi"},"done":true,"done_reason":"stop"}`))
+		}))
+		defer srv.Close()
+
+		c := newTestClient(t, srv.URL, func(cfg *Config) { cfg.Logprobs = true })
+		_, err := c.Chat(context.Background(), llm.Request{})
+		if err == nil || !strings.Contains(err.Error(), "did not return logprobs") {
+			t.Errorf("error = %v, want the missing-logprobs error", err)
+		}
+	})
+
+	t.Run("requested but absent from a tool-call response is fine", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"model":"m","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"ls","arguments":{}}}]}` +
+				`,"done":true,"done_reason":"tool_calls"}`))
+		}))
+		defer srv.Close()
+
+		c := newTestClient(t, srv.URL, func(cfg *Config) { cfg.Logprobs = true })
+		resp, err := c.Chat(context.Background(), llm.Request{})
+		if err != nil {
+			t.Fatalf("Chat error = %v, want nil (a tool call generates no content tokens)", err)
+		}
+		if len(resp.Message.ToolCalls) != 1 {
+			t.Errorf("tool calls = %d, want 1", len(resp.Message.ToolCalls))
 		}
 	})
 }

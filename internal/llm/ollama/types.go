@@ -19,6 +19,9 @@
 //   - tool_choice maps auto (and nil) to an omitted field, none and
 //     required to the bare string, and force to the OpenAI object shape,
 //     which Ollama accepts.
+//   - The stream field is always sent explicitly (false on the
+//     non-streaming Chat path, true when streaming): Ollama defaults it
+//     to true when absent, and an absent field would silently stream.
 //   - The client-config logprobs/top_logprobs pair is sent on both paths;
 //     the response's logprobs decode into Response.Logprobs on the
 //     non-streaming Chat path only (see ChatStream).
@@ -47,9 +50,13 @@ import (
 type chatRequest struct {
 	Model    string        `json:"model"`
 	Messages []wireMessage `json:"messages"`
-	Stream   bool          `json:"stream,omitempty"`
-	Think    any           `json:"think,omitempty"`
-	Tools    []wireTool    `json:"tools,omitempty"`
+	// Stream is always sent explicitly: Ollama's /api/chat defaults
+	// stream to true when the field is absent, so an omitted field would
+	// silently turn a non-streaming request into an NDJSON stream the
+	// single-object decoder cannot read.
+	Stream bool       `json:"stream"`
+	Think  any        `json:"think,omitempty"`
+	Tools  []wireTool `json:"tools,omitempty"`
 	// Options carries the sampling parameters, nested the way Ollama's
 	// /api/chat expects. nil leaves the field off the wire entirely: a
 	// request with no sampling overrides sends the server defaults.
