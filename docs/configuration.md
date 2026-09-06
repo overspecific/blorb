@@ -1,8 +1,6 @@
 # Configuration
 
-A `blorb.json` file defines the shared provider, model, and tool vocabularies and the agents that use them. This is the full field reference — see the [README](../README.md) for a getting-started overview.
-
-A `blorb.json` defines the shared provider, model, and tool vocabularies and the agents that use them:
+A `blorb.json` defines the shared provider, model, and tool vocabularies and the agents that use them. This is the full field reference — see the [README](../README.md) for a getting-started overview:
 
 ```json
 {

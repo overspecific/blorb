@@ -1,6 +1,6 @@
 # CLI reference
 
-The `blorb run` one-shot mode and its output formats, for scripting against Blorb — the counterpart to the [README](../README.md)'s getting-started overview.
+The `blorb run` one-shot mode and its output formats, for scripting against Blorb — see the [README](../README.md) for a getting-started overview.
 
 `blorb run` executes exactly one agent turn and exits — the scripting counterpart to `chat`. The prompt argument is required and exactly one is accepted: omitting it or passing extra arguments is a usage error (a scripting tool must not appear to hang when its arguments are forgotten, so stdin is only read when explicitly requested with `-` or `@-`).
 
