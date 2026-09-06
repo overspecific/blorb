@@ -1,4 +1,4 @@
-# Code Review — Blorb
+# Code Review - Blorb
 
 Findings per file, ordered by severity: Bug (correctness), Minor (quality), Nit (style).
 
@@ -59,7 +59,7 @@ Findings per file, ordered by severity: Bug (correctness), Minor (quality), Nit 
 
 - Bug: `-c` followed by another flag (e.g. `-c -V`) consumes `-V` as the config path; standard flag parsers reject this. `-c --config x` similarly consumes `--config` as the path.
 - Minor: `--config` with a value that starts with `-` is accepted as a path (e.g. `--config -V`); same issue as above.
-- Nit: `shortValue` has a redundant first case: `attached == "=" || strings.HasPrefix(attached, "=") && len(attached) == 1` — the second operand is dead (a string equal to "=" already has prefix "=" and length 1). Harmless but confusing.
+- Nit: `shortValue` has a redundant first case: `attached == "=" || strings.HasPrefix(attached, "=") && len(attached) == 1` - the second operand is dead (a string equal to "=" already has prefix "=" and length 1). Harmless but confusing.
 - Nit: `ParseChatFlags` returns `flags` (partially mutated) on error; callers ignore it, but returning a partial result is a smell.
 
 ## Tests
@@ -76,7 +76,7 @@ Findings per file, ordered by severity: Bug (correctness), Minor (quality), Nit 
 
 - `config.DefaultMaxTurns` and `engine.DefaultMaxTurns` both define 10; the engine should use the config constant or the config should own the default.
 - `blorb` binary exists in the repo root but is correctly ignored via `.gitignore` (`/blorb`) and not tracked; no action needed.
-- `mise.toml` pins Go 1.27.0; `go.mod` says `go 1.27.0` — consistent.
+- `mise.toml` pins Go 1.27.0; `go.mod` says `go 1.27.0` - consistent.
 
 ## Verification
 

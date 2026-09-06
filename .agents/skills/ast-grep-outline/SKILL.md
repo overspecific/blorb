@@ -8,7 +8,7 @@ description: Use when exploring or modifying a codebase and you need a cheap str
 `ast-grep outline` prints a compact structural map of source code with line
 numbers: top-level **items** (imports, functions, classes, structs,
 interfaces, modules, enums) and their direct **members** (fields, methods,
-constructors, enum variants). It is a local, syntax-only view — cheap enough
+constructors, enum variants). It is a local, syntax-only view - cheap enough
 to run before any full file read.
 
 Read code in stages: find candidate files with search or file names, outline

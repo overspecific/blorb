@@ -9,7 +9,6 @@ description: Use when writing longer documents or chunks of user copy, not for s
 - Avoid metaphor, simile, analogies and cliches; stick to the facts
 - Avoid jargon or corporate-speak
 - Don't use title case ever unless it is a name; use sentence case
-
 - NEVER signpost structure ("In conclusion", "Let's break this down").
 - NEVER use false transitions ("Here's the kicker", "The truth is", "It's worth noting").
 - NEVER simulate vulnerability or false suspense.

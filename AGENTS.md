@@ -14,18 +14,18 @@ We build high-quality, well-architected, correct code. We don't take shortcuts; 
 
 ## Module layout
 
-- `internal/config` — the `blorb.json` schema, loading, and validation
-- `internal/engine` — the agent loop: model calls, tool execution, turn limits
-- `internal/chat` — the interactive chat REPL
-- `internal/run` — the one-shot run command
-- `internal/tools` — tool registry and subprocess execution
-- `internal/tools/builtin` — built-in tools (`read`, `grep`)
-- `internal/llm` — provider-neutral LLM types
-- `internal/llm/openai` — OpenAI-compatible client, with SSE streaming support
-- `internal/llm/ollama` — native Ollama client (`/api/chat`), non-streaming and NDJSON streaming
-- `internal/logging` — wire logging for LLM and tool interactions
-- `internal/prefactor` — Prefactor tracing client and tracer
-- `internal/usage` — usage stats (tokens, bytes, timing)
+- `internal/config` - the `blorb.json` schema, loading, and validation
+- `internal/engine` - the agent loop: model calls, tool execution, turn limits
+- `internal/chat` - the interactive chat REPL
+- `internal/run` - the one-shot run command
+- `internal/tools` - tool registry and subprocess execution
+- `internal/tools/builtin` - built-in tools (`read`, `grep`)
+- `internal/llm` - provider-neutral LLM types
+- `internal/llm/openai` - OpenAI-compatible client, with SSE streaming support
+- `internal/llm/ollama` - native Ollama client (`/api/chat`), non-streaming and NDJSON streaming
+- `internal/logging` - wire logging for LLM and tool interactions
+- `internal/prefactor` - Prefactor tracing client and tracer
+- `internal/usage` - usage stats (tokens, bytes, timing)
 
 ## Executing plans
 
@@ -54,3 +54,5 @@ We use Plain English when talking to the user, writing comments or UI copy:
 - Natural language characters (accented letters, CJK, etc.) are fine when the content requires them
 
 We use the `good-english` skill when writing longer documents or chunks of user copy, not for short everyday messages.
+
+The example knowledgebase under `examples/simple/knowledgebase/` is demo content for the example agent, not project prose; it may use different rules (metaphor, em dashes, and so on) and we do not hold it to these guidelines.

@@ -8,8 +8,8 @@ A dunk softens the biscuit by liquid wicking into its pores; the time to structu
 
 ## Per-biscuit guidance
 
-- **Rich Tea** — the best dunker in common circulation; 3–4 seconds is the standard window. Firm, forgiving, and engineered for it.
-- **Digestive** — 2–3 seconds, then eat immediately; it softens fast and the window is short. Plain digestives dunk; chocolate digestives are a gamble (the chocolate acts as a partial barrier, and the debate about which way up remains unresolved).
+- **Rich Tea** — the best dunker in common circulation; 3-4 seconds is the standard window. Firm, forgiving, and engineered for it.
+- **Digestive** — 2-3 seconds, then eat immediately; it softens fast and the window is short. Plain digestives dunk; chocolate digestives are a gamble (the chocolate acts as a partial barrier, and the debate about which way up remains unresolved).
 - **Hobnob** — the oaty surface maximises tea transfer, so it softens faster than it looks like it will. 2 seconds, no lingering.
 - **Ginger Nut** — longer than you think, shorter than you fear: it holds on gamely and then snaps without warning.
 - **Custard Cream / Bourbon** — the filling warms and softens first; plan for it, and twist before dunking if you're that kind of person.
