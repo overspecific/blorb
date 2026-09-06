@@ -3747,6 +3747,74 @@ func TestRunFormatNDJSONJudgeError(t *testing.T) {
 	}
 }
 
+// runJudgeFlushFake is a streaming judge fake whose only call emits one
+// tool-call args fragment with no trailing newline, then fails: the
+// fragment is the last thing the judge activity printer writes, so the
+// judge flush's endLine is what terminates the line before the error
+// diagnostic prints.
+type runJudgeFlushFake struct {
+	args string
+	err  error
+}
+
+func (f *runJudgeFlushFake) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	return nil, f.err
+}
+
+func (f *runJudgeFlushFake) ChatStream(_ context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	if err := onDelta(llm.Delta{ToolCall: &llm.ToolCallDelta{
+		Index: 0, Name: "read", Arguments: f.args,
+	}}); err != nil {
+		return nil, err
+	}
+	return nil, f.err
+}
+
+// TestRunJudgeFlushTerminatesPartialLine pins that run flushes the judge
+// activity printer after the judge phase: a streamed fragment without a
+// trailing newline must be terminated by the flush, so the judge error
+// diagnostic lands on its own line instead of merging with the fragment.
+func TestRunJudgeFlushTerminatesPartialLine(t *testing.T) {
+	t.Parallel()
+
+	cfg := runJudgeConfig(t)
+	// The judged client must implement ChatStream for the run's streaming
+	// flag to hold; the judge inherits it and streams its own call.
+	main := &runStreamingJudgeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "agent text"), FinishReason: llm.FinishStop},
+	}}
+	reviewer := &runJudgeFlushFake{
+		args: `{"path": "notes.md"}`,
+		err:  errors.New("provider exploded"),
+	}
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stream: true,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "reviewer" {
+				return reviewer, nil
+			}
+			return main, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (a judge failure is not fatal)", err)
+	}
+
+	out := stdout.String()
+	fragment := `{"path": "notes.md"}`
+	if !strings.Contains(out, fragment+"\njudge error:") {
+		t.Errorf("stdout = %q, want the fragment line terminated by the flush with the diagnostic on its own line", out)
+	}
+	if strings.Contains(out, fragment+"judge error:") {
+		t.Errorf("stdout = %q, want no diagnostic merged onto the fragment's line", out)
+	}
+}
+
 func TestRunTwoJudgesInOrder(t *testing.T) {
 	t.Parallel()
 

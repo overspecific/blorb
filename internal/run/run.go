@@ -128,7 +128,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	// isTerminated). One run is one turn, so the turn footer is the run's
 	// whole summary; there is no session line.
 	account := &usage.Account{}
-	printEvent, onSubagent, onJudge, onJudgeError, flush, finishNDJSON := opts.events(account)
+	printEvent, onSubagent, onJudge, onJudgeError, flush, judgeFlush, finishNDJSON := opts.events(account)
 	turnEvent := usageWrap(printEvent, account)
 	onSubagent = runUsageWrap(onSubagent, account)
 	onJudge = judgeUsageWrap(onJudge, account)
@@ -219,6 +219,10 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 			transcript = runErrorNote(transcript, runErr)
 		}
 		outcomes, jErr := opts.judgeRunner(sink, streaming).RunJudges(ctx, opts.Agent, config.JudgeWhenEnd, transcript, onJudge)
+		// Terminate the judge activity printer's partial line before
+		// anything else writes: the judgement blocks, the error
+		// diagnostic, and the footer all assume a fresh line.
+		judgeFlush()
 		if jErr != nil {
 			fmt.Fprintf(opts.diagnostics(), "judge error: %v\n", jErr)
 			if onJudgeError != nil {
