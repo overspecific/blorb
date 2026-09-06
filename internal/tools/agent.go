@@ -80,3 +80,57 @@ type SubagentResult struct {
 type SubagentRunner interface {
 	RunSubagent(ctx context.Context, agentName, userMessage string, onEvent func(SubagentEvent) error) (SubagentResult, error)
 }
+
+// JudgeEventKind mirrors the engine event kinds relevant to display,
+// for judge runs.
+type JudgeEventKind string
+
+const (
+	JudgeText          JudgeEventKind = "text"
+	JudgeThinking      JudgeEventKind = "thinking"
+	JudgeTextDelta     JudgeEventKind = "text_delta"
+	JudgeThinkingDelta JudgeEventKind = "thinking_delta"
+	JudgeToolCall      JudgeEventKind = "tool_call"
+	JudgeToolCallDelta JudgeEventKind = "tool_call_delta"
+	JudgeToolResult    JudgeEventKind = "tool_result"
+	// JudgeUsage carries the token usage of one completed LLM call
+	// by the named judge.
+	JudgeUsage JudgeEventKind = "usage"
+)
+
+// JudgeEvent is one observable moment of a judge run, mirroring
+// SubagentEvent. Agent is the name of the judge agent that produced
+// it and Depth its judge-chain nesting level (0 for a judge invoked
+// directly by the runtime, 1 for a judge judging that judge).
+type JudgeEvent struct {
+	Agent string
+	Depth int
+	Kind  JudgeEventKind
+	Text  string
+	Name  string
+	Args  string
+	Index int
+	// Output and Failed are set on JudgeToolResult events.
+	Output string
+	Failed bool
+	// Model is the judge's configured provider model, set on
+	// JudgeUsage events and empty for all other kinds.
+	Model string
+	// Usage is set on JudgeUsage events: the token usage of one
+	// completed LLM call by the named judge.
+	Usage llm.Usage
+	// Stats is the stats of the completed call; set on JudgeUsage
+	// events.
+	Stats llm.CallStats
+}
+
+// JudgeUsageRecord is one LLM call's usage within a judge run,
+// mirroring SubagentUsageRecord.
+type JudgeUsageRecord struct {
+	Agent string
+	Model string
+	Usage llm.Usage
+	// Stats is the stats of the completed call; zero when the provider
+	// client did not measure.
+	Stats llm.CallStats
+}
