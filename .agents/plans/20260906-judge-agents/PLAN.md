@@ -19,6 +19,12 @@ Design in brief:
 - `run` (Commit 4): judge execution after the turn, judge output per format, judge events in ndjson.
 - `chat` (Commit 5): judge execution at session end with chat-style judge display.
 - Docs and the shipped example (Commit 6).
+- Live judge activity (Commit 7): judge thinking and tool activity stream in chat and run, reusing the subagent heading style; the Commit 4/5 display printed only the final judgement blocks.
+- Review fixes (Commits 8-11), one per finding from the post-plan review:
+  - ndjson `judge_error` test (Commit 8): the event is implemented and documented but untested.
+  - Judge block shape (Commit 9): run and chat print the `>>> Judge:` block differently; unify on chat's shape.
+  - Run judge flush (Commit 10): run discards the judge activity printer's flush; a partial streamed line merges with later output.
+  - `RunJudges` usage doc (Commit 11): the doc comment's failed-judge usage claim does not match the shipped behavior.
 
 Design decisions:
 
@@ -39,6 +45,11 @@ Design decisions:
 - [x] Commit 4: run - judges after the turn, per-format output, ndjson events
 - [x] Commit 5: chat - judges at session end
 - [x] Commit 6: docs and example
+- [x] Commit 7: live judge activity in chat and run
+- [ ] Commit 8: review fix - test the ndjson judge_error line
+- [ ] Commit 9: review fix - unify the judge block shape between run and chat
+- [ ] Commit 10: review fix - flush the judge activity printer in run
+- [ ] Commit 11: review fix - correct the RunJudges failed-judge usage doc comment
 
 ---
 
@@ -369,10 +380,10 @@ Design decisions:
 >    - A judge error does not change the run's outcome: print `judge error: <err>` to `opts.diagnostics()` and continue (the judged run already has its outcome; a judge failure is reported, not fatal).
 >    - Usage: pass a callback that records judge usage into the run's `account` (a `judgeUsageWrap` helper in `usage.go` mirroring `runUsageWrap`: on `tools.JudgeUsage`, `account.Add(usage.Record{Agent: ev.Agent, Model: ev.Model, Usage: ev.Usage, Stats: ev.Stats})` and forward), so the footer and `done.agents` include judge tokens. The judge phase therefore runs before the footer print and before `finishNDJSON`; keep the footer's "partial usage on error paths" behavior and ndjson's footer suppression.
 > 3. Judge display per format (a `printJudges` mechanism in `formats.go`):
->    - **chat format** (`FormatChat`/default): after the turn's `flush()`, print per judge in order an `>>> Judge: <name>` heading (the existing heading style: a blank line, then the heading line, then a blank line - see the `heading` closure in `chat.Events`) followed by the judge's judgement text and a blank line. Only the final judgement text per judge prints (`JudgeOutcome.Output`): no live judge streaming, no judge tool activity, no thinking. Run mode's chat format already prints the agent's own live stream; judge blocks are whole-message.
+>    - **chat format** (`FormatChat`/default): after the turn's `flush()`, print per judge in order an `>>> Judge: <name>` heading (the existing heading style: a blank line, then the heading line, then a blank line - see the `heading` closure in `chat.Events`) followed by the judge's judgement text and a blank line. Only the final judgement text per judge prints (`JudgeOutcome.Output`): no live judge streaming, no judge tool activity, no thinking. Run mode's chat format already prints the agent's own live stream; judge blocks are whole-message. (Superseded by Commit 7 for the activity display; the judgement blocks are unchanged.)
 >    - **plain format**: the agent's own output is stdout and everything else is stderr; the judgement is not the run's output, so the same `>>> Judge: <name>` blocks go to `opts.stderrOr()`.
 >    - **ndjson**: judge events stream as they arrive, mirroring the `subagent_*` mapping. Add an `onJudge func(tools.JudgeEvent) error` to `ndjsonSink`, mirroring `onSubagent` and reusing the same flat `ndjsonEvent` struct: `judge_text`, `judge_thinking`, `judge_text_delta`, `judge_thinking_delta`, `judge_tool_call`, `judge_tool_call_delta`, `judge_tool_result`, `judge_usage`, each with `agent` and `depth` fields set the same way `onSubagent` sets them. A judge failure emits one non-terminal `judge_error {type, judge, error}` line (add a `Judge string \`json:"judge,omitempty"\`` field to `ndjsonEvent` for it); the stream's terminal `done`/`error` contract is unchanged. Document the new types in the ndjson.go vocabulary comment (after `subagent_*`) and note in the stream contract that judge events precede the terminal event. `docs/formats.md` is updated in Commit 6.
->    - Implementation shape: `opts.events` currently returns `(printEvent, onSubagent, flush, finish)`. Add a fifth return value `onJudge func(tools.JudgeEvent) error`: for ndjson it is the sink's emitter, for chat and plain a no-op (the judgement prints as blocks from the outcomes after the chain completes). Compose the usage wrap over it. The judge phase then walks the outcomes and prints the per-judge blocks for chat/plain.
+>    - Implementation shape: `opts.events` currently returns `(printEvent, onSubagent, flush, finish)`. Add a fifth return value `onJudge func(tools.JudgeEvent) error`: for ndjson it is the sink's emitter, for chat and plain a no-op (the judgement prints as blocks from the outcomes after the chain completes). Compose the usage wrap over it. The judge phase then walks the outcomes and prints the per-judge blocks for chat/plain. (The chat/plain no-op is superseded by Commit 7, which wires `chat.JudgeEvents` into both.)
 > 4. Keep `Run`'s returned value unchanged: the judged agent's final text, never the judge's. `finishNDJSON(final, err)` is unchanged.
 >
 > Tests (`package run_test`), using a `clientFactory` dispatching per agent name (fake client for the judged agent, canned judge client), following existing `run_test.go` conventions:
@@ -409,7 +420,7 @@ Design decisions:
 >    func JudgeEvents(out io.Writer, toolOutput bool) (onJudge func(tools.JudgeEvent) error, flush func())
 >    ```
 >
->    `onJudge` prints `judge_tool_call`/`judge_tool_result` events as indented, labeled blocks in the subagent style (`[<judge>] >>> Tool: <name>` headings, two-space indent per `Depth`, results always in full). Text, thinking, and delta events are ignored: the engine emits deltas when streaming, but at session end whole judgements suffice; the judgement prints from the outcomes. After the runner returns, the judge phase prints one block per outcome:
+>    `onJudge` prints `judge_tool_call`/`judge_tool_result` events as indented, labeled blocks in the subagent style (`[<judge>] >>> Tool: <name>` headings, two-space indent per `Depth`, results always in full). Text, thinking, and delta events are ignored: the engine emits deltas when streaming, but at session end whole judgements suffice; the judgement prints from the outcomes. (Superseded by Commit 7, which adds thinking and delta rendering; the judgement blocks are unchanged.) After the runner returns, the judge phase prints one block per outcome:
 >
 >    ```text
 >    >>> Judge: reviewer
@@ -453,5 +464,62 @@ Design decisions:
 > 3. `docs/cli.md`: one sentence in the `run` section noting that the agent's configured judges, if any, run after the turn and print their judgements (in `plain` they go to stderr; in `ndjson` they appear as `judge_*` events before `done`).
 > 4. `README.md`: add a bullet to Features ("judges: agents that review another agent's completed run, receiving its transcript and printing their judgement") and mention judges in the configuration paragraph's agent-fields list if space allows.
 > 5. `examples/simple/blorb.json`: add a `reviewer` agent (a judging system prompt, e.g. "You are a reviewer. You are given the transcript of another agent's run... judge whether it answered the user's question well and report your verdict." - plain, short) with `model: "small"` and `"judges": [{"agent": "reviewer"}]` added to the `simple` agent. The example is demo content; keep the system prompt in its existing voice. Note: `internal/prefactor/example_test.go` loads `examples/simple/blorb.json`, so `bin/qc` validates the example config as part of the test run.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 7: live judge activity in chat and run
+
+> Executed after the six planned stages: Commit 4 and Commit 5 wired the judge phase's `onJudge` as a no-op for chat and plain (only the judgement blocks printed after the chain completed), and chat's `JudgeEvents` rendered tool activity but ignored thinking and deltas. This stage makes judge activity render live, mirroring the subagent display: the judge's thinking and tool activity stream as they happen, labeled `[<judge>]` and indented two spaces per chain depth, with the judgement blocks unchanged.
+>
+> 1. `chat.JudgeEvents` (internal/chat/chat.go): extend the judge printer with thinking and delta rendering, mirroring the subagent printer's per-stream heading state:
+>    - Promote the `streamKey` struct (depth, agent) from a local inside `Events` to a package-level type shared by the subagent and judge printers, and add a `judgeStreamHeadings` state type tracking, per judge stream: whether the thinking heading printed, per streamed tool call index whether its heading printed, and whether fragments rendered the current tool call (so the whole-message block is skipped).
+>    - `JudgeThinking` prints a `>>> Assistant (thinking):` heading plus the reasoning text; `JudgeThinkingDelta` prints the heading once (tracked in state) then writes fragments. `JudgeToolCallDelta` prints the `>>> Tool: <name>` heading once per index (tracked in state) then writes args fragments; `JudgeToolCall` skips the whole-message block when fragments already rendered it. `JudgeToolResult` is unchanged (full output, then a round reset that clears the heading state for the next response). Text events (whole and delta) stay ignored: printing them would duplicate the judgement block, which prints from the outcomes after the chain completes.
+>    - Update the `JudgeEvents` doc comment: the judge's thinking and tool activity render live, streaming as deltas when the judge engine streams.
+> 2. `run`'s format wiring (internal/run/formats.go): chat and plain formats now build `chat.JudgeEvents(o.Stdout, o.ToolOutput)` / `chat.JudgeEvents(o.stderrOr(), o.ToolOutput)` and return the printer as `onJudge` instead of nil (ndjson is unchanged: the sink's emitter). The judgement blocks still print from the outcomes for chat and plain. Update the `events` doc comment.
+> 3. `docs/configuration.md`: the Usage and limitations paragraph now says the judge's thinking and tool activity stream as it works, labeled `[<judge>]` and indented like subagent activity, before the judgement blocks.
+>
+> Tests: chat gains `TestChatJudgeStreamsThinking` (whole-message thinking renders under an indented heading, judgement printed exactly once) and `TestChatJudgeStreamsThinkingDeltasAndToolCalls` (streamed: exactly one thinking heading, exactly one tool call heading, judgement exactly once); run gains `TestRunJudgeChatStreamsThinking` and `TestRunJudgePlainThinkingOnStderr` (same assertions per format, plain on stderr, stdout only the agent's text), using a streaming fake judge client that emits reasoning, content, and tool call deltas.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 8: review fix - test the ndjson judge_error line
+
+> The post-plan review found the ndjson `judge_error` line implemented (`ndjsonSink.onJudgeError` emits `judge_error {type, judge, error}`) and documented (`docs/formats.md`), but untested: `onJudgeError` has zero test coverage, so a regression could drop the line or break its shape without failing anything.
+>
+> Add `TestRunFormatNDJSONJudgeError` to `internal/run/run_test.go`, mirroring `TestRunJudgeErrorNonFatal` but with `Format: run.FormatNDJSON`: the judged agent's fake client succeeds, the judge's fake runs dry (its call errors). Assert:
+>
+> - `Run` returns the agent's text and nil error: a judge failure never changes the terminal event.
+> - The parsed stream carries exactly one `judge_error` line with `judge: "reviewer"` and a non-empty `error`.
+> - It appears before the terminal `done` line, and `done` still carries the run's text and the judged agent's usage.
+>
+> Extend the test's `ndjsonLine` struct with the `judge` field (`Judge string \`json:"judge,omitempty"\``) - it decodes every line of the stream, so the new field must be present for the assertion.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 9: review fix - unify the judge block shape between run and chat
+
+> The review found the same judge block printed with two shapes: run's `printJudges` (internal/run/formats.go) prints `"\n%s>>> Judge: %s\n\n%s\n\n"` - a blank line between the heading and the judgement - while chat's `printJudgeOutcomes` (internal/chat/chat.go) prints `"\n%s>>> Judge: %s\n%s\n\n"` - the judgement flush against the heading. The plan's Commit 4 specified "a blank line, then the heading line, then a blank line", but chat's Commit 5 shipped the tighter shape, and chat's session-end output is the one that reads as a stream (the judge block lands right after the last turn's output, where the extra blank line is noise).
+>
+> Pick chat's shape (no blank line after the heading) and change run's `printJudges` to match: `"\n%s>>> Judge: %s\n%s\n\n"` with the judgement indented by `indentBlock(o.Output, ind)` as today. Both modes then print the same block for the same thing.
+>
+> Update `TestRunJudgeChatBlock`'s assertion from `"\n>>> Judge: reviewer\n\nthe run was fine\n\n"` to `"\n>>> Judge: reviewer\nthe run was fine\n\n"`. The plain-format test (`TestRunJudgePlainOnStderr`) asserts with `strings.Contains` and does not pin the inner blank line, so it needs no change; re-run it to confirm.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 10: review fix - flush the judge activity printer in run
+
+> The review found run discarding the judge activity printer's flush. Commit 7 wired `chat.JudgeEvents` into run's chat and plain formats but ignored its second return value, unlike chat's session-end phase, which calls `judgeFlush()` after `RunJudges` (internal/chat/chat.go). A streamed fragment without a trailing newline leaves a partial line: the `judge error:` diagnostic (printed with no leading newline) then merges onto the fragment's line, and the usage footer and judge blocks lose their blank-line separation (their leading `\n` terminates the fragment line instead of opening a blank one). ndjson is unaffected; it does not use `JudgeEvents`.
+>
+> Fix: `opts.events` (internal/run/formats.go) returns the judge flush alongside `onJudge` - a sixth return value; the tuple is the existing convention, keep it. For chat and plain it is the `chat.JudgeEvents` flush; for ndjson a no-op. `Run` (internal/run/run.go) calls it after `RunJudges` returns, before the judge blocks, the error diagnostic, and the footer. Update the `events` doc comment for the new return value.
+>
+> Pin it with the error path, which is unambiguous: a streaming judge fake whose last delta fragment is a tool-call args string with no trailing `\n`, the judge's final call errors, and the output contains `<fragment>\njudge error:` - the fragment line terminated by the flush, the diagnostic on its own line - rather than `<fragment>judge error:`.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 11: review fix - correct the RunJudges failed-judge usage doc comment
+
+> The review found `RunJudges`' doc comment (internal/engine/judge.go) claiming "The spent tokens of a failed judge run are lost to the usage account in that case; unlike a subagent failure there is no parent model to hand them to" - written against the plan's assumption that the runner returns nil outcomes on failure and the caller sees nothing. The shipped behavior differs: both trigger sites wrap `onEvent` with a usage recorder (`judgeUsageWrap` in run and chat), and usage events flow through it as each call completes, so a judge that fails after completing calls still has those calls' tokens in the caller's account. The loss applies only when the caller passes `onEvent == nil`.
+>
+> Reword the comment to match: usage records are always collected on `JudgeOutcome.Usage` for a successful run; on a failed run the outcome is lost, but whether the spent tokens reach the caller's account depends on the caller's `onEvent` - the trigger sites record usage events as they arrive (through their `judgeUsageWrap`), so their accounts see every completed call; a nil-`onEvent` caller gets nothing. No code change; the comment is the fix. Confirm no test asserts the old wording.
 >
 > Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
