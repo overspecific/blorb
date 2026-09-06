@@ -88,7 +88,7 @@ func (o Options) events(account *usage.Account) (printEvent func(engine.Event) e
 func printJudges(w io.Writer, outcomes []engine.JudgeOutcome) {
 	for _, o := range outcomes {
 		ind := strings.Repeat("  ", o.Depth)
-		fmt.Fprintf(w, "\n%s>>> Judge: %s\n\n%s\n\n", ind, o.Judge, indentBlock(o.Output, ind))
+		fmt.Fprintf(w, "\n%s>>> Judge: %s\n%s\n\n", ind, o.Judge, indentBlock(o.Output, ind))
 	}
 }
 

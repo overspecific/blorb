@@ -3463,7 +3463,7 @@ func TestRunJudgeChatBlock(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, "\n>>> Judge: reviewer\n\nthe run was fine\n\n") {
+	if !strings.Contains(out, "\n>>> Judge: reviewer\nthe run was fine\n\n") {
 		t.Errorf("stdout = %q, want the judge block", out)
 	}
 }
@@ -3876,7 +3876,7 @@ func TestRunJudgeChatStreamsThinking(t *testing.T) {
 	if !strings.Contains(out, "[reviewer] >>> Assistant (thinking):\nweighing the transcript") {
 		t.Errorf("stdout = %q, want the judge's reasoning under an indented thinking heading", out)
 	}
-	if !strings.Contains(out, "\n>>> Judge: reviewer\n\nthe run was fine\n\n") {
+	if !strings.Contains(out, "\n>>> Judge: reviewer\nthe run was fine\n\n") {
 		t.Errorf("stdout = %q, want the judgement block", out)
 	}
 	if strings.Count(out, "the run was fine") != 1 {
