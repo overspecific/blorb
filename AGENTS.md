@@ -40,3 +40,17 @@ Plans live in `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` (see the planning s
 ## Markdown files
 
 When writing Markdown, we do not manually wrap.
+
+## English
+
+We use Plain English when talking to the user, writing comments or UI copy:
+
+- We avoid metaphor, simile, analogies and cliches; stick to the facts
+- We avoid jargon or corporate-speak
+- We don't sell an idea; we just present it neutrally
+- We don't use title case ever unless it is a name; we use sentence case
+- We use no emojis, em dashes, smart quotes, or decorative Unicode symbols
+- We use plain hyphens and straight quotes only
+- Natural language characters (accented letters, CJK, etc.) are fine when the content requires them
+
+We use the `good-english` skill when writing longer documents or chunks of user copy, not for short everyday messages.
