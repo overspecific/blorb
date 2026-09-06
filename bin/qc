@@ -1,6 +1,7 @@
 #!/bin/sh
 # qc is the quality gate for coding agents to run during development. It
 # formats, checks style, and runs the tests; it must pass before moving on.
+# All output is captured and shown only if a stage fails.
 set -e
 set -o pipefail
 
@@ -8,47 +9,43 @@ if [ -d "$HOME/.local/share/mise/shims" ]; then
 	export PATH="$HOME/.local/share/mise/shims:$PATH"
 fi
 
-fmt() {
-	echo "==> gofmt -w ."
-	gofmt -w .
-	echo "==> rumdl fmt ."
-	rumdl fmt --silent .
-}
-
-lint() {
-	echo "==> staticcheck ./..."
-	staticcheck ./...
-}
-
-vet() {
-	echo "==> go vet ./..."
-	go vet ./...
-}
-
-markdown() {
-	echo "==> rumdl check ."
-	rumdl check --silent .
-	echo "==> lychee --offline ."
-	if ! out=$(lychee --offline --no-progress . 2>&1); then
-		printf '%s\n' "$out"
+run() {
+	name="$1"
+	shift
+	if ! out=$("$@" 2>&1); then
+		printf '==> FAILED: %s\n%s\n' "$name" "$out"
 		exit 1
 	fi
 }
 
+fmt() {
+	gofmt -w .
+	rumdl fmt --silent .
+}
+
 mod() {
-	echo "==> go mod tidy -diff"
 	go mod tidy -diff
 }
 
+lint() {
+	staticcheck ./...
+}
+
+vet() {
+	go vet ./...
+}
+
+markdown() {
+	rumdl check .
+	lychee --offline --no-progress .
+}
+
 build() {
-	echo "==> go build ./..."
 	go build ./...
 }
 
-test() {
-	echo "==> go test -race -count=1 -shuffle=on -coverpkg=./... -coverprofile=coverage.out ./..."
-	go test -race -count=1 -shuffle=on -coverpkg=./... -coverprofile=coverage.out ./... | sed 's/coverage: [0-9.]*% of statements in \.\/\.\.\.//'
-	echo "==> coverage by package"
+test_stats() {
+	printf 'coverage:\n'
 	go tool cover -func=coverage.out | awk '
 		/^total:/ { next }
 		{
@@ -66,15 +63,20 @@ test() {
 			}
 		}
 	' | sort -k2
-	go tool cover -func=coverage.out | tail -n 1
+	go tool cover -func=coverage.out | tail -n 1 | awk '{ pct = $NF; sub(/%$/, "", pct); printf "%6.1f%%  total\n", pct }'
 	rm -f coverage.out
 }
 
-fmt
-mod
-lint
-vet
-markdown
-build
-test
-echo "==> all checks passed"
+test() {
+	go test -race -count=1 -shuffle=on -coverpkg=./... -coverprofile=coverage.out ./... | sed 's/coverage: [0-9.]*% of statements in \.\/\.\.\.//'
+}
+
+run "gofmt -w ." fmt
+run "go mod tidy -diff" mod
+run "staticcheck ./..." lint
+run "go vet ./..." vet
+run "markdown checks" markdown
+run "go build ./..." build
+run "go test ./..." test
+test_stats
+printf '\nqc passed\n'
