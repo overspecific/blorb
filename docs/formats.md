@@ -24,7 +24,7 @@ A non-streaming feature: `--logprobs` both asks the server for the data (overrid
 
 ### ndjson event types
 
-Subagent activity uses the same vocabulary prefixed `subagent_`, with `agent` and `depth` fields added:
+Subagent activity uses the same vocabulary prefixed `subagent_`, with `agent` and `depth` fields added. Judge activity (see [Judges](configuration.md#judges)) uses the same vocabulary prefixed `judge_`, also with `agent` and `depth` fields; a failed judge emits the non-terminal `judge_error {type, judge, error}`. Judge events appear after the turn's events and before the terminal `done`/`error`, and a judge failure never changes the terminal event:
 
 ```text
 text_delta      {type, text}                       assistant text fragment (streaming)
@@ -41,7 +41,7 @@ error           {type, error}                      terminal on failure
 
 ### The stats object
 
-The `stats` object on `usage`, `subagent_usage`, and `done` always carries the measured output bytes: `{"output":{"content_bytes":...,"reasoning_bytes":...,"tool_call_bytes":...},"elapsed_ns":...}`. Derive the total by summing the three components. `done.agents[].stats` is each agent's summed stats. `done.rates` (`{"tokens_per_sec":...,"bytes_per_sec":...}`) is a convenience derived from the summed stats - consumers can compute their own rates from the raw fields - and is omitted when no time was measured.
+The `stats` object on `usage`, `subagent_usage`, `judge_usage`, and `done` always carries the measured output bytes: `{"output":{"content_bytes":...,"reasoning_bytes":...,"tool_call_bytes":...},"elapsed_ns":...}`. Derive the total by summing the three components. `done.agents[].stats` is each agent's summed stats. `done.rates` (`{"tokens_per_sec":...,"bytes_per_sec":...}`) is a convenience derived from the summed stats - consumers can compute their own rates from the raw fields - and is omitted when no time was measured.
 
 With `--logprobs` (or `logprobs: true` in the model config; a non-streaming feature - see [plain logprobs](#plain-logprobs)), the `text` and `done` events carry a `logprobs` array - one entry per content token.
 

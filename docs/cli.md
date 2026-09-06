@@ -10,6 +10,8 @@ The `blorb run` one-shot mode, for scripting against Blorb - see the [README](..
 
 **`plain`** and **`ndjson`** are the machine-parsing formats, designed for scripts and pipelines - see the [output formats reference](formats.md) for their full details: the ndjson event types, the `stats` object, logprobs output, and streaming behavior.
 
+The agent's configured judges, if any, run after the turn and print their judgements: in `chat` and `plain` as `>>> Judge: <name>` blocks (on stderr for `plain`, since it is not the run's output), and in `ndjson` as `judge_*` events before the terminal `done`/`error`. See [Judges](configuration.md#judges).
+
 `--logprobs` asks the server for per-token log probabilities (overriding `logprobs` in the model config) and prints one line per token after the response body in the chat and plain formats. It requires `--no-stream`; a run with `--logprobs` and streaming on fails before any LLM call. See [formats](formats.md#plain-logprobs) for the block's shape.
 
 Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).

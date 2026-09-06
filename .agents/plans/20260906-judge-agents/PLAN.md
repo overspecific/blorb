@@ -38,7 +38,7 @@ Design decisions:
 - [x] Commit 3: engine - JudgeRunner
 - [x] Commit 4: run - judges after the turn, per-format output, ndjson events
 - [x] Commit 5: chat - judges at session end
-- [ ] Commit 6: docs and example
+- [x] Commit 6: docs and example
 
 ---
 

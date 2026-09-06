@@ -17,6 +17,11 @@
         "ask_scholar",
         "ask_horologist"
       ],
+      "judges": [
+        {
+          "agent": "reviewer"
+        }
+      ],
       "model": "small"
     },
     {
@@ -47,6 +52,16 @@
         "current_time",
         "calendar",
         "days_until"
+      ],
+      "model": "small"
+    },
+    {
+      "name": "reviewer",
+      "system_prompt": "You are a reviewer. You are given the transcript of another agent's run. Judge whether it answered the user's question well: check its claims against the knowledgebase with your `read` and `search` tools where you can, and report a short verdict saying what it got right and what it missed.",
+      "max_turns": 10,
+      "tools": [
+        "read",
+        "search"
       ],
       "model": "small"
     }

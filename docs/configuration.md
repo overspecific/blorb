@@ -187,6 +187,7 @@ Each agent definition carries its own settings and the names of the top-level mo
 | `model`         | yes      | Name of the top-level model entry this agent talks to.                                          |
 | `max_turns`     | yes      | Max model turns per user message; must be at least 1.                                            |
 | `tools`         | no       | The _names_ of the top-level tools this agent may use. Absent or empty means no tools.           |
+| `judges`        | no       | The judge entries for this agent's runs: each names an agent that receives the run's transcript as its first user message, plus an optional `when` selecting the moment it runs (default `"end"`). See the [Judges](#judges) section below. |
 
 Tools are shared vocabulary: they are declared once at the top level, and each agent lists, by name, the ones it may use. An agent listing an unknown tool is a config error, and listing the same tool twice within one agent is an error too. The listed order is the agent's - that is the order the tools are presented to the model. Agent names must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
 
@@ -252,6 +253,86 @@ Execution semantics:
 - The chat interface shows the subagent's activity live - its assistant messages and tool calls - indented and labeled with the subagent's name, so you watch it work.
 - Subagent LLM calls are attributed to the subagent with their own footer line (and in chat's session totals), so a turn's usage shows how much each agent spent.
 - Limitation: nested LLM calls inside subagents are not traced to Prefactor; only the parent agent's spans are recorded.
+
+## Judges
+
+A judge is an ordinary agent in the same config, attached to another agent through that agent's `judges` field. When the judged agent's run finishes, each judge receives the run's transcript as its first user message, runs to completion like any agent (its own tool calls resolved), and its final reply - the judgement - prints to the screen. Nothing else consumes the judgement.
+
+```json
+{
+  "agents": [
+    {
+      "name": "main",
+      "system_prompt": "You are helpful.",
+      "model": "small",
+      "judges": [{ "agent": "reviewer" }]
+    },
+    {
+      "name": "reviewer",
+      "system_prompt": "You are a reviewer. You are given the transcript of another agent's run. Judge whether it answered the user's question well and report your verdict.",
+      "model": "small"
+    }
+  ]
+}
+```
+
+The `judges` field is a list of judge entries, one object per judge:
+
+| Field   | Required | Description                                                                 |
+| ------- | -------- | ---------------------------------------------------------------------------- |
+| `agent` | yes      | Name of a defined agent in the same config. Naming an unknown agent is a config error, as is naming the same judge twice on one agent. |
+| `when`  | no       | When the judge runs. `"end"` is the default and currently the only supported value; other timings may be supported in future releases.   |
+
+### When judges run
+
+With `when: "end"` (the default), a judge runs after the judged agent finishes:
+
+- `blorb run`: after the single turn, before the usage footer.
+- `blorb chat`: once at session end, on the full session transcript, before the session usage totals.
+
+Judges run even when the judged turn failed - max turns, provider error, API error. The transcript then shows whatever survived the failure, so the judge can review that too.
+
+### What a judge receives
+
+A judge's own `system_prompt` carries the judging instructions. Blorb supplies the rest: the judge's first user message is the judged run's entire transcript - every user, assistant, and tool message in order, including the agent's reasoning, its tool calls with their arguments, and every tool result. The transcript renders as labeled blocks, one per message, with every body line indented two spaces:
+
+```text
+[user]
+  What is a jammie dodger?
+[tool call]
+  name: read
+  arguments: {"path": "digestives.md"}
+[tool result]
+  id: abc123
+  A jammie dodger is a British biscuit ...
+[assistant]
+  A jammie dodger is a domed biscuit ...
+```
+
+The labels are `[user]`, `[assistant]`, `[assistant thinking]` (the agent's reasoning), `[tool call]`, and `[tool result]`. Blorb explains this format to the judge in the same message, so a judge's system prompt only needs the judging instructions - no format description required.
+
+The transcript arrives inside a fenced block: an unpredictable id is generated per judge run, the opening and closing lines both carry it, and the message tells the judge to treat everything inside the fence as data to review. Content produced during the judged run - tool output, file contents - cannot predict the id, so it cannot forge the transcript's structure.
+
+### Judges see untrusted content
+
+The transcript contains everything the judged agent read and produced, including file contents and tool output - content an attacker may control. The fence and the indentation stop that content from forging the transcript's structure, but not from giving the judge instructions: a judge can be misled by what it reads. Judge output is informational only - it is printed and never fed back into the agent or the run - which bounds the damage but does not make judges trustworthy on hostile input.
+
+### What a judge can do
+
+A judge is a full agent: it can use tools like any other, including subagents. A judge can re-check the judged agent's work with the same knowledgebase tools rather than trusting the transcript.
+
+### Judge chains
+
+A judge can itself have judges. When the judge's run completes, its own judges run by the same rule, against its transcript - the judged transcript embedded inside it as indented content, inside a fresh fence with its own id. Cycles are a config error: a judge chain that loops back to itself fails validation, so the recursion is always finite.
+
+### Usage and limitations
+
+Judge LLM calls are attributed to the judge in the usage footer and the chat session totals, and they appear in the ndjson `done` event's per-agent split. In `blorb run` and at chat session end, the judgement prints as a `>>> Judge: <name>` block per judge, in the order the `judges` field lists them. In `--format ndjson`, judge events stream as `judge_*` types before the terminal event (see [formats](formats.md#ndjson)).
+
+Limitations:
+
+- Judge LLM calls are not traced to Prefactor, the same limitation as nested subagent calls.
+- In chat, a judge delegating to a subagent shows the judge's tool activity but not the subagent's own live text.
 
 ## Logging
 
