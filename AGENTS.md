@@ -35,7 +35,7 @@ Plans live in `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` (see the planning s
 - Stop after each commit and let the user review before starting the next stage.
 - The exception to "only commit when the user explicitly asks" above: executing a requested plan commits per stage as part of the request.
 - Each stage prompt says "do not commit" - that is addressed to the per-stage agent within the plan's own workflow, not to you; you are the one committing after verifying with `bin/qc`.
-- Check off each stage in the plan's Todo list as part of your commit (or as a separate check-off commit if the stage itself excludes plan edits).
+- Check off each stage in the plan's Todo list in the same commit as the stage's work. Do not make a separate commit that only checks off an item. If the stage itself excludes plan edits, wait: check it off in the next commit that touches the plan, or with the final check-off commit if no later stage edits the plan.
 
 ## Markdown files
 When writing Markdown, we do not manually wrap.
