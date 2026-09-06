@@ -214,24 +214,9 @@ See [examples/prefactor-tracing](examples/prefactor-tracing) for a single-agent 
 
 See [examples/ollama-cloud](examples/ollama-cloud) for a single-agent variant pointed at Ollama cloud (native `ollama` model type, API key via `api_key_env`, `reasoning_effort` on a thinking model).
 
-## Development
+## Contributing
 
-- `mise.toml` — pins the toolchain (`mise install` to set it up)
-- `bin/qc` — format, style check, and run tests
-- `bin/build` — build the `blorb` binary
-
-Layout:
-
-- `internal/config` — the `blorb.json` schema, loading, and validation
-- `internal/engine` — the agent loop: model calls, tool execution, turn limits
-- `internal/chat` — the interactive chat REPL
-- `internal/tools` — tool registry and subprocess execution
-- `internal/tools/builtin` — built-in tools (`read`, `grep`)
-- `internal/llm` — provider-neutral LLM types
-- `internal/llm/openai` — OpenAI-compatible client, with SSE streaming support
-- `internal/llm/ollama` — native Ollama client (`/api/chat`), non-streaming and NDJSON streaming
-- `internal/logging` — wire logging for LLM and tool interactions
-- `internal/prefactor` — Prefactor tracing client and tracer
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, building, and testing.
 
 ## License
 

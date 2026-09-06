@@ -7,7 +7,7 @@ The README has grown to ~530 lines and mixes four audiences: product pitch for u
 - [x] Commit 1: Create CONTRIBUTING.md from the README development sections
 - [x] Commit 2: Move the configuration reference to docs/configuration.md
 - [x] Commit 3: Move the `run` format reference to docs/cli.md
-- [ ] Commit 4: Slim the README and move the module layout to AGENTS.md
+- [x] Commit 4: Slim the README and move the module layout to AGENTS.md
 - [ ] Commit 5: Review pass
 
 ---

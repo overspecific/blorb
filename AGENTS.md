@@ -12,6 +12,21 @@ NOTE: the word is "overspecific" - make sure you get it correct in paths.
 
 We build high-quality, well-architected, correct code. We don't take shortcuts; if work needs to be done, we do it. We build test-first (TDD) where we can. After finishing a chunk of work, we go the extra mile and conciously do a review pass before handing it over - code, plans, everything. If something needs fixing we fix it.
 
+## Module layout
+
+- `internal/config` — the `blorb.json` schema, loading, and validation
+- `internal/engine` — the agent loop: model calls, tool execution, turn limits
+- `internal/chat` — the interactive chat REPL
+- `internal/run` — the one-shot run command
+- `internal/tools` — tool registry and subprocess execution
+- `internal/tools/builtin` — built-in tools (`read`, `grep`)
+- `internal/llm` — provider-neutral LLM types
+- `internal/llm/openai` — OpenAI-compatible client, with SSE streaming support
+- `internal/llm/ollama` — native Ollama client (`/api/chat`), non-streaming and NDJSON streaming
+- `internal/logging` — wire logging for LLM and tool interactions
+- `internal/prefactor` — Prefactor tracing client and tracer
+- `internal/usage` — usage stats (tokens, bytes, timing)
+
 ## Executing plans
 
 Plans live in `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` (see the planning skill for how they are written). When executing one:
