@@ -166,7 +166,7 @@ On the wire, `none` and `required` serialize as the bare string and `force` as t
 
 **logprobs.** A non-streaming feature: with `logprobs: true` the server reports one entry per content token, decoded into the neutral response and surfaced through `blorb run` (the `--logprobs` flag enables them for a run even when the config leaves them off, alongside the config setting). In `run --format ndjson`, the `text` and `done` events carry a `logprobs` array. In `run --format chat` and `run --format plain --logprobs`, one line prints after the response body per token — the token, its logprob, and the top alternative when present:
 
-```
+```text
 Hi there
   "Hi" logprob=-0.2500 (top: "Hi" -0.2500)
   " there" logprob=-0.1000
@@ -186,7 +186,7 @@ Each agent definition carries its own settings and the names of the top-level mo
 | `system_prompt` | yes      | The agent's system prompt.                                                                       |
 | `model`         | yes      | Name of the top-level model entry this agent talks to.                                          |
 | `max_turns`     | yes      | Max model turns per user message; must be at least 1.                                            |
-| `tools`         | no       | The *names* of the top-level tools this agent may use. Absent or empty means no tools.           |
+| `tools`         | no       | The _names_ of the top-level tools this agent may use. Absent or empty means no tools.           |
 
 Tools are shared vocabulary: they are declared once at the top level, and each agent lists, by name, the ones it may use. An agent listing an unknown tool is a config error, and listing the same tool twice within one agent is an error too. The listed order is the agent's — that is the order the tools are presented to the model. Agent names must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
 
@@ -322,7 +322,7 @@ blorb chat
 ./blorb models --config examples/simple/blorb.json
 ```
 
-```
+```text
 provider local (openai-compatible, http://localhost:13305/v1)
   Gemma-4-E4B-it-GGUF (used by small)
   Qwen3-32B-GGUF

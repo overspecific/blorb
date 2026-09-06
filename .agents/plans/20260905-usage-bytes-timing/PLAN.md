@@ -37,7 +37,7 @@ Two follow-up commits revised the footer shape after the plan's nine stages land
 
 **4677a3f — usage footer: one summary line per agent plus a total.** Commit 6 specified a session-wide `stats:` second line with no per-agent split. Replaced with a per-agent line design, now the shipped shape:
 
-```
+```text
 (blank line)
 ---
 main: 123 prompt, 456 completion, 579 total, 4s, 9.2KB output (6KB text, 2KB reasoning, 1.2KB tools), 20.0 tok/s, 2.3KB/s
@@ -45,7 +45,7 @@ worker: 23 prompt, 156 completion, 179 total, 2s, 1.1KB output, 11.5 tok/s, 550B
 total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1KB/s
 ```
 
-- One line per agent (tokens plus, when the agent's calls measured anything, its stats part: elapsed, output bytes with split, derived rates) and a `total:` line; a single agent renders just its line. `FormatSession` is the same block with a `session ` prefix on each label.
+- One line per agent (tokens plus, when the agent's calls measured anything, its stats part: elapsed, output bytes with split, derived rates) and a `total:` line; a single agent renders just its line. `FormatSession` is the same block with a `session` prefix on each label.
 - Each line's stats part renders independently — an agent whose client measured nothing shows tokens only, so measured and unmeasured agents mix cleanly (the old session-wide line could not express that).
 - The split's `text` component is omitted: content-only output is all text, so there is nothing to attribute. Only non-zero components render within the paren.
 - The old commit 6 rationale "the token line's exact shape is untouched" no longer applies; the footer tests were all updated to the new shape, as were the README example and the chat/run integration tests.
@@ -89,6 +89,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 > ```
 >
 >   (`time` is a new import for the package.) The JSON tag `elapsed_ns` keeps the serialized form unambiguous: the value marshals as Go's integer nanosecond count, and consumers unmarshalling into `time.Duration` recover the duration directly. The serialized shape is `stats:{"output":{"content_bytes":...,"reasoning_bytes":...,"tool_call_bytes":...},"elapsed_ns":...}`.
+>
 > - Add a method on `Message` (the counting definition lives with the type it measures):
 >
 > ```go
@@ -103,6 +104,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 > ```
 >
 >   Implementation: `Content: len(m.Content)`, `Reasoning: len(m.Reasoning)`, `ToolCalls: sum of len(tc.FunctionName) + len(tc.FunctionArgs)` over `m.ToolCalls`.
+>
 > - Add to `Response`:
 >
 > ```go
@@ -132,6 +134,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 > ```
 >
 >   (compute `Output` from the just-built `resp.Message`; inline the helper call in the literal so it reads the parsed message). The non-2xx error path (line 144) returns no response, so no stats escape — correct, matching the usage behaviour (failed calls report nothing).
+>
 > - In `ChatStream` (openai.go:362): the non-2xx path reads the body whole (line 382) — stats are lost with the error return; fine. Pass `startedAt` into `readStream`, which stops the clock when the stream completes: on the happy return — after the validation following `acc.response()` (openai.go:482-488) — set
 >
 > ```go
@@ -139,6 +142,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 > ```
 >
 >   before returning. Error paths return `nil, err` (the assembled partial response is only logged), so stats are dropped there, matching `Chat`. The `defer` in `ChatStream` drains the body after `readStream` returns; the clock has already stopped — harmless.
+>
 > - Wire-log records are unchanged: they already log full bodies.
 >
 > Tests (`internal/llm/openai/openai_test.go`, extending the existing `httptest.Server` fixtures):
@@ -224,6 +228,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 > ```
 >
 >   Both divide by the summed elapsed converted to seconds as a float, guarding the zero denominator.
+>
 > - The chat/run wraps construct `usage.Record` in four places (`internal/chat/usage.go:31`, `:47`; `internal/run/usage.go:17`, `:33`): add `Stats: ev.Stats` next to the existing `Usage: ev.Usage` in all four. (This is plumbing the account needs to ever see stats; it belongs with this commit since the account is inert without it. It touches chat and run but changes no behaviour — no test output changes.)
 >
 > Tests:
@@ -251,7 +256,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 >
 > - The rendered shape:
 >
-> ```
+> ```text
 > (blank line)
 > ---
 > tokens: 123 prompt, 456 completion, 579 total (main: 100/300/400, worker: 23/156/179)
@@ -259,6 +264,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 > ```
 >
 >   Rendering rules: the total output figure and elapsed always render when the line is shown (zeros included); the parenthesised split renders only its non-zero components, in text/reasoning/tools order, each labelled singularly ("text", "reasoning", "tools") — a plain text model does not carry "0B reasoning" noise, while a reasoning model shows where its bytes went. Elapsed uses Go's `Duration.String()` (`4s`, `12.345678s` — the idiomatic compact form; do not hand-roll a decimal trim). Bytes use a small `humanBytes(n int) string` helper (in `format.go`; it is rendering): `B` below 1024, then `KB`, `MB`, `GB`, dividing by 1024, one decimal place, trailing `.0` dropped (`512B`, `4KB`, `4.5KB`, `1MB`). The bytes/sec rate renders through `humanBytes` with the unit `/s` (`2.3KB/s`) — integer truncation in the rare sub-1B/s case is display-grade precision, fine; tokens/sec renders as `%.1f` with the unit `tok/s`.
+>
 > - The stats line is omitted entirely when the account's summed total output bytes and elapsed are both zero — a provider that measured nothing shows only the token line, exactly as today (this keeps every existing footer test passing for fake clients with zero stats, and the new tests pin the new line's shape).
 > - Per-agent split on the stats line: no — the token line's split covers attribution; the stats line is session-wide throughput.
 > - `FormatSession` gains the same stats line (same `formatStats`), so the session footer shows cumulative time/bytes/rates.
@@ -291,6 +297,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 > ```
 >
 >   (`llm` is already imported.) Being a pointer, `omitempty` genuinely omits it when nil.
+>
 > - Add `Stats llm.CallStats `json:"stats"`` to `ndjsonAgentUsage` (non-pointer: per-agent entries always carry it, zero included — the split is explicit data, and a zero is meaningful: "measured nothing").
 > - Add the derived-throughput object for `done`:
 >
@@ -304,6 +311,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 > ```
 >
 >   and `Rates *ndjsonRates `json:"rates,omitempty"`` on `ndjsonEvent`, set on `done` only, omitted when the summed elapsed is zero (the same guard as the footer). Compute via the `Account` helpers from commit 5.
+>
 > - `printEvent`'s `EventUsage` case (ndjson.go:136): attach the call's stats unconditionally — the per-call `usage` event always carries them, zero included (zero is "client did not measure", which is information): `stats := ev.Stats; return s.emit(ndjsonEvent{Type: "usage", Agent: ev.AgentName, Model: ev.Model, Usage: &ev.Usage, Stats: &stats})`.
 > - `onSubagent`'s `SubagentUsage` case (ndjson.go:163): same — `stats := ev.Stats` and `Stats: &stats`.
 > - `finish` (ndjson.go:179): `done.Usage` unchanged; add `done.Stats` pointing at `s.account.TotalStats()` (commit 5), and `done.Rates` when the summed elapsed is non-zero; each `done.Agents` entry carries its per-agent summed stats via `AgentTotals`' new `Stats` field (extend the loop at ndjson.go:185).
@@ -340,6 +348,7 @@ total: 146 prompt, 612 completion, 758 total, 6s, 10.3KB output, 25.0 tok/s, 2.1
 > ```
 >
 >   The breakdown rides alongside its total so telemetry consumers see where bytes went without summing. Milliseconds, not nanoseconds, for `elapsed_ms`: the span payload is human-facing telemetry (its other fields are strings and maps), and `elapsed_ms` is the convention for span durations; sub-millisecond calls show 0, which is acceptable for telemetry — add that one-line comment on the map entry. The ndjson surface keeps nanosecond precision (`llm.CallStats`' JSON); the tracer payload is a lossy display.
+>
 > - No changes to span creation (`LLMCall`), the client, or `chat`'s tracewrap — they pass the response through untouched.
 >
 > Tests (`internal/prefactor/tracer_test.go`): extend `TestTracerLLMSpanPayloads` (tracer_test.go:370) — give the completed response non-zero `Stats` and assert the captured result payload's `stats` map carries the nested `output_bytes` breakdown (with the correct `total`) and `elapsed_ms` as the millisecond-rounded value; a zero-stats response carries zeros.

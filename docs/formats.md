@@ -10,7 +10,7 @@ The machine-parsing reference for `blorb run --format plain` and `blorb run --fo
 
 With `--format plain --logprobs`, one line prints after the response body per token — the token, its logprob, and the top alternative when present:
 
-```
+```text
 Hi there
   "Hi" logprob=-0.2500 (top: "Hi" -0.2500)
   " there" logprob=-0.1000
@@ -26,7 +26,7 @@ A non-streaming feature: `--logprobs` both asks the server for the data (overrid
 
 Subagent activity uses the same vocabulary prefixed `subagent_`, with `agent` and `depth` fields added:
 
-```
+```text
 text_delta      {type, text}                       assistant text fragment (streaming)
 thinking_delta  {type, thinking}                   reasoning fragment (streaming)
 tool_call_delta {type, index, name?, arguments}    tool call fragment; assemble by index, concatenating arguments

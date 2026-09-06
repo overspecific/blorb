@@ -27,7 +27,7 @@ bin/build
 
 Then try prompts like:
 
-```
+```text
 tell me the time
 echo "blorb is fun"
 what's a jammie dodger?

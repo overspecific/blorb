@@ -30,11 +30,13 @@ Out of scope: Prefactor spans for nested activity (nested LLM calls are not wrap
 >
 > 1. Add `ToolTypeSubagent ToolType = "subagent"` alongside `ToolTypeCommand` and `ToolTypeBuiltin`, and include it in `SupportedToolTypes()` (keep the list sorted alphabetically: builtin, command, subagent).
 > 2. Add a field to `ToolEntry` under a `// Fields for type "subagent".` comment:
+>
 >    ```go
 >    // Agent names the target agent this tool delegates to; it must be
 >    // a defined agent in the same config.
 >    Agent string `json:"agent,omitempty"`
 >    ```
+>
 > 3. In `ToolEntry.validate` add a `case ToolTypeSubagent:` branch: `agent` is required and must match `NamePattern`; `args_schema`, when set, must be valid JSON (same check as command tools); `command`, `builtin`, and `config` must be empty, rejected with messages matching the existing style (`"command is not valid for subagent tools"`, etc.).
 > 4. In `Config.Validate`, after the per-agent validation loop (so all agent names are known), check every tool entry of type `subagent`: its `Agent` must name a defined agent, else error `tool %q: agent %q is not a defined agent`.
 > 5. Cycle detection, also in `Config.Validate`: build the delegation graph — for each agent, for each tool name it lists, if that entry has type `subagent` there is an edge from the agent to the entry's target agent. Detect any cycle (including self-reference: an agent granted a tool that targets itself) with a DFS and report the path, e.g. `agent cycle detected: "a" -> "b" -> "a"`. A cycle anywhere in the config is rejected, since delegation depth is otherwise unbounded.
@@ -166,15 +168,17 @@ Out of scope: Prefactor spans for nested activity (nested LLM calls are not wrap
 > 1. Generalize the client factory so it works for any agent, not just the session's: a helper on `Options` (e.g. `newClientFor(agent config.Agent, sink logging.Sink)`) that returns `opts.NewClient(agent)` when injected, else `NewClientWithGetenv(agent, getenv, sink)` — and reimplement the existing `newClient(sink)` in terms of it.
 > 2. Construct the runner after the sink and client: `engine.NewSubagentRunner(engine.SubagentRunnerConfig{Config: opts.Config, NewClient: factory, Stream: opts.Stream && streaming, Sink: sink})` (the same `streaming` capability check the session's engine uses), and pass `tools.WithSubagentRunner(runner)` to the session's `tools.NewRegistry`.
 > 3. Event pipe: the registry's event callback is set at construction but the per-turn printer is created inside `runTurn`. Add a small session-scoped holder:
+>
 >    ```go
 >    type subagentPipe struct {
 >        mu sync.Mutex
 >        cb func(tools.SubagentEvent) error
 >    }
 >    ```
+>
 >    with `set(cb)` and `emit(ev) error` (no-op when unset), pass `tools.WithSubagentEvents(pipe.emit)` to the registry, and in `runTurn` set the pipe to the turn's subagent printer after creating it and clear it via `defer` before returning.
 >
-> Display: extend `chatEvents` to return a third value, `onSubagent func(tools.SubagentEvent) error`, alongside the existing `onEvent` and `flush`. It renders through the *same* writer and shares the `endLine`/`writeDelta`/`partialLine` machinery so subagent output interleaves cleanly with the parent's blocks (the parent's `>>> Result: Tool: ask_x` heading must terminate a partial subagent line, and vice versa). Rendering rules: indent headings and whole-message blocks by two spaces per `Depth` and label them with the producing agent — `  [researcher] >>> Assistant:`, `  [researcher] >>> Assistant (thinking):`, `  [researcher] >>> Tool: read`, `  [researcher] >>> Result:|Error: Tool: read` — mirroring the parent's heading conventions; whole messages print their text indented; delta fragments print inline (unindented) after their heading, labeled by it, using `writeDelta`. Track heading-once state per `(depth, agent)` for the delta streams (a map, cleared alongside `startRound`'s resets when a tool result ends a round). Events outside a turn cannot occur; the pipe drops them if ever unset.
+> Display: extend `chatEvents` to return a third value, `onSubagent func(tools.SubagentEvent) error`, alongside the existing `onEvent` and `flush`. It renders through the *same* writer and shares the `endLine`/`writeDelta`/`partialLine` machinery so subagent output interleaves cleanly with the parent's blocks (the parent's `>>> Result: Tool: ask_x` heading must terminate a partial subagent line, and vice versa). Rendering rules: indent headings and whole-message blocks by two spaces per `Depth` and label them with the producing agent — `[researcher] >>> Assistant:`, `[researcher] >>> Assistant (thinking):`, `[researcher] >>> Tool: read`, `[researcher] >>> Result:|Error: Tool: read` — mirroring the parent's heading conventions; whole messages print their text indented; delta fragments print inline (unindented) after their heading, labeled by it, using `writeDelta`. Track heading-once state per `(depth, agent)` for the delta streams (a map, cleared alongside `startRound`'s resets when a tool result ends a round). Events outside a turn cannot occur; the pipe drops them if ever unset.
 >
 > Tests in `internal/chat/chat_test.go`: a two-agent test config (parent granted a subagent tool targeting the second agent; the second agent granted a trivial command tool so a nested round trip is exercised) with `opts.NewClient` dispatching on agent name to separate fakes — parent fake: one tool call then final text; subagent fake: a tool-call round then final text. Assert the stdout contains, in order: `>>> Tool: ask_researcher`, the indented `[researcher]` assistant/tool blocks, then `>>> Result: Tool: ask_researcher` whose body is the subagent's concatenated final text; and assert the parent's request carried the subagent tool definition with the default prompt schema. A streaming variant using the streaming fakes for both agents, asserting the subagent's text deltas appear inline under its labeled heading while the parent's own deltas still render. A `--no-stream`-style non-streaming variant asserting whole-message subagent blocks. Update `newTestOptions`/`testConfig` helpers as needed rather than duplicating them.
 >

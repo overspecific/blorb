@@ -40,7 +40,7 @@ Today a blorb.json describes exactly one agent: `system_prompt`, `provider`, and
 >   - `agents` required and non-empty: `agents is required` / `agents must not be empty`
 >   - per agent: `name` required and must match `ToolNamePattern` (the same `^[a-zA-Z0-9_-]+$` character class — rename the var to `NamePattern` and alias `ToolNamePattern = NamePattern` if that reads better, or keep one name and document it covers both); empty name → `agent name is required`, bad name → `agent name %q must match ...`
 >   - agent names must be unique within the config: `duplicate agent name %q` (the map gave this for free; the array must check it explicitly — iterate in order so the first definition wins the error position)
->   - per agent: `system_prompt` required, `provider` validated as today, `max_turns >= 1` — all error messages prefixed `agent %q: `
+>   - per agent: `system_prompt` required, `provider` validated as today, `max_turns >= 1` — all error messages prefixed with `agent %q:`
 >   - per agent: every entry in the agent's `tools` array must be non-empty and match `NamePattern`, and must exist in the top-level `Tools` by name: error `agent %q: unknown tool %q` (and `agent %q: unknown tool %q` for an empty entry). Duplicates within one agent's list are rejected: `agent %q: duplicate tool %q` (top-level uniqueness stays `duplicate tool name %q`)
 >   - `default_agent`, when non-empty, must exist: error `default_agent %q is not a defined agent` (keep this check last so a per-agent error surfaces first)
 >   - a `default_agent` naming an agent is optional; nothing requires one

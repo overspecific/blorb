@@ -141,6 +141,7 @@ Scope decisions (from the vision and user): chat-format output only for this pla
 > ```
 >
 >   (`llm` is already imported in the tools package via tools.go's `llm.Tool`.)
+>
 > - Add a new kind and extend the kind doc:
 >
 > ```go

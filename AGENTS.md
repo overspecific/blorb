@@ -38,4 +38,5 @@ Plans live in `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` (see the planning s
 - Check off each stage in the plan's Todo list in the same commit as the stage's work. Do not make a separate commit that only checks off an item. If the stage itself excludes plan edits, wait: check it off in the next commit that touches the plan, or with the final check-off commit if no later stage edits the plan.
 
 ## Markdown files
+
 When writing Markdown, we do not manually wrap.

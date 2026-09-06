@@ -11,6 +11,8 @@ fi
 fmt() {
 	echo "==> gofmt -w ."
 	gofmt -w .
+	echo "==> rumdl fmt ."
+	rumdl fmt --silent .
 }
 
 lint() {
@@ -21,6 +23,16 @@ lint() {
 vet() {
 	echo "==> go vet ./..."
 	go vet ./...
+}
+
+markdown() {
+	echo "==> rumdl check ."
+	rumdl check --silent .
+	echo "==> lychee --offline ."
+	if ! out=$(lychee --offline --no-progress . 2>&1); then
+		printf '%s\n' "$out"
+		exit 1
+	fi
 }
 
 mod() {
@@ -62,6 +74,7 @@ fmt
 mod
 lint
 vet
+markdown
 build
 test
 echo "==> all checks passed"

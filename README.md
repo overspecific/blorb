@@ -1,7 +1,8 @@
-> **A little human note:** this is very much in the early slop zone - definitely a work-in-progress and I haven't spent much time going over things; I'm kind of just sketching out the shape. Your mileage may very much vary, it might set things on fire etc etc. 
+> **A little human note:** this is very much in the early slop zone - definitely a work-in-progress and I haven't spent much time going over things; I'm kind of just sketching out the shape. Your mileage may very much vary, it might set things on fire etc etc.
 > _-- Simon_
 
 # Blorb
+
 ![Blorb](assets/blorb.jpg)
 
 A tool for making AI agents, shipped as a single binary.
@@ -90,14 +91,14 @@ Type `exit` (or hit Ctrl-D) to quit. Ctrl-C interrupts an in-flight turn; Ctrl-C
 
 Each turn ends with a usage footer: one line per agent that made a call (multiple invocations of the same agent sum into its one line), then a `total:` line — or just the agent's line when no subagents ran, since it is already the total. With measured stats, each line also carries elapsed time, output bytes with the text/reasoning/tool-call split, and derived throughput:
 
-```
+```text
 ---
 main: 123 prompt, 456 completion, 579 total, 4s, 8.2KB output (5KB text, 2KB reasoning, 1.2KB tools), 114.0 tok/s, 2.1KB/s
 worker: 23 prompt, 156 completion, 179 total, 2s, 1.1KB output, 78.0 tok/s, 563B/s
 total: 146 prompt, 612 completion, 758 total, 6s, 9.3KB output, 102.0 tok/s, 1.6KB/s
 ```
 
-When the session ends, chat prints the same block with a `session ` prefix on each line. A zero token count means the provider did not report usage; a line's stats part is omitted when nothing was measured. Note that for reasoning models the rates are end-to-end — thinking time is included in both the elapsed span and the output bytes — so they read as "delivered per wall-clock second".
+When the session ends, chat prints the same block with a `session` prefix on each line. A zero token count means the provider did not report usage; a line's stats part is omitted when nothing was measured. Note that for reasoning models the rates are end-to-end — thinking time is included in both the elapsed span and the output bytes — so they read as "delivered per wall-clock second".
 
 ### One-shot runs
 

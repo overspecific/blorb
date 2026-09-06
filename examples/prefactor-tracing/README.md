@@ -31,9 +31,10 @@ bin/build
 ./blorb chat --config examples/prefactor-tracing/blorb.json
 ./blorb run --config examples/prefactor-tracing/blorb.json "what's a jammie dodger?"   # one traced instance, one turn
 ```
+
 Then try prompts like:
 
-```
+```text
 what's a jammie dodger?
 which biscuits survive a long dunking?
 ```

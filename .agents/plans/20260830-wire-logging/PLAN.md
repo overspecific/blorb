@@ -25,7 +25,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 > - Add `NewNop() Sink` returning a do-nothing sink, and `New(dir string) (Sink, error)` returning a file sink that validates `dir` exists and is a directory (`os.Stat`), returning a descriptive error otherwise. Creating the directory is deliberately not the sink's job: the caller (Commit 4) creates `.logs` and passes the path in.
 > - The file sink writes each record as exactly one file named `<timestamp>-<kind>.txt`, e.g. `20260830T142533-123456789-llm-request.txt`. The timestamp is `r.Time.UTC()` formatted with the layout `20060102T150405-000000000` — six date digits, six time digits, then nine fixed fractional digits, separated by a dash; the fixed width keeps the string both unambiguous and correctly sortable. The timestamp comes *first* so that a lexical sort of filenames across all kinds is the true chronological sequence — a kind-first prefix would sort by kind instead. File mode `0o600` (logs may contain headers, API keys, and conversation content). Content format:
 >
->   ```
+>   ```text
 >   # 2006-01-02T15:04:05.999999999+00:00 kind=llm-request
 >   POST http://localhost:13305/v1/chat/completions
 >   Content-Type: application/json
@@ -39,7 +39,8 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 > - Add `NewBuffered(size int) *Buffered`: an in-memory `Sink` retaining the last `size` records (all records when `size <= 0`), with a `Records() []Record` method returning a copy in write order. Commit 2 and 3 tests use this as their capturing sink. Keep the API small: no `Multi`, no config parsing, no network.
 >
 > Tests in `internal/logging/logging_test.go` (package `logging_test`):
-> - Round-trip: writing a record with headers and a body to a sink from `New(t.TempDir())` produces exactly one file whose name fully matches `^\d{8}T\d{6}-\d{9}-llm-request\.txt$`, and whose content has the `# ` timestamp line with `kind=llm-request`, the `POST <url>` line, sorted `Key: Value` header lines, a blank line, then the exact body bytes.
+>
+> - Round-trip: writing a record with headers and a body to a sink from `New(t.TempDir())` produces exactly one file whose name fully matches `^\d{8}T\d{6}-\d{9}-llm-request\.txt$`, and whose content has the `#` timestamp line with `kind=llm-request`, the `POST <url>` line, sorted `Key: Value` header lines, a blank line, then the exact body bytes.
 > - Multi-value headers render comma-joined; header keys sort alphabetically; an empty body writes no blank separator line.
 > - `New` rejects a nonexistent directory and a path that is a regular file, with descriptive errors; `NewNop()` writes nothing (verify a temp dir stays empty).
 > - Ordering: write two records whose `Time` is explicitly the same nanosecond, plus a third with an earlier `Time`; assert three distinct files exist and that sorting filenames yields them in write order (the earlier-Time third record written last must be bumped above the first two).
@@ -60,6 +61,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 > - Keep the record-building logic in one place per side (a `logRequest`/`logResponse` pair of unexported helpers, or inline nil-guarded calls in `post`/`Chat`/`ChatStream`) so `Chat` and `ChatStream` cannot drift. Do not log at delta granularity — whole-response files only; the streamed record is written once, when the stream path finishes.
 >
 > Tests in `internal/llm/openai/openai_test.go`:
+>
 > - Extend the `newTestClient` helper to take a sink (existing tests pass nil and stay unchanged in behavior).
 > - A successful `Chat` with a `logging.NewBuffered(0)` sink produces exactly two records: first `KindLLMRequest` with method POST, the full `<server>/chat/completions` URL, a `Content-Type: application/json` header, and a body containing the marshaled wire request (assert `model` and a message appear); then `KindLLMResponse` with the synthetic `Status: 200` header and the exact response body bytes. Assert request `Time` is before response `Time`.
 > - A `Chat` against a 401 server still logs the response record with `Status: 401` and the server's error body.
@@ -81,6 +83,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 > - Sink writes are best-effort: a `Write` error is ignored and never changes `Run`'s return values.
 >
 > Tests in `internal/tools/tools_test.go`:
+>
 > - A `Run` against a real shell tool (the existing `entry("echo_args", ...)` pattern) with a `logging.NewBuffered(0)` sink logs a `KindToolRequest` record with `URL` = the tool name and body exactly the args JSON passed in, and a `KindToolResult` record with body equal to the `ToolResult.Output` returned to the caller. Assert request `Time` is before result `Time`.
 > - A non-zero-exit tool (the existing `failer` pattern) logs a result record whose body matches the returned `ToolResult.Output` (contains `failed with exit code` and the stderr capture).
 > - A tool that times out (the existing timeout pattern) logs a result record with `error: ... timed out ...` in the body, and `Run` still returns the timeout error.
@@ -105,8 +108,8 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 >   - `internal/chat/chat_test.go`: `NewClientWithGetenv` with a nil sink returns a working client.
 >   - `main_test.go`: assert the chat command still defaults `--config` to `config.DefaultPath` (existing test) and no new flags were added to `chatCommand`.
 >
-> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
-
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.  
+> 
 > No other packages change. Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
 
 ## Commit 6: Log the assembled response for streamed turns
@@ -124,6 +127,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 > - Timestamps: the response record's `Time` is taken when the stream path finishes (as now), so request-before-response ordering still holds on every path.
 >
 > Tests in `internal/llm/openai/openai_test.go`:
+>
 > - Update `TestChatStreamLogsRawSSE` (now misnamed — rename to `TestChatStreamLogsAssembledResponse`): the response record's body is the assembled JSON — `content` is the concatenated `"Hello"`, `finish_reason` is `"stop"`, the `id` round-trips, and it contains no `data:` lines and no `[DONE]` terminator. Its shape matches a non-streaming response record (same envelope structure).
 > - Update `TestChatStreamLogsAbortedStream`: the response record's body is the partial assembled response — it contains `"first"` and `"second"` (the content received before the abort), not `"never seen"`, and not raw SSE lines.
 > - Add `TestChatStreamLogsNoDataError`: a 200 response with an empty SSE body logs a response record whose body is `error: ...` mentioning no data, and `ChatStream` still returns the error.
@@ -158,6 +162,7 @@ Adds wire logging under a `.logs` directory adjacent to the `blorb.json` file: o
 > - Drop the unused `resp` parameter from `logResponse` (it becomes `func(body []byte)`), and update its three call sites; the `fail` helper no longer needs to pass the response alongside the body.
 >
 > Tests in `internal/llm/openai/openai_test.go`:
+>
 > - Extend `TestChatStreamLogsAssembledResponse`'s server chunks with a `reasoning_content` fragment, and assert the logged response body carries the assembled reasoning in `choices[0].message.reasoning_content` — pinning that the log is full-fidelity even for a final answer (no tool calls) where the *request* path would drop it.
 > - The aborted-stream test (`TestChatStreamLogsAbortedStream`) already asserts the partial assembled JSON; no change needed beyond confirming it still passes.
 > - No other tests change; the request-side reasoning behavior (resending reasoning only with tool-call rounds) is already pinned by existing tests and must remain intact.

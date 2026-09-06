@@ -2,3 +2,5 @@
 go = "1.27.0"
 staticcheck = "2026.2.1"
 ast-grep = "0.45.3"
+rumdl = "0.2.65"
+lychee = "0.24.2"

@@ -23,7 +23,7 @@ The model entry in `blorb.json` reads:
 }
 ```
 
-For `type: ollama`, `base_url` is the bare server root — `https://ollama.com` for the cloud, or `http://localhost:11434` for a local Ollama (which needs no `api_key_env` at all). `model_name` is the Ollama model tag; browse https://ollama.com/search?c=cloud for the cloud-capable tags (they are not the same set as the local library — e.g. gemma4 is served in the cloud at `31b`), and pick a thinking-capable model (gemma4, qwen3, deepseek, ...) if you want to see the reasoning output. `reasoning_effort` is optional: `none` disables thinking, other values (`low`, `medium`, `high`, `max`) ask for more or less of it, and removing the line uses the server default. Remove `api_key_env` entirely for a local server; for the cloud it is required — an empty environment variable is a config error.
+For `type: ollama`, `base_url` is the bare server root — `https://ollama.com` for the cloud, or `http://localhost:11434` for a local Ollama (which needs no `api_key_env` at all). `model_name` is the Ollama model tag; browse <https://ollama.com/search?c=cloud> for the cloud-capable tags (they are not the same set as the local library — e.g. gemma4 is served in the cloud at `31b`), and pick a thinking-capable model (gemma4, qwen3, deepseek, ...) if you want to see the reasoning output. `reasoning_effort` is optional: `none` disables thinking, other values (`low`, `medium`, `high`, `max`) ask for more or less of it, and removing the line uses the server default. Remove `api_key_env` entirely for a local server; for the cloud it is required — an empty environment variable is a config error.
 
 ## Run
 
@@ -37,7 +37,7 @@ bin/build
 
 Then try prompts like:
 
-```
+```text
 what's a jammie dodger?
 which biscuits survive a long dunking?
 ```

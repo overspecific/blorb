@@ -1,0 +1,13 @@
+# rumdl configuration. See https://rumdl.dev/.
+
+[per-file-ignores]
+# AGENTS.md starts with prose instructions, not a heading.
+"AGENTS.md" = ["MD041"]
+# README.md starts with a human note, not a heading.
+"README.md" = ["MD041"]
+# Skill files start with frontmatter then prose, not a heading.
+"{.agents/skills/**/*.md,AGENTS.md}" = ["MD041"]
+# This is a running log of work; repeated heading names are expected.
+".agents/visions/roadmap-log.md" = ["MD024"]
+# Line length is not enforced; we do not manually wrap markdown.
+"**/*.md" = ["MD013"]

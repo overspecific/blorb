@@ -5,7 +5,7 @@ description: Build a plan for future work to be executed in stages
 
 Planning is essential for good work - it lets the user decide what a good flow will be, and it lets you organise your thoughts. Plans in this codebase map to pull requests, each is a coherent set of changes.
 
-Plans are written into `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` - a new directory is created for each plan.  Additional artifacts can be placed alongside the plan file if needed; if none are needed then leave this out.
+Plans are written into `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` - a new directory is created for each plan. Additional artifacts can be placed alongside the plan file if needed; if none are needed then leave this out.
 
 ## Rules
 
@@ -56,4 +56,3 @@ Plans are written into `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` - a new di
 After a plan is implemented, the user may ask for a review. Find the commits that relate to the plan, and examine them for alignment to the plan, quality and correctness. If there are any issues found, let the user know what they are.
 
 If the user asks for the issues to be fixed, add them into the plan as new stages, one per issue.
-
