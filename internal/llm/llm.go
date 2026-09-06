@@ -109,7 +109,7 @@ type Request struct {
 	// explicit zeros survive and reach the wire. Provider packages map
 	// them onto their own wire shapes (openai top-level fields, ollama's
 	// nested options object).
-	Sampling SamplingParams `json:"sampling,omitempty"`
+	Sampling SamplingParams `json:"sampling"`
 	// ToolChoice controls whether and how the model must call tools. nil
 	// means auto: the model decides freely.
 	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`

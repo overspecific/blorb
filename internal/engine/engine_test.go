@@ -249,10 +249,14 @@ func TestEngineForcedToolMode(t *testing.T) {
 		if len(fc.requests) != 2 {
 			t.Fatalf("API calls = %d, want 2", len(fc.requests))
 		}
-		for i, req := range fc.requests {
-			if req.ToolChoice != choice {
-				t.Errorf("request %d ToolChoice = %+v, want the configured choice on every call", i, req.ToolChoice)
-			}
+		// The first request forces the tool; after the forced tool has
+		// run the follow-up carries no tool choice, so a compliant
+		// server lets the model produce the final answer.
+		if fc.requests[0].ToolChoice != choice {
+			t.Errorf("request 0 ToolChoice = %+v, want the configured forced choice", fc.requests[0].ToolChoice)
+		}
+		if fc.requests[1].ToolChoice != nil {
+			t.Errorf("request 1 ToolChoice = %+v, want nil after the forced tool ran", fc.requests[1].ToolChoice)
 		}
 	})
 

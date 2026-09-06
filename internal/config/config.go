@@ -322,8 +322,10 @@ type Model struct {
 	// --logprobs flag. Models on both provider types support the knob.
 	Logprobs bool `json:"logprobs,omitempty"`
 	// TopLogprobs is how many top alternative tokens to report per
-	// position, in [0, 20], and settable only when logprobs is true.
-	TopLogprobs int `json:"top_logprobs,omitempty"`
+	// position, in [0, 20], and settable only when logprobs is true. It
+	// is a pointer so an explicit "top_logprobs": 0 is distinguishable
+	// from an absent field.
+	TopLogprobs *int `json:"top_logprobs,omitempty"`
 	// ReasoningEffort is the optional thinking effort the backend is
 	// asked for. Empty means the server default applies. Accepted values
 	// are the union of the OpenAI and Ollama scales; see
@@ -802,14 +804,14 @@ func (m *Model) validate(providers []Provider) error {
 // [0, 20] (OpenAI's cap), and settable only when logprobs is true. Models
 // on both provider types support the knob.
 func validateLogprobs(m *Model) error {
-	if m.TopLogprobs == 0 {
+	if m.TopLogprobs == nil {
 		return nil
 	}
 	if !m.Logprobs {
 		return fmt.Errorf("top_logprobs is settable only when logprobs is true")
 	}
-	if m.TopLogprobs < 0 || m.TopLogprobs > 20 {
-		return fmt.Errorf("top_logprobs %d must be in [0, 20]", m.TopLogprobs)
+	if *m.TopLogprobs < 0 || *m.TopLogprobs > 20 {
+		return fmt.Errorf("top_logprobs %d must be in [0, 20]", *m.TopLogprobs)
 	}
 	return nil
 }
@@ -850,6 +852,15 @@ func (m *Model) ResolvedToolChoice() *llm.ToolChoice {
 		return nil
 	}
 	return &llm.ToolChoice{Mode: llm.ToolChoiceMode(m.ToolChoice), ForceTool: m.ForcedTool}
+}
+
+// TopLogprobsOrDefault returns the configured top_logprobs, or 0 when unset
+// (the wire field is omitted and the server reports only the chosen token).
+func (m *Model) TopLogprobsOrDefault() int {
+	if m.TopLogprobs == nil {
+		return 0
+	}
+	return *m.TopLogprobs
 }
 
 // SupportedToolChoiceModes lists the tool_choice modes, sorted

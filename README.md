@@ -336,14 +336,14 @@ Each model entry declares one named LLM backend: a provider connection (by name)
 | `tool_choice`    | no       | How the model is steered around tools: `auto` (the default), `none`, `required`, or `force`. See below.                 |
 | `forced_tool`    | only with `tool_choice: "force"` | The tool the model must call in force mode; an error anywhere else. Must match `^[a-zA-Z0-9_-]+$`. |
 | `logprobs`       | no       | Ask the server for per-token log probabilities of the response's content tokens. Models on both provider types.          |
-| `top_logprobs`   | no       | How many top alternative tokens to report per position, in [0, 20]; settable only when `logprobs` is true.               |
+| `top_logprobs`   | no       | How many top alternative tokens to report per position, in [0, 20]; settable only when `logprobs` is true — an explicit `"top_logprobs": 0` without `logprobs` is a config error. |
 
 **tool_choice.** The four modes:
 
 - `auto` (the default, and the absent field's meaning): the model decides freely.
 - `none`: tool calls are forbidden for the turn, while the tool definitions stay advertised. The request prefix stays byte-identical to the conversation so far, so provider prompt caches (OpenAI prefix caching, vLLM, llama.cpp warm KV) keep hitting — omitting the tool definitions would bust the cache. It forbids calls for a turn without paying the context reprocessing cost.
 - `required`: the server is asked to force some tool call; which one is the server's choice, and blorb does not police the result.
-- `force`: the model must call `forced_tool`. The engine checks at construction that the forced tool is among the agent's granted tools, and if the model replies with text instead of the call, the turn fails with a clear error naming the tool and what came back instead.
+- `force`: the model must call `forced_tool`. The engine checks at construction that the forced tool is among the agent's granted tools, and if the model replies with text instead of the call, the turn fails with a clear error naming the tool and what came back instead. Once the forced tool has run, follow-up requests drop the `tool_choice` field so the model is free to produce the final answer.
 
 On the wire, `none` and `required` serialize as the bare string and `force` as the OpenAI object shape `{"type":"function","function":{"name":...}}` — which Ollama accepts identically. `auto` omits the field.
 

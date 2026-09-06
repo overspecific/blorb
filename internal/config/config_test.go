@@ -519,6 +519,7 @@ func TestLoadRejects(t *testing.T) {
 		{"model_tool_choice_unknown.json", []string{"tool_choice"}},
 		{"model_top_logprobs_out_of_range.json", []string{"top_logprobs 21 must be in [0, 20]"}},
 		{"model_top_logprobs_without_logprobs.json", []string{"top_logprobs is settable only when logprobs is true"}},
+		{"model_top_logprobs_zero_without_logprobs.json", []string{"top_logprobs is settable only when logprobs is true"}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
 		{"tool_missing_type.json", []string{"type is required"}},
@@ -892,8 +893,8 @@ func TestLoadLogprobsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(model_logprobs_valid.json) error = %v, want nil", err)
 	}
-	if !cfg.Models[0].Logprobs || cfg.Models[0].TopLogprobs != 5 {
-		t.Errorf("Logprobs/TopLogprobs = %v/%d, want true/5", cfg.Models[0].Logprobs, cfg.Models[0].TopLogprobs)
+	if !cfg.Models[0].Logprobs || cfg.Models[0].TopLogprobs == nil || *cfg.Models[0].TopLogprobs != 5 {
+		t.Errorf("Logprobs/TopLogprobs = %v/%v, want true/5", cfg.Models[0].Logprobs, cfg.Models[0].TopLogprobs)
 	}
 }
 

@@ -122,10 +122,12 @@ type EngineConfig struct {
 	// engine builds. In force mode the engine also polices the result:
 	// the forced tool must be among the registry's tools at construction
 	// (error otherwise), and a response that calls no tools is a
-	// repairable deviation. For the other modes the field is sent and
-	// the result taken as it comes: required asks the server to force
-	// some call, and the engine does not police which (or whether) the
-	// model complied.
+	// repairable deviation. Once the forced tool has run, follow-up
+	// requests carry no tool choice, so the model is free to produce the
+	// final answer. For the other modes the field is sent on every
+	// request and the result taken as it comes: required asks the server
+	// to force some call, and the engine does not police which (or
+	// whether) the model complied.
 	ToolChoice *llm.ToolChoice
 }
 
@@ -198,7 +200,7 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 	// final answer.
 	forcedCalled := false
 	for {
-		resp, streamed, err := e.call(ctx, onEvent)
+		resp, streamed, err := e.call(ctx, onEvent, forcedCalled)
 		if err != nil {
 			return "", err
 		}
@@ -236,6 +238,8 @@ func (e *Engine) RunTurn(ctx context.Context, userMessage string, onEvent func(E
 			// has no protocol-valid repair for this — there is no tool
 			// call to answer with a corrective tool result — so the turn
 			// fails naming the forced tool and what came back instead.
+			// (After the forced tool has run, requests carry no tool
+			// choice and a text response is the normal final answer.)
 			if e.cfg.ToolChoice != nil && e.cfg.ToolChoice.Mode == llm.ToolChoiceForce && !forcedCalled {
 				e.history = append(e.history, resp.Message)
 				return "", fmt.Errorf("forced tool %q was not called: the model replied with text instead: %s",
@@ -286,7 +290,11 @@ func (e *Engine) RepairUnansweredToolCallsForTest() {
 // llm.StreamingClient, the streaming path is used and each delta is emitted
 // via onEvent as it arrives; the returned streamed flag reports which path
 // was taken so callers can avoid double-emitting whole-message events.
-func (e *Engine) call(ctx context.Context, onEvent func(Event) error) (resp *llm.Response, streamed bool, err error) {
+//
+// forcedCalled reports whether the forced tool already ran this turn (force
+// mode only): once it has, the request carries no tool choice so the model
+// is free to produce the final answer instead of being forced to call again.
+func (e *Engine) call(ctx context.Context, onEvent func(Event) error, forcedCalled bool) (resp *llm.Response, streamed bool, err error) {
 	if e.currentCalls >= e.maxTurns {
 		msg := e.lastAssistantMessage()
 		if msg != nil {
@@ -302,7 +310,14 @@ func (e *Engine) call(ctx context.Context, onEvent func(Event) error) (resp *llm
 	}
 	messages = append(messages, e.history...)
 
-	req := llm.Request{Messages: messages, Sampling: e.cfg.Sampling, ToolChoice: e.cfg.ToolChoice}
+	req := llm.Request{Messages: messages, Sampling: e.cfg.Sampling}
+	// In force mode the forced tool is only required until it has run:
+	// a request after that carries no tool choice, so a compliant
+	// server lets the model answer in text instead of forcing another
+	// call (and looping to ErrTooManyTurns).
+	if e.cfg.ToolChoice != nil && !(e.cfg.ToolChoice.Mode == llm.ToolChoiceForce && forcedCalled) {
+		req.ToolChoice = e.cfg.ToolChoice
+	}
 	if e.cfg.Tools != nil {
 		req.Tools = e.cfg.Tools.Definitions()
 	}
