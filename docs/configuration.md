@@ -172,7 +172,7 @@ Hi there
   " there" logprob=-0.1000
 ```
 
-Streamed responses do not decode logprob data, so with streaming on the flag simply prints nothing. Chat gains no display. See the [CLI reference](cli.md) for the `run` flags.
+Streamed responses do not decode logprob data, so with streaming on the flag simply prints nothing. Chat gains no display. See the [output formats reference](formats.md) for the `run` flags.
 
 ## Agents
 

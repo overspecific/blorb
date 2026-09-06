@@ -126,7 +126,7 @@ The prompt argument is required and exactly one is accepted: omitting it or pass
 
 Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
 
-See the [CLI reference](docs/cli.md) for the format details: the ndjson event types, the `stats` object, streaming behavior, and logprobs output.
+See the [output formats reference](docs/formats.md) for the format details: the ndjson event types, the `stats` object, streaming behavior, and logprobs output.
 
 ### Listing installed models
 
