@@ -92,11 +92,13 @@ func NewJudgeRunner(cfg JudgeRunnerConfig) *JudgeRunner {
 // A judge that fails to run - client build, max turns, provider
 // failure - is an error from RunJudges naming the judge, with nil
 // outcomes: unlike a subagent failure, a judge failure is a
-// user-visible condition, not a model-visible tool result. The spent
-// tokens of a failed judge run are lost to the usage account in that
-// case; unlike a subagent failure there is no parent model to hand
-// them to. Usage records are always collected, even when onEvent is
-// nil, mirroring RunSubagent.
+// user-visible condition, not a model-visible tool result. Usage
+// records are always collected on the successful outcomes, mirroring
+// RunSubagent; on a failed run the outcome is lost, but whether the
+// spent tokens reach the caller depends on onEvent: usage events flow
+// to onEvent as each call completes, so callers that record them (the
+// run and chat trigger sites wrap onEvent with their usage recorder)
+// keep every completed call's tokens, while a nil onEvent gets nothing.
 func (r *JudgeRunner) RunJudges(ctx context.Context, a config.Agent, when string, transcript string, onEvent func(tools.JudgeEvent) error) ([]JudgeOutcome, error) {
 	return r.runChain(ctx, a, when, transcript, 0, onEvent)
 }
