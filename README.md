@@ -120,8 +120,6 @@ git diff | ./blorb run @-
 ./blorb run "@@ literal @ prompt"
 ```
 
-The prompt argument is required and exactly one is accepted: omitting it or passing extra arguments is a usage error (a scripting tool must not appear to hang when its arguments are forgotten, so stdin is only read when explicitly requested with `-` or `@-`).
-
 `run` takes the same flags as `chat` (`-c | --config <path>`, `--agent <name>`, `--no-stream`, `--tool-output`) plus `--format <chat|plain|ndjson>` and `--logprobs`. `chat` (the default) is chat output; `plain` puts just the agent's output on stdout (progress and the usage footer on stderr) so it composes in pipelines; `ndjson` streams the run's full event stream to stdout as one JSON object per line — assistant text, reasoning, tool calls and results, token usage, and subagent activity — ending with a `done` or `error` event.
 
 Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
@@ -207,7 +205,7 @@ See [docs/configuration.md](docs/configuration.md) for the complete field refere
 
 ## Examples
 
-See [examples/simple](examples/simple) for a two-agent config sharing one tool set: `echo` and `current_time` command tools and `read`/`grep` builtins (pointed at the example's `knowledgebase/` directory), with `scholar` granted only the knowledgebase builtins, including notes on pointing the model at different OpenAI-compatible servers.
+See [examples/simple](examples/simple) for a four-agent config sharing one tool set: `echo`, `current_time`, `calendar`, and `days_until` command tools, `read`/`grep` builtins (sandboxed to the example's `knowledgebase/` directory), and three subagent tools — `simple` delegates biscuit questions to the scholar and time questions to the horologist, and the scholar delegates its digging to the search agent — including notes on pointing the model at different OpenAI-compatible servers.
 
 See [examples/prefactor-tracing](examples/prefactor-tracing) for a single-agent variant with just the `read`/`grep` builtins (sharing simple's `knowledgebase/`) and Prefactor tracing enabled.
 
