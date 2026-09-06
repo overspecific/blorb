@@ -9,6 +9,10 @@ description: Use when writing longer documents or chunks of user copy, not for s
 - Avoid metaphor, simile, analogies and cliches; stick to the facts
 - Avoid jargon or corporate-speak
 - Don't use title case ever unless it is a name; use sentence case
+- Write for the intended reader: explain what they won't know, skip what they will, and take no steps in reasoning that they would have to fill in themselves
+- Front-load: state the main point first, then the support
+- Prefer concrete over abstract: a real example or a number beats a general claim
+- Prefer the active voice: "we will do it" over "it will be done by us"
 - NEVER signpost structure ("In conclusion", "Let's break this down").
 - NEVER use false transitions ("Here's the kicker", "The truth is", "It's worth noting").
 - NEVER simulate vulnerability or false suspense.
@@ -28,3 +32,12 @@ description: Use when writing longer documents or chunks of user copy, not for s
 - NEVER cite vague authorities ("Experts argue...") or invent compound jargon labels ("the X trap").
 - NEVER overuse em dashes. Use 0-2 per piece.
 - NEVER use smart quotes or unicode arrows ->. Use straight quotes and `->` or `=>`.
+
+## Review pass
+
+After writing, reread the piece and check the writing itself, not just rule compliance:
+
+- Read every sentence and ask: is it saying its thing in the simplest way? Cut words, split long sentences, cut sentences that add nothing.
+- Check the piece front-loads: if the reader only reads the first sentence of each paragraph, do they still get the piece?
+- Read it as the intended reader would: would they have to guess at any term or step?
+- Rewrite anything you would not say talking to the reader across a table.

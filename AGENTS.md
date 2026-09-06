@@ -55,4 +55,6 @@ We use Plain English when talking to the user, writing comments or UI copy:
 
 We use the `good-english` skill when writing longer documents or chunks of user copy, not for short everyday messages.
 
+The intended reader of our documentation is a developer using Blorb: comfortable on the command line, fluent in JSON and plain HTTP concepts, but with no prior knowledge of this codebase or its internals. We explain Blorb's own concepts (agents, tools, providers, subagents) as if new to them, and we do not explain general programming or LLM terms a developer already knows.
+
 The example knowledgebase under `examples/simple/knowledgebase/` is demo content for the example agent, not project prose; it may use different rules (metaphor, em dashes, and so on) and we do not hold it to these guidelines.
