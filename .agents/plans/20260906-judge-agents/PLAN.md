@@ -46,10 +46,10 @@ Design decisions:
 - [x] Commit 5: chat - judges at session end
 - [x] Commit 6: docs and example
 - [x] Commit 7: live judge activity in chat and run
-- [ ] Commit 8: review fix - test the ndjson judge_error line
-- [ ] Commit 9: review fix - unify the judge block shape between run and chat
-- [ ] Commit 10: review fix - flush the judge activity printer in run
-- [ ] Commit 11: review fix - correct the RunJudges failed-judge usage doc comment
+- [x] Commit 8: review fix - test the ndjson judge_error line
+- [x] Commit 9: review fix - unify the judge block shape between run and chat
+- [x] Commit 10: review fix - flush the judge activity printer in run
+- [x] Commit 11: review fix - correct the RunJudges failed-judge usage doc comment
 
 ---
 
