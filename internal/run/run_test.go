@@ -2184,6 +2184,7 @@ type ndjsonLine struct {
 		Stats *ndjsonStats `json:"stats"`
 	} `json:"agents"`
 	Logprobs []llm.Logprob `json:"logprobs"`
+	Judge    string        `json:"judge,omitempty"`
 	Error    string        `json:"error"`
 }
 
@@ -3666,6 +3667,83 @@ func TestRunJudgeErrorNonFatal(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "judge error:") {
 		t.Errorf("stdout = %q, want the judge error diagnostic", stdout.String())
+	}
+}
+
+func TestRunFormatNDJSONJudgeError(t *testing.T) {
+	t.Parallel()
+
+	cfg := runJudgeConfig(t)
+	main := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "agent text"), FinishReason: llm.FinishStop,
+			Usage: llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
+	}}
+	// An empty response list fails the judge: the fake runs dry.
+	reviewer := &runFakeClient{}
+
+	var stdout, stderr runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatNDJSON,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "reviewer" {
+				return reviewer, nil
+			}
+			return main, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (a judge failure never changes the terminal event)", err)
+	}
+	if final != "agent text" {
+		t.Errorf("final = %q, want the agent's own text", final)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	var judgeErrs []*ndjsonLine
+	doneAt := -1
+	for i, l := range lines {
+		switch l.Type {
+		case "judge_error":
+			judgeErrs = append(judgeErrs, &lines[i])
+		case "done":
+			doneAt = i
+		}
+	}
+	if len(judgeErrs) != 1 {
+		t.Fatalf("judge_error lines = %d, want exactly 1:\n%s", len(judgeErrs), stdout.String())
+	}
+	if judgeErrs[0].Judge != "reviewer" {
+		t.Errorf("judge_error.judge = %q, want reviewer", judgeErrs[0].Judge)
+	}
+	if judgeErrs[0].Error == "" {
+		t.Error("judge_error.error is empty, want the failure's message")
+	}
+	// The stream stays clean: the human-readable diagnostic goes to
+	// stderr, never into the event stream.
+	if out := stdout.String(); strings.Contains(out, "judge error:") {
+		t.Errorf("stdout = %q, want no human diagnostic on the event stream", out)
+	}
+	if diag := stderr.String(); !strings.Contains(diag, "judge error:") {
+		t.Errorf("stderr = %q, want the judge error diagnostic", diag)
+	}
+	if doneAt < 0 {
+		t.Fatal("no done event")
+	}
+	for i, l := range lines {
+		if l.Type == "judge_error" && i > doneAt {
+			t.Errorf("judge_error at %d after done at %d", i, doneAt)
+		}
+	}
+	done := lines[doneAt]
+	if done.Text != "agent text" {
+		t.Errorf("done.text = %q, want the run's return value %q", done.Text, final)
+	}
+	if len(done.Agents) != 1 || done.Agents[0].Agent != cfg.Agents[0].Name || done.Agents[0].Usage.TotalTokens != 15 {
+		t.Errorf("done.agents = %+v, want only the judged agent %q with total 15", done.Agents, cfg.Agents[0].Name)
 	}
 }
 
