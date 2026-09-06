@@ -26,6 +26,7 @@ import (
 //	usage           {type, agent, model, usage, stats} — one completed LLM call's token usage and call stats
 //	text            carries logprobs too, when the model reported them (non-streaming)
 //	subagent_*      — the same vocabulary prefixed subagent_, with agent and depth fields added
+//	judge_*         — the same vocabulary prefixed judge_, with agent and depth fields added; a failed judge emits the non-terminal judge_error {type, judge, error}
 //	done            {type, text?, logprobs?, usage, stats, rates?, agents} — terminal on success; text is the final assistant text
 //	error           {type, error}                   — terminal on failure; no done follows
 //
@@ -41,6 +42,9 @@ import (
 //   - Failure (the run failed, turn error or post-turn tracer failure)
 //     ends with error carrying the run error's message and no done; the
 //     exit codes are unchanged (main maps them).
+//   - Judge events (judge_*) appear after the turn's events and before
+//     the terminal done/error event; judge_error is non-terminal, and a
+//     judge failure never changes the stream's terminal event.
 //   - Platform termination mid-turn exits 0, so the stream ends with done
 //     carrying no text and the usage totals; the human-readable reason
 //     goes to the diagnostics writer (stderr).
@@ -80,6 +84,8 @@ type ndjsonEvent struct {
 	// Depth is the subagent nesting level (always present on
 	// subagent_*, including 0); the parent's own events carry none.
 	Depth *int `json:"depth,omitempty"`
+	// Judge names the judge that failed (judge_error).
+	Judge string `json:"judge,omitempty"`
 	// Usage is the token usage (usage, subagent_usage, done).
 	Usage *llm.Usage `json:"usage,omitempty"`
 	// Stats is the stats of one call (usage, subagent_usage) and the
@@ -199,6 +205,43 @@ func (s *ndjsonSink) onSubagent(ev tools.SubagentEvent) error {
 	e.Agent = ev.Agent
 	e.Depth = &ev.Depth
 	return s.emit(e)
+}
+
+// onJudge maps one judge event to its judge_-prefixed line, carrying
+// the producing judge's name and chain depth.
+func (s *ndjsonSink) onJudge(ev tools.JudgeEvent) error {
+	var e ndjsonEvent
+	switch ev.Kind {
+	case tools.JudgeText:
+		e = ndjsonEvent{Type: "judge_text", Text: ev.Text}
+	case tools.JudgeThinking:
+		e = ndjsonEvent{Type: "judge_thinking", Thinking: ev.Text}
+	case tools.JudgeTextDelta:
+		e = ndjsonEvent{Type: "judge_text_delta", Text: ev.Text}
+	case tools.JudgeThinkingDelta:
+		e = ndjsonEvent{Type: "judge_thinking_delta", Thinking: ev.Text}
+	case tools.JudgeToolCall:
+		e = ndjsonEvent{Type: "judge_tool_call", Name: ev.Name, Arguments: ev.Args}
+	case tools.JudgeToolCallDelta:
+		e = ndjsonEvent{Type: "judge_tool_call_delta", Name: ev.Name, Index: &ev.Index, Arguments: ev.Args}
+	case tools.JudgeToolResult:
+		e = ndjsonEvent{Type: "judge_tool_result", Name: ev.Name, Output: ev.Output, Failed: ev.Failed}
+	case tools.JudgeUsage:
+		stats := ev.Stats
+		e = ndjsonEvent{Type: "judge_usage", Model: ev.Model, Usage: &ev.Usage, Stats: &stats}
+	default:
+		return nil
+	}
+	e.Agent = ev.Agent
+	e.Depth = &ev.Depth
+	return s.emit(e)
+}
+
+// onJudgeError emits the non-terminal judge_error line naming the judge
+// that failed. The stream's terminal done/error contract is unchanged:
+// a judge failure is reported, not fatal.
+func (s *ndjsonSink) onJudgeError(judge string, jErr error) error {
+	return s.emit(ndjsonEvent{Type: "judge_error", Judge: judge, Error: jErr.Error()})
 }
 
 // finish emits the terminal event: error on a failed run (no done),

@@ -48,16 +48,20 @@ func (o Options) diagnostics() io.Writer {
 // events builds the run's event callbacks for the output format.
 // chat renders the chat-style stream on stdout; plain renders the same
 // chat-style stream on stderr and tees only assistant text to stdout;
-// ndjson streams flat typed JSON events on stdout. The returned finish
-// callback (ndjson only) emits the stream's terminal done/error event.
-// Both chat and plain print the per-token logprob block after a whole
-// assistant message when Logprobs is on (streamed responses carry no
-// logprobs, and a --logprobs run cannot stream).
-func (o Options) events(account *usage.Account) (printEvent func(engine.Event) error, onSubagent func(tools.SubagentEvent) error, flush func(), finish func(final string, runErr error) error) {
+// ndjson streams flat typed JSON events on stdout. onJudge is the judge
+// event callback (ndjson streams judge events live; chat and plain
+// return nil and print the judgements as blocks after the chain
+// completes); onJudgeError emits the non-terminal judge_error line
+// (ndjson only). The returned finish callback (ndjson only) emits the
+// stream's terminal done/error event. Both chat and plain print the
+// per-token logprob block after a whole assistant message when
+// Logprobs is on (streamed responses carry no logprobs, and a
+// --logprobs run cannot stream).
+func (o Options) events(account *usage.Account) (printEvent func(engine.Event) error, onSubagent func(tools.SubagentEvent) error, onJudge func(tools.JudgeEvent) error, onJudgeError func(judge string, jErr error) error, flush func(), finish func(final string, runErr error) error) {
 	switch o.Format {
 	case FormatNDJSON:
 		sink := newNDJSONSink(o.Stdout, account)
-		return sink.printEvent, sink.onSubagent, func() {}, sink.finish
+		return sink.printEvent, sink.onSubagent, sink.onJudge, sink.onJudgeError, func() {}, sink.finish
 	case FormatPlain:
 		diagPrint, diagSubagent, flush := chat.Events(o.stderrOr(), o.ToolOutput)
 		printEvent := o.logprobTee(diagPrint, func(ev engine.Event) error {
@@ -65,11 +69,22 @@ func (o Options) events(account *usage.Account) (printEvent func(engine.Event) e
 			_, err := o.Stdout.Write([]byte(ev.Text))
 			return err
 		})
-		return printEvent, diagSubagent, flush, nil
+		return printEvent, diagSubagent, nil, nil, flush, nil
 	default:
 		printEvent, onSubagent, flush := chat.Events(o.Stdout, o.ToolOutput)
 		printEvent = o.logprobTee(printEvent, func(engine.Event) error { return nil })
-		return printEvent, onSubagent, flush, nil
+		return printEvent, onSubagent, nil, nil, flush, nil
+	}
+}
+
+// printJudges prints the per-judge judgement blocks for the chat and
+// plain formats: a >>> Judge heading per judge in the chat heading
+// style, then its judgement text. The judgements print from the
+// outcomes after the judge chain completes; the ndjson format streams
+// judge events live instead and prints no blocks.
+func printJudges(w io.Writer, outcomes []engine.JudgeOutcome) {
+	for _, o := range outcomes {
+		fmt.Fprintf(w, "\n>>> Judge: %s\n\n%s\n\n", o.Judge, o.Output)
 	}
 }
 

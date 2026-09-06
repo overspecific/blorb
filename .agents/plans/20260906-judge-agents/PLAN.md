@@ -36,7 +36,7 @@ Design decisions:
 - [x] Commit 1: config - the `judges` field, reference and cycle validation
 - [x] Commit 2: llm - FormatTranscript, the transcript rendering
 - [x] Commit 3: engine - JudgeRunner
-- [ ] Commit 4: run - judges after the turn, per-format output, ndjson events
+- [x] Commit 4: run - judges after the turn, per-format output, ndjson events
 - [ ] Commit 5: chat - judges at session end
 - [ ] Commit 6: docs and example
 

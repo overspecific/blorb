@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/config"
@@ -127,9 +128,10 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	// isTerminated). One run is one turn, so the turn footer is the run's
 	// whole summary; there is no session line.
 	account := &usage.Account{}
-	printEvent, onSubagent, flush, finishNDJSON := opts.events(account)
+	printEvent, onSubagent, onJudge, onJudgeError, flush, finishNDJSON := opts.events(account)
 	turnEvent := usageWrap(printEvent, account)
 	onSubagent = runUsageWrap(onSubagent, account)
+	onJudge = judgeUsageWrap(onJudge, account)
 
 	// One turn, no per-turn printer swap: onSubagent is wired directly.
 	registry, err := tools.NewRegistry(opts.Config.AgentTools(opts.Agent),
@@ -197,6 +199,45 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	final, runErr := eng.RunTurn(ctx, prompt, turnEvent)
 	flush()
 
+	err = mapTurnOutcome(turn, final, runErr, ctx)
+	if err == nil {
+		err = finishTracedRun(opts, nil)
+	} else {
+		err = finishTracedRun(opts, err)
+	}
+
+	// The judge phase runs after the outcome settles and before the
+	// usage footer and the ndjson terminal event, so the footer and
+	// done.agents include the judges' tokens. Judges run after a failed
+	// turn too — they review what survived, plus the run-error note —
+	// except when the platform asked blorb to stop or the ctx is dead
+	// (the judge LLM calls would fail immediately). A judge failure is
+	// reported, not fatal: the judged run already has its outcome.
+	if !isTerminated(runErr) && ctx.Err() == nil {
+		transcript := llm.FormatTranscript(eng.History())
+		if runErr != nil {
+			transcript = runErrorNote(transcript, runErr)
+		}
+		outcomes, jErr := opts.judgeRunner(sink, streaming).RunJudges(ctx, opts.Agent, config.JudgeWhenEnd, transcript, onJudge)
+		if jErr != nil {
+			fmt.Fprintf(opts.diagnostics(), "judge error: %v\n", jErr)
+			if onJudgeError != nil {
+				judge := ""
+				var je *engine.JudgeError
+				if errors.As(jErr, &je) {
+					judge = je.Judge
+				}
+				if emitErr := onJudgeError(judge, jErr); emitErr != nil && err == nil {
+					err = emitErr
+				}
+			}
+		} else if opts.Format != FormatNDJSON {
+			// chat and plain print the judgements as blocks; ndjson
+			// streamed the judge events live.
+			printJudges(opts.diagnostics(), outcomes)
+		}
+	}
+
 	// The footer prints for the calls that completed even on the error
 	// paths (interrupt, provider failure mid-loop): partial usage, then
 	// the outcome. A run cancelled before any call has no records and
@@ -205,13 +246,6 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	// consumer.
 	if len(account.Records()) > 0 && opts.Format != FormatNDJSON {
 		fmt.Fprintf(opts.diagnostics(), "%s\n", usage.FormatTurn(account))
-	}
-
-	err = mapTurnOutcome(turn, final, runErr, ctx)
-	if err == nil {
-		err = finishTracedRun(opts, nil)
-	} else {
-		err = finishTracedRun(opts, err)
 	}
 
 	// The ndjson terminal event is the stream's last word, so it is
@@ -315,14 +349,24 @@ func finishTracedRun(opts Options, runErr error) error {
 // NewClient factory when set, else the real model path with the injected
 // getenv.
 func (o Options) newClient(sink logging.Sink) (llm.Client, error) {
-	if o.NewClient != nil {
-		return o.NewClient(o.Config, o.Agent)
+	return o.newClientFor(sink)(o.Config, o.Agent)
+}
+
+// newClientFor returns the client factory closure shared by the run's
+// own client build and the subagent and judge runners: the injected
+// NewClient factory when set, else the real model path with the
+// injected getenv.
+func (o Options) newClientFor(sink logging.Sink) func(cfg config.Config, agent config.Agent) (llm.Client, error) {
+	return func(cfg config.Config, agent config.Agent) (llm.Client, error) {
+		if o.NewClient != nil {
+			return o.NewClient(cfg, agent)
+		}
+		getenv := o.Getenv
+		if getenv == nil {
+			getenv = os.Getenv
+		}
+		return chat.NewClientWithGetenv(cfg, agent, getenv, sink)
 	}
-	getenv := o.Getenv
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-	return chat.NewClientWithGetenv(o.Config, o.Agent, getenv, sink)
 }
 
 // withModelLogprobs returns a copy of the config with the named model's
@@ -346,20 +390,33 @@ func (o Options) withModelLogprobs(name string) config.Config {
 // result, shared with the run engine.
 func (o Options) subagentRunner(sink logging.Sink, streaming bool) *engine.SubagentRunner {
 	return engine.NewSubagentRunner(engine.SubagentRunnerConfig{
-		Config: o.Config,
-		NewClient: func(cfg config.Config, agent config.Agent) (llm.Client, error) {
-			if o.NewClient != nil {
-				return o.NewClient(cfg, agent)
-			}
-			getenv := o.Getenv
-			if getenv == nil {
-				getenv = os.Getenv
-			}
-			return chat.NewClientWithGetenv(cfg, agent, getenv, sink)
-		},
-		Stream: o.Stream && streaming,
-		Sink:   sink,
+		Config:    o.Config,
+		NewClient: o.newClientFor(sink),
+		Stream:    o.Stream && streaming,
+		Sink:      sink,
 	})
+}
+
+// judgeRunner builds the engine-backed judge runner for the run's
+// config, mirroring the subagent runner: judges resolve their agents,
+// tool grants, and models from the same config, and their LLM clients
+// build through the same factory closure. streaming is the run
+// client's capability check result, shared with the run engine.
+func (o Options) judgeRunner(sink logging.Sink, streaming bool) *engine.JudgeRunner {
+	return engine.NewJudgeRunner(engine.JudgeRunnerConfig{
+		Config:    o.Config,
+		NewClient: o.newClientFor(sink),
+		Stream:    o.Stream && streaming,
+		Sink:      sink,
+	})
+}
+
+// runErrorNote appends the [run error] block to a transcript: the
+// failure the judges are reviewing, in the same label-at-column-0,
+// body-indented-two-spaces convention as llm.FormatTranscript blocks.
+func runErrorNote(transcript string, runErr error) string {
+	body := strings.ReplaceAll(runErr.Error(), "\n", "\n  ")
+	return transcript + "\n\n[run error]\n  " + body
 }
 
 // isTerminated reports whether err is the tracer's termination sentinel.

@@ -23,6 +23,22 @@ func runUsageWrap(print func(tools.SubagentEvent) error, account *usage.Account)
 	}
 }
 
+// judgeUsageWrap composes the judge event callback with usage recording,
+// mirroring runUsageWrap: JudgeUsage events are recorded into account
+// (attributed to the judge's own name) and every event is forwarded
+// unchanged.
+func judgeUsageWrap(print func(tools.JudgeEvent) error, account *usage.Account) func(tools.JudgeEvent) error {
+	return func(ev tools.JudgeEvent) error {
+		if ev.Kind == tools.JudgeUsage {
+			account.Add(usage.Record{Agent: ev.Agent, Model: ev.Model, Usage: ev.Usage, Stats: ev.Stats})
+		}
+		if print == nil {
+			return nil
+		}
+		return print(ev)
+	}
+}
+
 // usageWrap composes the engine event callback with usage recording,
 // mirroring chat's usageWrap: every event is forwarded to print
 // unchanged, and EventUsage events are additionally recorded into

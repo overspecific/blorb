@@ -3405,3 +3405,323 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// runJudgeConfig builds a two-agent config: the canonical tester agent
+// judging-judged by a reviewer agent.
+func runJudgeConfig(t *testing.T) config.Config {
+	t.Helper()
+
+	main := runTestAgent()
+	main.MaxTurns = 1
+	main.Judges = []config.Judge{{Agent: "reviewer"}}
+	reviewer := config.Agent{
+		Name:         "reviewer",
+		SystemPrompt: "You review the run.",
+		Model:        runTestModel().Name,
+		MaxTurns:     1,
+	}
+	cfg := config.Config{
+		Providers: []config.Provider{runTestProvider()},
+		Models:    []config.Model{runTestModel()},
+		Agents:    []config.Agent{main, reviewer},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("runJudgeConfig invalid: %v", err)
+	}
+	return cfg
+}
+
+func TestRunJudgeChatBlock(t *testing.T) {
+	t.Parallel()
+
+	cfg := runJudgeConfig(t)
+	main := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "the agent answer"), FinishReason: llm.FinishStop},
+	}}
+	reviewer := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "the run was fine"), FinishReason: llm.FinishStop},
+	}}
+
+	var stdout runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "reviewer" {
+				return reviewer, nil
+			}
+			return main, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "the agent answer" {
+		t.Errorf("final = %q, want the agent's own text", final)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "\n>>> Judge: reviewer\n\nthe run was fine\n\n") {
+		t.Errorf("stdout = %q, want the judge block", out)
+	}
+}
+
+func TestRunJudgePlainOnStderr(t *testing.T) {
+	t.Parallel()
+
+	cfg := runJudgeConfig(t)
+	main := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "agent text"), FinishReason: llm.FinishStop},
+	}}
+	reviewer := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "reviewed"), FinishReason: llm.FinishStop},
+	}}
+
+	var stdout, stderr runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatPlain,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "reviewer" {
+				return reviewer, nil
+			}
+			return main, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "agent text" {
+		t.Errorf("final = %q, want the agent's own text", final)
+	}
+	if got := stdout.String(); got != "agent text" {
+		t.Errorf("stdout = %q, want only the agent's text", got)
+	}
+	if !strings.Contains(stderr.String(), ">>> Judge: reviewer") ||
+		!strings.Contains(stderr.String(), "reviewed") {
+		t.Errorf("stderr = %q, want the judge block", stderr.String())
+	}
+}
+
+func TestRunFormatNDJSONJudgeEvents(t *testing.T) {
+	t.Parallel()
+
+	cfg := runJudgeConfig(t)
+	main := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "agent text"), FinishReason: llm.FinishStop,
+			Usage: llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
+	}}
+	reviewer := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "judged"), FinishReason: llm.FinishStop,
+			Usage: llm.Usage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}},
+	}}
+
+	var stdout runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "reviewer" {
+				return reviewer, nil
+			}
+			return main, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "agent text" {
+		t.Errorf("final = %q, want the agent's own text", final)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	var sawText, sawUsage bool
+	for _, l := range lines {
+		if !strings.HasPrefix(l.Type, "judge_") {
+			continue
+		}
+		if l.Agent != "reviewer" {
+			t.Errorf("%s agent = %q, want reviewer", l.Type, l.Agent)
+		}
+		if l.Depth == nil || *l.Depth != 0 {
+			t.Errorf("%s depth = %v, want 0", l.Type, l.Depth)
+		}
+		if l.Type == "judge_text" && l.Text == "judged" {
+			sawText = true
+		}
+		if l.Type == "judge_usage" {
+			sawUsage = true
+			if l.Usage == nil || l.Usage.TotalTokens != 10 {
+				t.Errorf("judge_usage = %+v, want the judge call's usage", l.Usage)
+			}
+		}
+	}
+	if !sawText || !sawUsage {
+		t.Errorf("stream missing judge_text or judge_usage:\n%s", stdout.String())
+	}
+
+	// The judge events precede the terminal done event.
+	doneAt := -1
+	for i, l := range lines {
+		if l.Type == "done" {
+			doneAt = i
+		}
+	}
+	if doneAt < 0 {
+		t.Fatal("no done event")
+	}
+	for i, l := range lines {
+		if strings.HasPrefix(l.Type, "judge_") && i > doneAt {
+			t.Errorf("judge event %s after done", l.Type)
+		}
+	}
+
+	done := lines[doneAt]
+	if len(done.Agents) != 2 {
+		t.Fatalf("done.agents = %+v, want both agents", done.Agents)
+	}
+	if done.Agents[0].Agent != "reviewer" || done.Agents[0].Usage.TotalTokens != 10 {
+		t.Errorf("done.agents[0] = %+v, want reviewer total 10", done.Agents[0])
+	}
+}
+
+func TestRunJudgeRunsAfterFailedTurn(t *testing.T) {
+	t.Parallel()
+
+	cfg := runJudgeConfig(t)
+	// An empty response list fails the turn: the fake runs dry.
+	main := &runFakeClient{}
+	reviewer := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "reviewed the failure"), FinishReason: llm.FinishStop},
+	}}
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "reviewer" {
+				return reviewer, nil
+			}
+			return main, nil
+		},
+	}, "go")
+	if err == nil {
+		t.Fatal("Run succeeded, want the turn error")
+	}
+
+	if !strings.Contains(stdout.String(), ">>> Judge: reviewer") {
+		t.Errorf("stdout = %q, want the judge block after the failed turn", stdout.String())
+	}
+	// The judge saw the failure: its transcript carries the [run error]
+	// block naming the cause.
+	if len(reviewer.requests) != 1 {
+		t.Fatalf("judge API calls = %d, want 1", len(reviewer.requests))
+	}
+	msgs := reviewer.requests[0].Messages
+	found := false
+	for _, m := range msgs {
+		if m.Role == llm.RoleUser && strings.Contains(m.Content, "[run error]") && strings.Contains(m.Content, "no more canned responses") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("judge transcript lacks the [run error] block:\n%s", msgs[len(msgs)-1].Content)
+	}
+}
+
+func TestRunJudgeErrorNonFatal(t *testing.T) {
+	t.Parallel()
+
+	cfg := runJudgeConfig(t)
+	main := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "agent text"), FinishReason: llm.FinishStop},
+	}}
+	reviewer := &runFakeClient{}
+
+	var stdout runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "reviewer" {
+				return reviewer, nil
+			}
+			return main, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil (a judge failure is not fatal)", err)
+	}
+	if final != "agent text" {
+		t.Errorf("final = %q, want the agent's own text", final)
+	}
+	if !strings.Contains(stdout.String(), "judge error:") {
+		t.Errorf("stdout = %q, want the judge error diagnostic", stdout.String())
+	}
+}
+
+func TestRunTwoJudgesInOrder(t *testing.T) {
+	t.Parallel()
+
+	main := runTestAgent()
+	main.MaxTurns = 1
+	main.Judges = []config.Judge{{Agent: "first"}, {Agent: "second"}}
+	first := config.Agent{Name: "first", SystemPrompt: "First judge.", Model: runTestModel().Name, MaxTurns: 1}
+	second := config.Agent{Name: "second", SystemPrompt: "Second judge.", Model: runTestModel().Name, MaxTurns: 1}
+	cfg := config.Config{
+		Providers: []config.Provider{runTestProvider()},
+		Models:    []config.Model{runTestModel()},
+		Agents:    []config.Agent{main, first, second},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config invalid: %v", err)
+	}
+
+	mainClient := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "agent text"), FinishReason: llm.FinishStop},
+	}}
+	firstClient := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "first verdict"), FinishReason: llm.FinishStop},
+	}}
+	secondClient := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "second verdict"), FinishReason: llm.FinishStop},
+	}}
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			switch agent.Name {
+			case "first":
+				return firstClient, nil
+			case "second":
+				return secondClient, nil
+			}
+			return mainClient, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	firstAt := strings.Index(out, ">>> Judge: first")
+	secondAt := strings.Index(out, ">>> Judge: second")
+	if firstAt < 0 || secondAt < 0 {
+		t.Fatalf("stdout = %q, want both judge blocks", out)
+	}
+	if firstAt > secondAt {
+		t.Errorf("judge blocks out of order:\n%s", out)
+	}
+}

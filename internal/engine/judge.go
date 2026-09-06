@@ -22,6 +22,21 @@ type JudgeOutcome struct {
 	Usage []tools.JudgeUsageRecord
 }
 
+// JudgeError is a judge run failure naming the judge that failed: a
+// judge failure is a user-visible condition, so the trigger sites use
+// it to attribute their reporting. The rendered message is
+// judge "<name>": <cause>.
+type JudgeError struct {
+	Judge string
+	Err   error
+}
+
+func (e *JudgeError) Error() string { return fmt.Sprintf("judge %q: %s", e.Judge, e.Err) }
+
+// Unwrap exposes the cause so cancellation stays detectable with
+// errors.Is through the wrapping.
+func (e *JudgeError) Unwrap() error { return e.Err }
+
 // JudgeRunnerConfig configures a JudgeRunner.
 type JudgeRunnerConfig struct {
 	// Config is the whole loaded config: judges, their tool grants,
@@ -140,7 +155,7 @@ func (r *JudgeRunner) runJudge(ctx context.Context, judgeName string, judge conf
 		tools.WithSubagentEvents(nil),
 	)
 	if err != nil {
-		return JudgeOutcome{}, nil, fmt.Errorf("build judge %q tools: %w", judgeName, err)
+		return JudgeOutcome{}, nil, &JudgeError{Judge: judgeName, Err: fmt.Errorf("build tools: %w", err)}
 	}
 	// Builtins hold per-instance resources (open sandbox roots); release
 	// them when the judge run ends.
@@ -148,21 +163,21 @@ func (r *JudgeRunner) runJudge(ctx context.Context, judgeName string, judge conf
 
 	model, ok := r.cfg.Config.Model(judge.Model)
 	if !ok {
-		return JudgeOutcome{}, nil, fmt.Errorf("judge %q: model %q is not a defined model", judgeName, judge.Model)
+		return JudgeOutcome{}, nil, &JudgeError{Judge: judgeName, Err: fmt.Errorf("model %q is not a defined model", judge.Model)}
 	}
 	provider, ok := r.cfg.Config.Provider(model.Provider)
 	if !ok {
-		return JudgeOutcome{}, nil, fmt.Errorf("judge %q: model %q: provider %q is not a defined provider", judgeName, judge.Model, model.Provider)
+		return JudgeOutcome{}, nil, &JudgeError{Judge: judgeName, Err: fmt.Errorf("model %q: provider %q is not a defined provider", judge.Model, model.Provider)}
 	}
 
 	client, err := r.newClient(judge)
 	if err != nil {
-		return JudgeOutcome{}, nil, err
+		return JudgeOutcome{}, nil, &JudgeError{Judge: judgeName, Err: err}
 	}
 
 	fenced, err := fenceTranscript(transcript)
 	if err != nil {
-		return JudgeOutcome{}, nil, fmt.Errorf("judge %q: %w", judgeName, err)
+		return JudgeOutcome{}, nil, &JudgeError{Judge: judgeName, Err: fmt.Errorf("generate fence id: %w", err)}
 	}
 
 	eng := New(EngineConfig{
@@ -198,24 +213,24 @@ func (r *JudgeRunner) runJudge(ctx context.Context, judgeName string, judge conf
 		// Cancellation (e.g. SIGINT) is infrastructure, not a judge
 		// outcome: surface it as an error so the caller can treat the
 		// judging phase as interrupted.
-		return JudgeOutcome{}, nil, fmt.Errorf("judge %q: %w", judgeName, ctx.Err())
+		return JudgeOutcome{}, nil, &JudgeError{Judge: judgeName, Err: ctx.Err()}
 	}
 	if err != nil {
 		// Any other failure — ErrTooManyTurns, provider truncation, API
 		// errors — is a judge-level failure and a user-visible condition:
 		// an error to the caller, not a tool result to a parent model.
-		return JudgeOutcome{}, nil, fmt.Errorf("judge %q: %w", judgeName, err)
+		return JudgeOutcome{}, nil, &JudgeError{Judge: judgeName, Err: err}
 	}
 	return JudgeOutcome{Judge: judgeName, Output: final, Usage: usageRecords}, eng.History(), nil
 }
 
 func (r *JudgeRunner) newClient(agent config.Agent) (llm.Client, error) {
 	if r.cfg.NewClient == nil {
-		return nil, fmt.Errorf("judge %q: no client factory configured", agent.Name)
+		return nil, fmt.Errorf("no client factory configured")
 	}
 	client, err := r.cfg.NewClient(r.cfg.Config, agent)
 	if err != nil {
-		return nil, fmt.Errorf("build judge %q client: %w", agent.Name, err)
+		return nil, fmt.Errorf("build client: %w", err)
 	}
 	return client, nil
 }
