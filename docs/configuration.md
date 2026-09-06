@@ -327,7 +327,7 @@ A judge can itself have judges. When the judge's run completes, its own judges r
 
 ### Usage and limitations
 
-Judge LLM calls are attributed to the judge in the usage footer and the chat session totals, and they appear in the ndjson `done` event's per-agent split. In `blorb run` and at chat session end, the judgement prints as a `>>> Judge: <name>` block per judge, in the order the `judges` field lists them. In `--format ndjson`, judge events stream as `judge_*` types before the terminal event (see [formats](formats.md#ndjson)).
+Judge LLM calls are attributed to the judge in the usage footer and the chat session totals, and they appear in the ndjson `done` event's per-agent split. In `blorb run` and at chat session end, the judge's thinking and tool activity stream as it works, labeled `[<judge>]` and indented like subagent activity, and the judgement then prints as a `>>> Judge: <name>` block per judge, in the order the `judges` field lists them. In `--format ndjson`, judge events stream as `judge_*` types before the terminal event (see [formats](formats.md#ndjson)).
 
 Limitations:
 

@@ -580,10 +580,6 @@ func Events(out io.Writer, toolOutput bool) (func(engine.Event) error, func(tool
 
 	// subagentState is the per-subagent-stream heading bookkeeping: for
 	// each (depth, agent), whether the given delta heading already printed.
-	type streamKey struct {
-		depth int
-		agent string
-	}
 	subHeadings := map[streamKey]subStreamHeadings{}
 
 	// startRound resets per-round heading state: a tool result ends the
@@ -731,13 +727,14 @@ func Events(out io.Writer, toolOutput bool) (func(engine.Event) error, func(tool
 }
 
 // JudgeEvents returns a judge event callback and flush for the
-// session-end judge phase: judge tool activity renders with the
-// subagent heading style, labeled [judge-name] and indented by two
-// spaces per depth; the judgement itself prints from the outcomes
-// after the judge chain completes, so text, thinking, and delta
-// events are ignored. toolOutput is accepted for signature symmetry
-// with Events; judge tool results always render in full, like
-// subagent activity.
+// session-end judge phase: the judge's thinking and tool activity
+// render live with the subagent heading style, labeled [judge-name]
+// and indented by two spaces per depth, streaming as deltas when the
+// judge engine streams. The judgement itself prints from the outcomes
+// after the judge chain completes, so text events (whole message and
+// deltas) are ignored - printing them would duplicate the judgement
+// block. toolOutput is accepted for signature symmetry with Events;
+// judge tool results always render in full, like subagent activity.
 func JudgeEvents(out io.Writer, toolOutput bool) (onJudge func(tools.JudgeEvent) error, flush func()) {
 	var partialLine bool
 	endLine := func() {
@@ -750,16 +747,63 @@ func JudgeEvents(out io.Writer, toolOutput bool) (onJudge func(tools.JudgeEvent)
 		endLine()
 		fmt.Fprintf(out, "\n%s\n", text)
 	}
+	writeDelta := func(fragment string) {
+		fmt.Fprint(out, fragment)
+		partialLine = !strings.HasSuffix(fragment, "\n")
+	}
 	indent := func(depth int) string {
 		return strings.Repeat("  ", depth)
 	}
 
+	// Per-judge-stream heading state, keyed like the subagent printer's:
+	// whether the thinking heading printed, and per streamed tool call
+	// whether its heading printed and fragments rendered it (so the
+	// whole-message block is skipped).
+	headings := map[streamKey]*judgeStreamHeadings{}
+	startRound := func() {
+		// A tool result ends the judge's round: the next response's
+		// blocks start fresh, and a later round must print its headings
+		// again.
+		headings = map[streamKey]*judgeStreamHeadings{}
+	}
+	state := func(ev tools.JudgeEvent) *judgeStreamHeadings {
+		key := streamKey{depth: ev.Depth, agent: ev.Agent}
+		st, ok := headings[key]
+		if !ok {
+			st = &judgeStreamHeadings{toolHeadings: map[int]bool{}}
+			headings[key] = st
+		}
+		return st
+	}
+
 	onJudge = func(ev tools.JudgeEvent) error {
 		label := fmt.Sprintf("%s[%s] ", indent(ev.Depth), ev.Agent)
+		st := state(ev)
 		switch ev.Kind {
+		case tools.JudgeThinking:
+			heading(label + ">>> Assistant (thinking):")
+			fmt.Fprintln(out, indent(ev.Depth)+ev.Text)
+		case tools.JudgeThinkingDelta:
+			if !st.printedThinking {
+				heading(label + ">>> Assistant (thinking):")
+				st.printedThinking = true
+			}
+			writeDelta(ev.Text)
+		case tools.JudgeToolCallDelta:
+			if ev.Name != "" && !st.toolHeadings[ev.Index] {
+				st.toolHeadings[ev.Index] = true
+				st.streamedToolCall = true
+				heading(label + ">>> Tool: " + ev.Name)
+			}
+			writeDelta(ev.Args)
 		case tools.JudgeToolCall:
-			heading(label + ">>> Tool: " + ev.Name)
-			fmt.Fprintln(out, indent(ev.Depth)+ev.Args)
+			// In streaming mode the fragments already rendered this
+			// call; skip the whole-message block to avoid printing it
+			// twice.
+			if !st.streamedToolCall {
+				heading(label + ">>> Tool: " + ev.Name)
+				fmt.Fprintln(out, indent(ev.Depth)+ev.Args)
+			}
 		case tools.JudgeToolResult:
 			marker := "Result:"
 			if ev.Failed {
@@ -767,6 +811,7 @@ func JudgeEvents(out io.Writer, toolOutput bool) (onJudge func(tools.JudgeEvent)
 			}
 			heading(label + ">>> " + marker + " Tool: " + ev.Name)
 			fmt.Fprintln(out, indent(ev.Depth)+ev.Output)
+			startRound()
 		}
 		return nil
 	}
@@ -812,6 +857,24 @@ func pluralize(word string, n int) string {
 // printed, mirroring the parent's per-round state.
 type subStreamHeadings struct {
 	printedHeading   bool
+	printedThinking  bool
+	streamedToolCall bool
+	toolHeadings     map[int]bool
+}
+
+// streamKey identifies one agent stream's display state: an agent at a
+// nesting depth. The subagent and judge printers key their heading
+// state by it.
+type streamKey struct {
+	depth int
+	agent string
+}
+
+// judgeStreamHeadings tracks which headings a judge stream already
+// printed, mirroring the subagent printer's per-round state (minus the
+// text heading: the judgement prints from the outcomes, so judge text
+// events never render).
+type judgeStreamHeadings struct {
 	printedThinking  bool
 	streamedToolCall bool
 	toolHeadings     map[int]bool

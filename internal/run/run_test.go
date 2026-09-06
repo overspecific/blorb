@@ -3725,3 +3725,122 @@ func TestRunTwoJudgesInOrder(t *testing.T) {
 		t.Errorf("judge blocks out of order:\n%s", out)
 	}
 }
+
+// runStreamingJudgeClient is a streaming fake for the judge: each canned
+// response breaks into deltas before the complete response returns.
+type runStreamingJudgeClient struct {
+	responses []llm.Response
+}
+
+func (f *runStreamingJudgeClient) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	return (&runFakeClient{responses: f.responses}).Chat(ctx, req)
+}
+
+func (f *runStreamingJudgeClient) ChatStream(_ context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	if len(f.responses) == 0 {
+		return nil, errors.New("runStreamingJudgeClient: no more canned responses")
+	}
+	resp := f.responses[0]
+	f.responses = f.responses[1:]
+	msg := resp.Message
+	if msg.Reasoning != "" {
+		if err := onDelta(llm.Delta{Reasoning: msg.Reasoning}); err != nil {
+			return nil, err
+		}
+	}
+	if msg.Content != "" {
+		if err := onDelta(llm.Delta{Content: msg.Content}); err != nil {
+			return nil, err
+		}
+	}
+	for i, tc := range msg.ToolCalls {
+		if err := onDelta(llm.Delta{ToolCall: &llm.ToolCallDelta{
+			Index: i, ID: tc.ID, Type: tc.Type, Name: tc.FunctionName, Arguments: tc.FunctionArgs,
+		}}); err != nil {
+			return nil, err
+		}
+	}
+	return &resp, nil
+}
+
+func TestRunJudgeChatStreamsThinking(t *testing.T) {
+	t.Parallel()
+
+	cfg := runJudgeConfig(t)
+	main := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "agent answer"), FinishReason: llm.FinishStop},
+	}}
+	verdict := llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "the run was fine"), FinishReason: llm.FinishStop}
+	verdict.Message.Reasoning = "weighing the transcript"
+	reviewer := &runStreamingJudgeClient{responses: []llm.Response{verdict}}
+
+	var stdout runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stream: true,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "reviewer" {
+				return reviewer, nil
+			}
+			return main, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "agent answer" {
+		t.Errorf("final = %q, want the agent's own text", final)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "[reviewer] >>> Assistant (thinking):\nweighing the transcript") {
+		t.Errorf("stdout = %q, want the judge's reasoning under an indented thinking heading", out)
+	}
+	if !strings.Contains(out, "\n>>> Judge: reviewer\n\nthe run was fine\n\n") {
+		t.Errorf("stdout = %q, want the judgement block", out)
+	}
+	if strings.Count(out, "the run was fine") != 1 {
+		t.Errorf("stdout = %q, want the judgement printed exactly once", out)
+	}
+}
+
+func TestRunJudgePlainThinkingOnStderr(t *testing.T) {
+	t.Parallel()
+
+	cfg := runJudgeConfig(t)
+	main := &runFakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "agent text"), FinishReason: llm.FinishStop},
+	}}
+	verdict := llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, "reviewed"), FinishReason: llm.FinishStop}
+	verdict.Message.Reasoning = "mulling it over"
+	reviewer := &runStreamingJudgeClient{responses: []llm.Response{verdict}}
+
+	var stdout, stderr runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatPlain,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			if agent.Name == "reviewer" {
+				return reviewer, nil
+			}
+			return main, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "agent text" {
+		t.Errorf("final = %q, want the agent's own text", final)
+	}
+	if got := stdout.String(); got != "agent text" {
+		t.Errorf("stdout = %q, want only the agent's text", got)
+	}
+	if !strings.Contains(stderr.String(), "[reviewer] >>> Assistant (thinking):\nmulling it over") {
+		t.Errorf("stderr = %q, want the judge's streamed reasoning", stderr.String())
+	}
+}
