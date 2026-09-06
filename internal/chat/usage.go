@@ -53,6 +53,22 @@ func subagentUsageWrap(print func(tools.SubagentEvent) error, account *usage.Acc
 	}
 }
 
+// judgeUsageWrap composes the judge event callback with usage recording,
+// mirroring subagentUsageWrap: JudgeUsage events are recorded into account
+// (attributed to the judge's own name) and every event is forwarded to
+// print unchanged.
+func judgeUsageWrap(print func(tools.JudgeEvent) error, account *usage.Account) func(tools.JudgeEvent) error {
+	return func(ev tools.JudgeEvent) error {
+		if ev.Kind == tools.JudgeUsage {
+			account.Add(usage.Record{Agent: ev.Agent, Model: ev.Model, Usage: ev.Usage, Stats: ev.Stats})
+		}
+		if print == nil {
+			return nil
+		}
+		return print(ev)
+	}
+}
+
 // printTurnFooter prints the per-turn usage footer when the turn made at
 // least one LLM call, then folds the turn's records into the session
 // account. A turn that errored after completing calls still prints its

@@ -280,6 +280,7 @@ func Run(ctx context.Context, opts Options) error {
 	input := make(chan inputResult, 1)
 	go readLines(opts.Stdin, input, done)
 
+	var ranTurn bool
 	result, runErr := func() (sessionResult, error) {
 		needHeading := true
 		for {
@@ -319,6 +320,7 @@ func Run(ctx context.Context, opts Options) error {
 
 				res, err := runTurn(ctx, opts, eng, holder, pipe, model, takeInterrupted, setTurn, r.line, sessAccount)
 				needHeading = true
+				ranTurn = true
 				if res == sessionTerminate || res == sessionFailure {
 					return res, err
 				}
@@ -331,6 +333,24 @@ func Run(ctx context.Context, opts Options) error {
 			}
 		}
 	}()
+
+	// The judge phase runs once at session end: after the REPL loop
+	// returns and before the session totals, on the full session
+	// transcript. Sessions that never entered a turn have nothing to
+	// judge; a failed or terminated session, or a dead root ctx (the
+	// judge LLM calls would fail immediately), skips them.
+	if ranTurn && (result == sessionGraceful || result == sessionGracefulInterrupted) && ctx.Err() == nil {
+		onJudge, judgeFlush := JudgeEvents(opts.Stdout, opts.ToolOutput)
+		outcomes, jErr := opts.judgeRunner(sink, streaming).RunJudges(ctx, opts.Agent, config.JudgeWhenEnd, llm.FormatTranscript(eng.History()), judgeUsageWrap(onJudge, sessAccount))
+		judgeFlush()
+		if jErr != nil {
+			// A judge failure is reported, not fatal: the session keeps
+			// its outcome.
+			fmt.Fprintf(opts.Stdout, "judge error: %v\n", jErr)
+		} else {
+			printJudgeOutcomes(opts.Stdout, outcomes)
+		}
+	}
 
 	// Session totals: best-effort output on the way out, printed on every
 	// exit — platform termination and failed sessions spent real tokens
@@ -710,6 +730,60 @@ func Events(out io.Writer, toolOutput bool) (func(engine.Event) error, func(tool
 	return onEvent, onSubagent, flush
 }
 
+// JudgeEvents returns a judge event callback and flush for the
+// session-end judge phase: judge tool activity renders with the
+// subagent heading style, labeled [judge-name] and indented by two
+// spaces per depth; the judgement itself prints from the outcomes
+// after the judge chain completes, so text, thinking, and delta
+// events are ignored. toolOutput is accepted for signature symmetry
+// with Events; judge tool results always render in full, like
+// subagent activity.
+func JudgeEvents(out io.Writer, toolOutput bool) (onJudge func(tools.JudgeEvent) error, flush func()) {
+	var partialLine bool
+	endLine := func() {
+		if partialLine {
+			fmt.Fprint(out, "\n")
+			partialLine = false
+		}
+	}
+	heading := func(text string) {
+		endLine()
+		fmt.Fprintf(out, "\n%s\n", text)
+	}
+	indent := func(depth int) string {
+		return strings.Repeat("  ", depth)
+	}
+
+	onJudge = func(ev tools.JudgeEvent) error {
+		label := fmt.Sprintf("%s[%s] ", indent(ev.Depth), ev.Agent)
+		switch ev.Kind {
+		case tools.JudgeToolCall:
+			heading(label + ">>> Tool: " + ev.Name)
+			fmt.Fprintln(out, indent(ev.Depth)+ev.Args)
+		case tools.JudgeToolResult:
+			marker := "Result:"
+			if ev.Failed {
+				marker = "Error:"
+			}
+			heading(label + ">>> " + marker + " Tool: " + ev.Name)
+			fmt.Fprintln(out, indent(ev.Depth)+ev.Output)
+		}
+		return nil
+	}
+	return onJudge, endLine
+}
+
+// printJudgeOutcomes prints one block per judge outcome after the
+// judge chain completes: a >>> Judge heading, the judgement text under
+// it, blocks separated by blank lines, indented by two spaces per
+// judge-chain depth.
+func printJudgeOutcomes(out io.Writer, outcomes []engine.JudgeOutcome) {
+	for _, o := range outcomes {
+		ind := strings.Repeat("  ", o.Depth)
+		fmt.Fprintf(out, "\n%s>>> Judge: %s\n%s\n\n", ind, o.Judge, ind+strings.ReplaceAll(o.Output, "\n", "\n"+ind))
+	}
+}
+
 // outputSummary describes a tool result body when the body itself is not
 // printed: the character count and the line count (empty output is
 // 0 characters, 0 lines; a trailing newline does not count as an extra
@@ -901,6 +975,22 @@ func (o Options) newClientFor(agent config.Agent, sink logging.Sink) (llm.Client
 // engine; subagent clients that cannot stream fall back to whole messages.
 func (o Options) subagentRunner(sink logging.Sink, streaming bool) *engine.SubagentRunner {
 	return engine.NewSubagentRunner(engine.SubagentRunnerConfig{
+		Config: o.Config,
+		NewClient: func(cfg config.Config, agent config.Agent) (llm.Client, error) {
+			return o.newClientFor(agent, sink)
+		},
+		Stream: o.Stream && streaming,
+		Sink:   sink,
+	})
+}
+
+// judgeRunner builds the engine-backed judge runner for the session's
+// config, mirroring the subagent runner: judges resolve their agents,
+// tool grants, and models from the same config, and their LLM clients
+// build through the session's factory closure. streaming is the
+// session's capability check result, shared with the session engine.
+func (o Options) judgeRunner(sink logging.Sink, streaming bool) *engine.JudgeRunner {
+	return engine.NewJudgeRunner(engine.JudgeRunnerConfig{
 		Config: o.Config,
 		NewClient: func(cfg config.Config, agent config.Agent) (llm.Client, error) {
 			return o.newClientFor(agent, sink)

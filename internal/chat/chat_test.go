@@ -2685,3 +2685,264 @@ func TestRunZeroUsageStillPrintsFooter(t *testing.T) {
 		t.Errorf("stdout = %q, want the zero-usage session line", out)
 	}
 }
+
+// chatJudgeConfig builds a config: agents (name -> prompt) with judges
+// (agent name -> its judges' agent names, in order).
+func chatJudgeConfig(t *testing.T, agents map[string]string, judges map[string][]string) config.Config {
+	t.Helper()
+
+	cfg := config.Config{
+		Providers: []config.Provider{testProvider()},
+		Models:    []config.Model{testModel()},
+	}
+	for name, prompt := range agents {
+		cfg.Agents = append(cfg.Agents, config.Agent{
+			Name:         name,
+			SystemPrompt: prompt,
+			Model:        testModel().Name,
+			MaxTurns:     10,
+		})
+	}
+	for name, judgeNames := range judges {
+		for i := range cfg.Agents {
+			if cfg.Agents[i].Name != name {
+				continue
+			}
+			for _, j := range judgeNames {
+				cfg.Agents[i].Judges = append(cfg.Agents[i].Judges, config.Judge{Agent: j})
+			}
+		}
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("chatJudgeConfig invalid: %v", err)
+	}
+	return cfg
+}
+
+// judgeTestOptions builds options with a client factory dispatching per
+// agent name on the given fakes. sessionAgent names the agent the
+// session runs; the config builder's agent order is not deterministic.
+func judgeTestOptions(cfg config.Config, sessionAgent string, input string, clients map[string]*fakeClient) (chat.Options, *syncBuffer) {
+	agent, ok := cfg.Agent(sessionAgent)
+	if !ok {
+		panic("session agent not found")
+	}
+	var stdout syncBuffer
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   agent,
+		Version: "test",
+		Stdin:   strings.NewReader(input),
+		Stdout:  &stdout,
+		NewClient: func(_ config.Config, agent config.Agent) (llm.Client, error) {
+			c, ok := clients[agent.Name]
+			if !ok {
+				return nil, fmt.Errorf("no fake client for agent %q", agent.Name)
+			}
+			return c, nil
+		},
+	}
+	return o, &stdout
+}
+
+func textResponse(content string) llm.Response {
+	return llm.Response{Message: llm.NewTextMessage(llm.RoleAssistant, content), FinishReason: llm.FinishStop}
+}
+
+func TestChatJudgeAtSessionEnd(t *testing.T) {
+	t.Parallel()
+
+	cfg := chatJudgeConfig(t,
+		map[string]string{"tester": "You are helpful.", "reviewer": "You review."},
+		map[string][]string{"tester": {"reviewer"}},
+	)
+	main := &fakeClient{responses: []llm.Response{textResponse("hi!")}}
+	reviewer := &fakeClient{responses: []llm.Response{
+		textResponse("the run answered well"),
+	}}
+	reviewer.responses[0].Usage = llm.Usage{PromptTokens: 6, CompletionTokens: 4, TotalTokens: 10}
+
+	o, stdout := judgeTestOptions(cfg, "tester", "hello\nexit\n", map[string]*fakeClient{"tester": main, "reviewer": reviewer})
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "\n>>> Judge: reviewer\nthe run answered well\n\n") {
+		t.Errorf("stdout = %q, want the judge block", out)
+	}
+
+	// The session totals print after the judge blocks and include the
+	// judge's usage.
+	judgeAt := strings.Index(out, ">>> Judge: reviewer")
+	totalsAt := strings.Index(out, "session ")
+	if judgeAt < 0 || totalsAt < 0 || judgeAt > totalsAt {
+		t.Errorf("judge block and session totals out of order:\n%s", out)
+	}
+	if !strings.Contains(out, "reviewer:") || !strings.Contains(out, "10 total") {
+		t.Errorf("stdout = %q, want the judge's usage in the session totals", out)
+	}
+}
+
+func TestChatJudgeSkippedWhenNoTurn(t *testing.T) {
+	t.Parallel()
+
+	cfg := chatJudgeConfig(t,
+		map[string]string{"tester": "You are helpful.", "reviewer": "You review."},
+		map[string][]string{"tester": {"reviewer"}},
+	)
+	reviewer := &fakeClient{responses: []llm.Response{textResponse("should not run")}}
+
+	o, stdout := judgeTestOptions(cfg, "tester", "exit\n", map[string]*fakeClient{
+		"tester":   &fakeClient{},
+		"reviewer": reviewer,
+	})
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if strings.Contains(stdout.String(), ">>> Judge:") {
+		t.Errorf("stdout = %q, want no judge block (no turn ran)", stdout.String())
+	}
+	if len(reviewer.requests) != 0 {
+		t.Errorf("judge API calls = %d, want 0", len(reviewer.requests))
+	}
+}
+
+func TestChatTwoJudgesInOrder(t *testing.T) {
+	t.Parallel()
+
+	cfg := chatJudgeConfig(t,
+		map[string]string{"tester": "Tester.", "first": "First judge.", "second": "Second judge."},
+		map[string][]string{"tester": {"first", "second"}},
+	)
+	main := &fakeClient{responses: []llm.Response{textResponse("hi")}}
+	first := &fakeClient{responses: []llm.Response{textResponse("first verdict")}}
+	second := &fakeClient{responses: []llm.Response{textResponse("second verdict")}}
+
+	o, stdout := judgeTestOptions(cfg, "tester", "hello\nexit\n", map[string]*fakeClient{
+		"tester": main, "first": first, "second": second,
+	})
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	firstAt := strings.Index(out, ">>> Judge: first")
+	secondAt := strings.Index(out, ">>> Judge: second")
+	if firstAt < 0 || secondAt < 0 {
+		t.Fatalf("stdout = %q, want both judge blocks", out)
+	}
+	if firstAt > secondAt {
+		t.Errorf("judge blocks out of order:\n%s", out)
+	}
+}
+
+func TestChatNestedJudge(t *testing.T) {
+	t.Parallel()
+
+	cfg := chatJudgeConfig(t,
+		map[string]string{"tester": "Tester.", "mid": "Mid judge.", "deep": "Deep judge."},
+		map[string][]string{"tester": {"mid"}, "mid": {"deep"}},
+	)
+	main := &fakeClient{responses: []llm.Response{textResponse("hi")}}
+	mid := &fakeClient{responses: []llm.Response{textResponse("mid verdict")}}
+	deep := &fakeClient{responses: []llm.Response{textResponse("deep verdict")}}
+
+	o, stdout := judgeTestOptions(cfg, "tester", "hello\nexit\n", map[string]*fakeClient{
+		"tester": main, "mid": mid, "deep": deep,
+	})
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	midAt := strings.Index(out, ">>> Judge: mid")
+	deepAt := strings.Index(out, "  >>> Judge: deep")
+	if midAt < 0 || deepAt < 0 {
+		t.Fatalf("stdout = %q, want both judge blocks (deep indented one level)", out)
+	}
+	if midAt > deepAt {
+		t.Errorf("nested judge block before its judge:\n%s", out)
+	}
+	if !strings.Contains(out, "  deep verdict") {
+		t.Errorf("stdout = %q, want the deep judge's text indented", out)
+	}
+}
+
+func TestChatJudgeErrorNonFatal(t *testing.T) {
+	t.Parallel()
+
+	cfg := chatJudgeConfig(t,
+		map[string]string{"tester": "You are helpful.", "reviewer": "You review."},
+		map[string][]string{"tester": {"reviewer"}},
+	)
+	// The judge fake runs dry: its call errors after the turn.
+	reviewer := &fakeClient{}
+
+	o, stdout := judgeTestOptions(cfg, "tester", "hello\nexit\n", map[string]*fakeClient{
+		"tester":   {responses: []llm.Response{textResponse("hi!")}},
+		"reviewer": reviewer,
+	})
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil (a judge failure is not fatal)", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "judge error:") {
+		t.Errorf("stdout = %q, want the judge error diagnostic", out)
+	}
+	if !strings.Contains(out, ">>> Assistant:\nhi!") {
+		t.Errorf("stdout = %q, want the turn's reply intact", out)
+	}
+}
+
+func TestChatJudgeWithSubagentTool(t *testing.T) {
+	t.Parallel()
+
+	askWorker := config.ToolEntry{
+		Type:        config.ToolTypeSubagent,
+		Name:        "ask_worker",
+		Description: "Ask the worker.",
+		Agent:       "worker",
+	}
+	cfg := chatJudgeConfig(t,
+		map[string]string{"tester": "Tester.", "reviewer": "You review.", "worker": "You work."},
+		map[string][]string{"tester": {"reviewer"}},
+	)
+	cfg.Tools = []config.ToolEntry{askWorker}
+	for i := range cfg.Agents {
+		if cfg.Agents[i].Name == "reviewer" {
+			cfg.Agents[i].Tools = []string{"ask_worker"}
+		}
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config invalid: %v", err)
+	}
+
+	main := &fakeClient{responses: []llm.Response{textResponse("hi")}}
+	worker := &fakeClient{responses: []llm.Response{textResponse("worker findings")}}
+	reviewer := &fakeClient{responses: []llm.Response{
+		{Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{ID: "c1", Type: "function", FunctionName: "ask_worker", FunctionArgs: `{"prompt":"check"}`}},
+		}, FinishReason: llm.FinishToolCalls},
+		textResponse("verified"),
+	}}
+
+	o, stdout := judgeTestOptions(cfg, "tester", "hello\nexit\n", map[string]*fakeClient{
+		"tester": main, "reviewer": reviewer, "worker": worker,
+	})
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if len(worker.requests) != 1 {
+		t.Errorf("worker API calls = %d, want 1 (the judge delegated)", len(worker.requests))
+	}
+	if !strings.Contains(out, "[reviewer] >>> Tool: ask_worker") {
+		t.Errorf("stdout = %q, want the judge's tool activity block", out)
+	}
+	if !strings.Contains(out, "\n>>> Judge: reviewer\nverified") {
+		t.Errorf("stdout = %q, want the judge's judgement block", out)
+	}
+}

@@ -79,13 +79,21 @@ func (o Options) events(account *usage.Account) (printEvent func(engine.Event) e
 
 // printJudges prints the per-judge judgement blocks for the chat and
 // plain formats: a >>> Judge heading per judge in the chat heading
-// style, then its judgement text. The judgements print from the
-// outcomes after the judge chain completes; the ndjson format streams
-// judge events live instead and prints no blocks.
+// style, then its judgement text, indented by two spaces per judge-chain
+// depth. The judgements print from the outcomes after the judge chain
+// completes; the ndjson format streams judge events live instead and
+// prints no blocks.
 func printJudges(w io.Writer, outcomes []engine.JudgeOutcome) {
 	for _, o := range outcomes {
-		fmt.Fprintf(w, "\n>>> Judge: %s\n\n%s\n\n", o.Judge, o.Output)
+		ind := strings.Repeat("  ", o.Depth)
+		fmt.Fprintf(w, "\n%s>>> Judge: %s\n\n%s\n\n", ind, o.Judge, indentBlock(o.Output, ind))
 	}
+}
+
+// indentBlock prefixes every line of s, including the first, with the
+// given indent.
+func indentBlock(s, ind string) string {
+	return ind + strings.ReplaceAll(s, "\n", "\n"+ind)
 }
 
 // logprobTee wraps a chat-style event printer with the logprob block

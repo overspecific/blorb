@@ -15,6 +15,9 @@ import (
 type JudgeOutcome struct {
 	// Judge is the judge agent's name.
 	Judge string
+	// Depth is the judge-chain nesting level: 0 for a judge invoked
+	// directly by the runtime, 1 for a judge judging that judge.
+	Depth int
 	// Output is the judge's final assistant text: its judgement.
 	Output string
 	// Usage itemises the judge's own LLM calls, one record per call
@@ -122,7 +125,7 @@ func (r *JudgeRunner) runChain(ctx context.Context, a config.Agent, when string,
 		if err != nil {
 			return nil, err
 		}
-		outcomes = append(outcomes, outcome)
+		outcomes = append(outcomes, JudgeOutcome{Judge: entry.Agent, Depth: depth, Output: outcome.Output, Usage: outcome.Usage})
 
 		// The judge is itself a completed agent now: the same rule
 		// applies to it. Its transcript is its own engine history
