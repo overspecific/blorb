@@ -1031,10 +1031,6 @@ func TestLoadToolsetBuiltinValid(t *testing.T) {
 	}
 }
 
-// TestToolsetValidationProgrammatic covers the toolset rules that Load
-// fixtures cannot express or that are clearer to pin directly: toolsets are
-// optional, an empty toolset is valid, and an unknown type inside a toolset
-// names all four accepted types.
 // TestLoadAgentGrantsToolsets pins grant expansion through Load: a top-level
 // tool, a simple toolset, a nested toolset, and a builtin toolset granted
 // whole, in the agent's listed order with prefixed names.
@@ -1120,6 +1116,10 @@ func toolNames(entries []config.ToolEntry) []string {
 	return names
 }
 
+// TestToolsetValidationProgrammatic covers the toolset rules that Load
+// fixtures cannot express or that are clearer to pin directly: toolsets are
+// optional, an empty toolset is valid, and an unknown type inside a toolset
+// names all four accepted types.
 func TestToolsetValidationProgrammatic(t *testing.T) {
 	base := func() config.Config {
 		return config.Config{
