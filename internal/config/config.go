@@ -39,6 +39,16 @@ const ToolTypeSubagent ToolType = "subagent"
 // referred toolset's own name supplies the granted prefix.
 const ToolTypeToolset ToolType = "toolset"
 
+// ToolsetTypeSimple selects a plain toolset: a group of inline tool
+// declarations plus references to other toolsets. It is the default when
+// a toolset's type field is absent.
+const ToolsetTypeSimple = "simple"
+
+// ToolsetTypeBuiltin selects a builtin toolset: a named bundle shipped
+// inside blorb, chosen by the builtin field and configured by one shared
+// settings object.
+const ToolsetTypeBuiltin = "builtin"
+
 // JudgeWhenEnd is the judge timing that runs after the judged agent
 // finishes: after the single turn in run mode, at session end in chat
 // mode. Currently the only supported timing.
@@ -450,16 +460,34 @@ type ToolEntry struct {
 // naming the toolset in its tools list. Its members are copied and renamed
 // with a hyphen-joined prefix at grant time (see Config.AgentTools).
 // Absent or empty tools is a valid empty toolset, which grants nothing.
+//
+// Two kinds exist, selected by Type: simple (the default when the field is
+// absent) groups inline tool declarations and references to other
+// toolsets; builtin selects a named bundle shipped inside blorb, has no
+// per-member declarations, and is configured by one shared Config object.
+// Validation normalizes an absent Type to simple, so a loaded toolset
+// always carries an explicit kind.
 type Toolset struct {
 	// Name identifies the toolset within the config and becomes the
 	// prefix of every granted member name. It must match NamePattern
 	// and be unique among toolsets.
 	Name string `json:"name"`
-	// Tools lists the tool declarations this toolset groups: inline
+	// Type selects the kind: ToolsetTypeSimple (the absent field's
+	// meaning) or ToolsetTypeBuiltin. Validation rejects unknown values.
+	Type string `json:"type,omitempty"`
+	// Tools lists the tool declarations a simple toolset groups: inline
 	// tool entries plus entries that refer to other top-level toolsets
 	// by name (type "toolset"). Nesting is allowed; granted prefixes
-	// compose along the path.
+	// compose along the path. Valid only for simple toolsets.
 	Tools []ToolEntry `json:"tools,omitempty"`
+	// Builtin names the builtin bundle a builtin toolset wraps, from
+	// builtin.SupportedToolsets. Valid only for builtin toolsets.
+	Builtin string `json:"builtin,omitempty"`
+	// Config is the builtin toolset's shared settings object. Its shape
+	// is defined and validated by the selected bundle. It is a
+	// RawMessage so it bypasses top-level unknown-field rejection, the
+	// same as ToolEntry.Config. Valid only for builtin toolsets.
+	Config json.RawMessage `json:"config,omitempty"`
 }
 
 // Load reads and parses the blorb.json file at path, then validates it.
@@ -823,8 +851,9 @@ func detectCycle(nodes []string, edges map[string][]string, label string) error 
 	return nil
 }
 
-// validate checks one toolset definition: its name and every member entry.
-// dir anchors builtin base_dir resolution; see ToolEntry.validate.
+// validate checks one toolset definition: its name, its kind, and its kind's
+// fields. dir anchors builtin base_dir resolution; see ToolEntry.validate.
+// An absent type is normalized in place to simple.
 func (t *Toolset) validate(dir string) error {
 	if t.Name == "" {
 		return fmt.Errorf("toolset name is required")
@@ -832,10 +861,37 @@ func (t *Toolset) validate(dir string) error {
 	if !NamePattern.MatchString(t.Name) {
 		return fmt.Errorf("toolset name %q must match %s", t.Name, NamePattern)
 	}
-	for i := range t.Tools {
-		if err := t.Tools[i].validate(dir, true); err != nil {
+	if t.Type == "" {
+		t.Type = ToolsetTypeSimple
+	}
+	switch t.Type {
+	case ToolsetTypeSimple:
+		if t.Builtin != "" {
+			return fmt.Errorf("toolset %q: builtin is not valid for simple toolsets", t.Name)
+		}
+		if len(t.Config) > 0 {
+			return fmt.Errorf("toolset %q: config is not valid for simple toolsets", t.Name)
+		}
+		for i := range t.Tools {
+			if err := t.Tools[i].validate(dir, true); err != nil {
+				return fmt.Errorf("toolset %q: %w", t.Name, err)
+			}
+		}
+	case ToolsetTypeBuiltin:
+		if t.Builtin == "" {
+			return fmt.Errorf("toolset %q: builtin is required (one of: %s)", t.Name, strings.Join(builtin.SupportedToolsets(), ", "))
+		}
+		if !slices.Contains(builtin.SupportedToolsets(), t.Builtin) {
+			return fmt.Errorf("toolset %q: unknown builtin toolset %q (supported: %s)", t.Name, t.Builtin, strings.Join(builtin.SupportedToolsets(), ", "))
+		}
+		if err := builtin.ParseToolsetConfig(t.Builtin, t.Config, builtin.ParseOptions{BaseDir: dir}); err != nil {
 			return fmt.Errorf("toolset %q: %w", t.Name, err)
 		}
+		if len(t.Tools) > 0 {
+			return fmt.Errorf("toolset %q: tools is not valid for builtin toolsets", t.Name)
+		}
+	default:
+		return fmt.Errorf("toolset %q: unknown toolset type %q (supported: builtin, simple)", t.Name, t.Type)
 	}
 	return nil
 }

@@ -561,6 +561,13 @@ func TestLoadRejects(t *testing.T) {
 		{"toolset_ref_with_fields.json", []string{"name is not valid for toolset entries"}},
 		{"toolset_subagent_unknown_agent.json", []string{`toolset "a": agent "nope" is not a defined agent`}},
 		{"toolset_entry_bad_command.json", []string{"command is required"}},
+		{"toolset_type_unknown.json", []string{`unknown toolset type "nope" (supported: builtin, simple)`}},
+		{"toolset_builtin_missing_builtin.json", []string{"builtin is required"}},
+		{"toolset_builtin_unknown.json", []string{"unknown builtin toolset", "nope"}},
+		{"toolset_builtin_bad_config.json", []string{`toolset "files":`, "extra"}},
+		{"toolset_builtin_with_tools.json", []string{"tools is not valid for builtin toolsets"}},
+		{"toolset_simple_with_builtin_field.json", []string{"builtin is not valid for simple toolsets"}},
+		{"toolset_simple_with_config_field.json", []string{"config is not valid for simple toolsets"}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
 		{"prefactor_unknown_field.json", []string{"no_such_field"}},
 		{"prefactor_empty_token_env.json", []string{"api_token_env must not be empty when set"}},
@@ -842,6 +849,9 @@ func TestLoadToolsetValid(t *testing.T) {
 	if kb.Name != "kb" {
 		t.Errorf("Toolsets[0].Name = %q, want kb", kb.Name)
 	}
+	if kb.Type != config.ToolsetTypeSimple {
+		t.Errorf("Toolsets[0].Type = %q, want normalized simple", kb.Type)
+	}
 	if len(kb.Tools) != 2 {
 		t.Fatalf("len(kb.Tools) = %d, want 2", len(kb.Tools))
 	}
@@ -856,6 +866,9 @@ func TestLoadToolsetValid(t *testing.T) {
 	if dev.Name != "dev" {
 		t.Errorf("Toolsets[1].Name = %q, want dev", dev.Name)
 	}
+	if dev.Type != config.ToolsetTypeSimple {
+		t.Errorf("Toolsets[1].Type = %q, want normalized simple", dev.Type)
+	}
 	if len(dev.Tools) != 1 {
 		t.Fatalf("len(dev.Tools) = %d, want 1", len(dev.Tools))
 	}
@@ -864,6 +877,35 @@ func TestLoadToolsetValid(t *testing.T) {
 	}
 	if dev.Tools[0].Toolset != "kb" {
 		t.Errorf("dev.Tools[0].Toolset = %q, want kb", dev.Tools[0].Toolset)
+	}
+}
+
+// TestLoadToolsetBuiltinValid pins the parsed shape of a builtin toolset:
+// the normalized builtin kind, the selected bundle, and the raw shared
+// config object.
+func TestLoadToolsetBuiltinValid(t *testing.T) {
+	cfg, err := loadTestdata(t, "toolset_builtin_valid.json")
+	if err != nil {
+		t.Fatalf("Load(toolset_builtin_valid.json) error = %v, want nil", err)
+	}
+	if len(cfg.Toolsets) != 1 {
+		t.Fatalf("len(Toolsets) = %d, want 1", len(cfg.Toolsets))
+	}
+	ts := cfg.Toolsets[0]
+	if ts.Name != "files" {
+		t.Errorf("Name = %q, want files", ts.Name)
+	}
+	if ts.Type != config.ToolsetTypeBuiltin {
+		t.Errorf("Type = %q, want builtin", ts.Type)
+	}
+	if ts.Builtin != "file" {
+		t.Errorf("Builtin = %q, want file", ts.Builtin)
+	}
+	if len(ts.Config) == 0 || !json.Valid(ts.Config) {
+		t.Errorf("Config = %s, want the raw settings object", ts.Config)
+	}
+	if len(ts.Tools) != 0 {
+		t.Errorf("Tools = %v, want empty for a builtin toolset", ts.Tools)
 	}
 }
 

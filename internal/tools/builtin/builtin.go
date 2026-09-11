@@ -6,6 +6,15 @@
 // builtin-specific field names, so adding a builtin means adding to
 // Supported/Lookup/ParseConfig here and nothing else.
 //
+// A builtin toolset bundle is the second builtin shape: instead of one
+// builtin, it names a stable group of member builtins plus one shared
+// settings object. The bundle owns the member list (ToolsetMembers) and
+// validates the shared settings shape (ParseToolsetConfig); callers use
+// the members' own names as granted leaf names and re-parse the shared
+// settings per member. Adding a bundle means adding to
+// SupportedToolsets/ToolsetMembers/ParseToolsetConfig here and nothing
+// else.
+//
 // Builtins record tool-reported failures (bad arguments, unreadable files)
 // as Result{Err: true} with a nil Go error, the same contract as a
 // command tool's non-zero exit. A Go error from Run means the call could
@@ -91,4 +100,38 @@ func ParseConfig(name string, raw json.RawMessage, po ParseOptions) (Options, er
 // options value has no sandbox and the run fails.
 func (b Builtin) Run(ctx context.Context, opts Options, args json.RawMessage) (Result, error) {
 	return b.run(ctx, opts, args)
+}
+
+// SupportedToolsets lists the builtin toolset bundle names, sorted.
+func SupportedToolsets() []string {
+	return []string{"file"}
+}
+
+// ToolsetMembers returns the named toolset bundle's member implementations
+// in their stable granted order, and whether the bundle exists. The
+// members' Name is the granted leaf name, Description the default member
+// description, and ArgsSchema the member schema.
+func ToolsetMembers(name string) ([]Builtin, bool) {
+	switch name {
+	case "file":
+		return []Builtin{readBuiltin, grepBuiltin}, true
+	default:
+		return nil, false
+	}
+}
+
+// ParseToolsetConfig validates the shared settings object for the named
+// toolset bundle. Like ParseConfig it is strict: unknown fields are
+// rejected, and relative paths in settings resolve against po.BaseDir.
+// The parsed value is not retained; callers re-parse the raw object per
+// member at tool construction. It returns an error for an unknown bundle
+// name.
+func ParseToolsetConfig(name string, raw json.RawMessage, po ParseOptions) error {
+	switch name {
+	case "file":
+		_, err := parseFileConfig(raw, po)
+		return err
+	default:
+		return fmt.Errorf("unknown builtin toolset %q (supported: %s)", name, strings.Join(SupportedToolsets(), ", "))
+	}
 }

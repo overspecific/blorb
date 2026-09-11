@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,112 @@ func TestParseConfig(t *testing.T) {
 		_, err := builtin.ParseConfig("nope", json.RawMessage(`{}`), builtin.ParseOptions{})
 		if err == nil || !strings.Contains(err.Error(), "unknown builtin") {
 			t.Errorf("error = %v, want an unknown-builtin error", err)
+		}
+	})
+}
+
+func TestSupportedToolsets(t *testing.T) {
+	t.Parallel()
+
+	got := builtin.SupportedToolsets()
+	if len(got) != 1 || got[0] != "file" {
+		t.Errorf("SupportedToolsets() = %v, want [file]", got)
+	}
+	if !slices.IsSorted(got) {
+		t.Errorf("SupportedToolsets() = %v, want sorted", got)
+	}
+}
+
+func TestToolsetMembers(t *testing.T) {
+	t.Parallel()
+
+	members, ok := builtin.ToolsetMembers("file")
+	if !ok {
+		t.Fatal("ToolsetMembers(file) not ok, want the file bundle")
+	}
+	if len(members) != 2 || members[0].Name != "read" || members[1].Name != "grep" {
+		t.Fatalf("ToolsetMembers(file) names = %v, want [read grep]", memberNames(members))
+	}
+	for _, m := range members {
+		if m.Description == "" {
+			t.Errorf("member %q Description = empty, want the builtin default", m.Name)
+		}
+		if len(m.ArgsSchema) == 0 || !json.Valid(m.ArgsSchema) {
+			t.Errorf("member %q ArgsSchema = %s, want valid JSON", m.Name, m.ArgsSchema)
+		}
+	}
+
+	if members, ok := builtin.ToolsetMembers("nope"); ok {
+		t.Errorf("ToolsetMembers(nope) = %v, true; want false", memberNames(members))
+	}
+}
+
+func memberNames(members []builtin.Builtin) []string {
+	names := make([]string, len(members))
+	for i, m := range members {
+		names[i] = m.Name
+	}
+	return names
+}
+
+func TestParseToolsetConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("file valid", func(t *testing.T) {
+		t.Parallel()
+		if err := builtin.ParseToolsetConfig("file", json.RawMessage(`{"base_dir":"."}`), builtin.ParseOptions{}); err != nil {
+			t.Errorf("ParseToolsetConfig error = %v, want nil", err)
+		}
+	})
+
+	t.Run("resolves relative base_dir against ParseOptions.BaseDir", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		if err := os.WriteFile(filepath.Join(base, "f.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := builtin.ParseToolsetConfig("file", json.RawMessage(`{"base_dir":"."}`), builtin.ParseOptions{BaseDir: base}); err != nil {
+			t.Errorf("ParseToolsetConfig error = %v, want nil when base_dir resolves against BaseDir", err)
+		}
+	})
+
+	t.Run("missing base_dir", func(t *testing.T) {
+		t.Parallel()
+		err := builtin.ParseToolsetConfig("file", nil, builtin.ParseOptions{})
+		if err == nil || !strings.Contains(err.Error(), "base_dir is required") {
+			t.Errorf("error = %v, want a base_dir required error", err)
+		}
+	})
+
+	t.Run("empty config object", func(t *testing.T) {
+		t.Parallel()
+		err := builtin.ParseToolsetConfig("file", json.RawMessage(`{}`), builtin.ParseOptions{})
+		if err == nil || !strings.Contains(err.Error(), "base_dir is required") {
+			t.Errorf("error = %v, want a base_dir required error", err)
+		}
+	})
+
+	t.Run("unknown field rejected", func(t *testing.T) {
+		t.Parallel()
+		err := builtin.ParseToolsetConfig("file", json.RawMessage(`{"base_dir":".","extra":1}`), builtin.ParseOptions{})
+		if err == nil {
+			t.Error("ParseToolsetConfig succeeded, want unknown-field error")
+		}
+	})
+
+	t.Run("nonexistent directory", func(t *testing.T) {
+		t.Parallel()
+		err := builtin.ParseToolsetConfig("file", json.RawMessage(`{"base_dir":"`+filepath.Join(t.TempDir(), "missing")+`"}`), builtin.ParseOptions{})
+		if err == nil {
+			t.Error("ParseToolsetConfig succeeded, want error")
+		}
+	})
+
+	t.Run("unknown bundle name", func(t *testing.T) {
+		t.Parallel()
+		err := builtin.ParseToolsetConfig("nope", json.RawMessage(`{}`), builtin.ParseOptions{})
+		if err == nil || !strings.Contains(err.Error(), "unknown builtin toolset") {
+			t.Errorf("error = %v, want an unknown-bundle error", err)
 		}
 	})
 }
