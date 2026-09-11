@@ -1,0 +1,70 @@
+{
+  "providers": [
+    {"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}
+  ],
+  "models": [
+    {"name": "m", "provider": "local", "model_name": "m"}
+  ],
+  "agents": [
+    {
+      "name": "main",
+      "system_prompt": "You are helpful.",
+      "model": "m",
+      "max_turns": 1,
+      "tools": ["echo", "kb", "dev", "files"]
+    },
+    {
+      "name": "both",
+      "system_prompt": "You are helpful.",
+      "model": "m",
+      "max_turns": 1,
+      "tools": ["kb1", "kb2"]
+    }
+  ],
+  "tools": [
+    {
+      "type": "command",
+      "name": "echo",
+      "description": "Return a greeting.",
+      "command": ["echo", "hello"]
+    }
+  ],
+  "toolsets": [
+    {
+      "name": "kb",
+      "tools": [
+        {"type": "command", "name": "read", "description": "Read.", "command": ["echo", "read"]}
+      ]
+    },
+    {
+      "name": "kb1",
+      "tools": [
+        {"type": "command", "name": "read", "description": "Read one.", "command": ["echo", "read1"]}
+      ]
+    },
+    {
+      "name": "kb2",
+      "tools": [
+        {"type": "command", "name": "read", "description": "Read two.", "command": ["echo", "read2"]}
+      ]
+    },
+    {
+      "name": "clock",
+      "tools": [
+        {"type": "command", "name": "tick", "description": "Tick.", "command": ["echo", "tick"]}
+      ]
+    },
+    {
+      "name": "dev",
+      "tools": [
+        {"type": "toolset", "toolset": "clock"}
+      ]
+    },
+    {
+      "name": "files",
+      "type": "builtin",
+      "builtin": "file",
+      "config": {"base_dir": "."}
+    }
+  ]
+}

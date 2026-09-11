@@ -291,6 +291,77 @@ func TestSubagentRunnerNestedDepths(t *testing.T) {
 	}
 }
 
+// TestSubagentRunnerThroughGrantedToolset covers a subagent tool granted
+// through a toolset: the parent sees the prefixed name (team-ask_worker)
+// and calling it runs the nested agent.
+func TestSubagentRunnerThroughGrantedToolset(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Providers: []config.Provider{{
+			Name:    "local",
+			Type:    config.ModelTypeOpenAI,
+			BaseURL: "http://localhost:1",
+		}},
+		Models: []config.Model{{Name: "m", Provider: "local", ModelName: "m"}},
+		Agents: []config.Agent{
+			{Name: "parent", SystemPrompt: "Parent.", Model: "m", MaxTurns: 10, Tools: []string{"team"}},
+			{Name: "worker", SystemPrompt: "You work.", Model: "m", MaxTurns: 10},
+		},
+		Toolsets: []config.Toolset{{
+			Name: "team",
+			Tools: []config.ToolEntry{{
+				Type:        config.ToolTypeSubagent,
+				Name:        "ask_worker",
+				Description: "Delegate to worker.",
+				Agent:       "worker",
+			}},
+		}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate error = %v, want nil", err)
+	}
+
+	clientWorker := &fakeClient{responses: []llm.Response{textResp("worker final")}}
+	clientParent := &fakeClient{responses: []llm.Response{
+		toolCallResp(call("call_1", "team-ask_worker", `{"prompt":"start"}`)),
+		textResp("parent final"),
+	}}
+	factory := &clientFactory{clients: map[string]llm.Client{
+		"parent": clientParent,
+		"worker": clientWorker,
+	}}
+	runner := engine.NewSubagentRunner(engine.SubagentRunnerConfig{
+		Config:    cfg,
+		NewClient: factory.newClient,
+	})
+	registry, err := tools.NewRegistry(
+		cfg.AgentTools(mustAgent(t, cfg, "parent")),
+		tools.WithSubagentRunner(runner),
+	)
+	if err != nil {
+		t.Fatalf("NewRegistry error = %v, want nil", err)
+	}
+	defer registry.Close()
+
+	// The parent's request advertises the prefixed granted name.
+	if defs := registry.Definitions(); len(defs) != 1 || defs[0].Name != "team-ask_worker" {
+		t.Fatalf("registry definitions = %+v, want [team-ask_worker]", defs)
+	}
+
+	parentEng := engine.New(engine.EngineConfig{Client: clientParent, Tools: registry})
+	final, err := parentEng.RunTurn(context.Background(), "go", func(engine.Event) error { return nil })
+	if err != nil {
+		t.Fatalf("RunTurn error = %v, want nil", err)
+	}
+	if final != "parent final" {
+		t.Errorf("final = %q, want %q", final, "parent final")
+	}
+	if got := lastUserContent(t, clientWorker); got != "start" {
+		t.Errorf("worker user message = %q, want %q", got, "start")
+	}
+}
+
 func lastUserContent(t *testing.T, fc *fakeClient) string {
 	t.Helper()
 	if len(fc.requests) == 0 {

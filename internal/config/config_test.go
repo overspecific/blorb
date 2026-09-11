@@ -458,6 +458,105 @@ func TestValidateBuiltinEntry(t *testing.T) {
 	}
 }
 
+// TestAgentToolsToolsets covers grant expansion programmatically: prefixing,
+// nested composition, mixed references in the agent's listed order, builtin
+// expansion, and empty toolsets.
+func TestAgentToolsToolsets(t *testing.T) {
+	cfg := config.Config{
+		Tools: []config.ToolEntry{
+			{Type: config.ToolTypeCommand, Name: "first", Description: "First."},
+			{Type: config.ToolTypeCommand, Name: "second", Description: "Second."},
+			{Type: config.ToolTypeCommand, Name: "third", Description: "Third."},
+		},
+		Toolsets: []config.Toolset{
+			{
+				Name: "kb",
+				Tools: []config.ToolEntry{
+					{Type: config.ToolTypeCommand, Name: "read", Description: "Read."},
+				},
+			},
+			{
+				Name: "clock",
+				Tools: []config.ToolEntry{
+					{Type: config.ToolTypeCommand, Name: "tick", Description: "Tick."},
+				},
+			},
+			{
+				Name:  "dev",
+				Tools: []config.ToolEntry{{Type: config.ToolTypeToolset, Toolset: "clock"}},
+			},
+			{
+				Name:    "files",
+				Type:    config.ToolsetTypeBuiltin,
+				Builtin: "file",
+				Config:  json.RawMessage(`{"base_dir":"."}`),
+			},
+			{Name: "empty"},
+		},
+	}
+
+	t.Run("prefixing", func(t *testing.T) {
+		agent := config.Agent{Name: "a", Tools: []string{"kb"}}
+		got := cfg.AgentTools(agent)
+		if names := toolNames(got); fmt.Sprint(names) != fmt.Sprint([]string{"kb-read"}) {
+			t.Errorf("AgentTools = %v, want [kb-read]", names)
+		}
+	})
+
+	t.Run("nested composition", func(t *testing.T) {
+		agent := config.Agent{Name: "a", Tools: []string{"dev"}}
+		got := cfg.AgentTools(agent)
+		if names := toolNames(got); fmt.Sprint(names) != fmt.Sprint([]string{"dev-clock-tick"}) {
+			t.Errorf("AgentTools = %v, want [dev-clock-tick]", names)
+		}
+	})
+
+	t.Run("mixed references in listed order", func(t *testing.T) {
+		agent := config.Agent{Name: "a", Tools: []string{"third", "kb", "first"}}
+		got := cfg.AgentTools(agent)
+		want := []string{"third", "kb-read", "first"}
+		if names := toolNames(got); fmt.Sprint(names) != fmt.Sprint(want) {
+			t.Errorf("AgentTools = %v, want %v", names, want)
+		}
+	})
+
+	t.Run("builtin expansion names order and descriptions", func(t *testing.T) {
+		agent := config.Agent{Name: "a", Tools: []string{"files"}}
+		got := cfg.AgentTools(agent)
+		want := []string{"files-read", "files-grep"}
+		if names := toolNames(got); fmt.Sprint(names) != fmt.Sprint(want) {
+			t.Fatalf("AgentTools = %v, want %v", names, want)
+		}
+		for _, e := range got {
+			if e.Type != config.ToolTypeBuiltin || e.Builtin == "" {
+				t.Errorf("entry %+v, want a builtin with a selected implementation", e)
+			}
+			if e.Description == "" {
+				t.Errorf("entry %q has an empty description", e.Name)
+			}
+			if string(e.Config) != `{"base_dir":"."}` {
+				t.Errorf("entry %q config = %s, want the shared raw object", e.Name, e.Config)
+			}
+		}
+	})
+
+	t.Run("empty toolset grants nothing", func(t *testing.T) {
+		agent := config.Agent{Name: "a", Tools: []string{"empty"}}
+		if got := cfg.AgentTools(agent); len(got) != 0 {
+			t.Errorf("AgentTools = %v, want empty", toolNames(got))
+		}
+	})
+
+	t.Run("granted names match NamePattern", func(t *testing.T) {
+		agent := config.Agent{Name: "a", Tools: []string{"third", "kb", "dev", "files"}}
+		for _, e := range cfg.AgentTools(agent) {
+			if !config.NamePattern.MatchString(e.Name) {
+				t.Errorf("granted name %q must match %s", e.Name, config.NamePattern)
+			}
+		}
+	})
+}
+
 func TestLoadRejects(t *testing.T) {
 	t.Parallel()
 
@@ -500,9 +599,9 @@ func TestLoadRejects(t *testing.T) {
 		{"agent_missing_model.json", []string{`agent "helper": model is required`}},
 		{"agent_unknown_model.json", []string{`agent "helper": model "ghost" is not a defined model`}},
 		{"agent_bad_max_turns.json", []string{`agent "helper": max_turns must be at least 1 (got 0)`}},
-		{"agent_unknown_tool.json", []string{`agent "helper": unknown tool "nope"`}},
+		{"agent_unknown_tool.json", []string{`agent "helper": unknown tool, toolset, or toolset member "nope"`}},
 		{"agent_duplicate_tool.json", []string{`agent "helper": duplicate tool "echo"`}},
-		{"agent_empty_tool.json", []string{`agent "helper": unknown tool ""`}},
+		{"agent_empty_tool.json", []string{`agent "helper": unknown tool, toolset, or toolset member ""`}},
 		{"agent_unknown_field.json", []string{"no_such_field"}},
 		{"default_agent_unknown.json", []string{`default_agent "ghost" is not a defined agent`}},
 		{"model_missing_model.json", []string{"model \"m\": model_name is required"}},
@@ -568,6 +667,10 @@ func TestLoadRejects(t *testing.T) {
 		{"toolset_builtin_with_tools.json", []string{"tools is not valid for builtin toolsets"}},
 		{"toolset_simple_with_builtin_field.json", []string{"builtin is not valid for simple toolsets"}},
 		{"toolset_simple_with_config_field.json", []string{"config is not valid for simple toolsets"}},
+		{"agent_grants_unknown_name.json", []string{`agent "main": unknown tool, toolset, or toolset member "nope"`}},
+		{"agent_grants_toolset_and_member.json", []string{`agent "main": duplicate tool "kb-read"`}},
+		{"toolset_reference_space_collision.json", []string{`duplicate name "a-b-c"`, "tools, toolsets, and toolset members share one reference space"}},
+		{"toolset_subagent_agent_cycle.json", []string{`agent cycle detected: "a" -> "b" -> "a"`}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
 		{"prefactor_unknown_field.json", []string{"no_such_field"}},
 		{"prefactor_empty_token_env.json", []string{"api_token_env must not be empty when set"}},
@@ -913,6 +1016,91 @@ func TestLoadToolsetBuiltinValid(t *testing.T) {
 // fixtures cannot express or that are clearer to pin directly: toolsets are
 // optional, an empty toolset is valid, and an unknown type inside a toolset
 // names all four accepted types.
+// TestLoadAgentGrantsToolsets pins grant expansion through Load: a top-level
+// tool, a simple toolset, a nested toolset, and a builtin toolset granted
+// whole, in the agent's listed order with prefixed names.
+func TestLoadAgentGrantsToolsets(t *testing.T) {
+	cfg, err := loadTestdata(t, "agent_grants_toolsets.json")
+	if err != nil {
+		t.Fatalf("Load(agent_grants_toolsets.json) error = %v, want nil", err)
+	}
+
+	main, ok := cfg.Agent("main")
+	if !ok {
+		t.Fatal("Agent(main) not found")
+	}
+	granted := cfg.AgentTools(main)
+	want := []string{"echo", "kb-read", "dev-clock-tick", "files-read", "files-grep"}
+	if got := toolNames(granted); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("AgentTools(main) = %v, want %v", got, want)
+	}
+	for _, e := range granted {
+		if e.Name != "" && !config.NamePattern.MatchString(e.Name) {
+			t.Errorf("granted name %q must match %s", e.Name, config.NamePattern)
+		}
+	}
+	// Builtin members carry the builtin's own description, not a
+	// config-authored one.
+	filesRead := granted[3]
+	if filesRead.Builtin != "read" || filesRead.Description == "" {
+		t.Errorf("files-read = %+v, want builtin read with a non-empty description", filesRead)
+	}
+	filesGrep := granted[4]
+	if filesGrep.Builtin != "grep" || filesGrep.Description == "" {
+		t.Errorf("files-grep = %+v, want builtin grep with a non-empty description", filesGrep)
+	}
+
+	// Two toolsets holding the same leaf name grant distinct prefixed
+	// names and do not collide.
+	both, _ := cfg.Agent("both")
+	want = []string{"kb1-read", "kb2-read"}
+	if got := toolNames(cfg.AgentTools(both)); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("AgentTools(both) = %v, want %v", got, want)
+	}
+}
+
+// TestLoadAgentGrantsSingleMember pins pulling one toolset member by its
+// granted name: granting kb-read alone yields exactly that tool, and toolsets
+// and members pull independently.
+func TestLoadAgentGrantsSingleMember(t *testing.T) {
+	cfg, err := loadTestdata(t, "agent_grants_single_member.json")
+	if err != nil {
+		t.Fatalf("Load(agent_grants_single_member.json) error = %v, want nil", err)
+	}
+
+	cases := []struct {
+		agent string
+		want  []string
+	}{
+		{"solo", []string{"kb-read"}},
+		{"full", []string{"kb-read", "kb-grep"}},
+		{"grep_only", []string{"kb-grep"}},
+	}
+	for _, tc := range cases {
+		a, ok := cfg.Agent(tc.agent)
+		if !ok {
+			t.Fatalf("Agent(%s) not found", tc.agent)
+		}
+		granted := cfg.AgentTools(a)
+		if got := toolNames(granted); fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("AgentTools(%s) = %v, want %v", tc.agent, got, tc.want)
+		}
+		for _, e := range granted {
+			if e.Description == "" {
+				t.Errorf("AgentTools(%s): granted %q has an empty description", tc.agent, e.Name)
+			}
+		}
+	}
+}
+
+func toolNames(entries []config.ToolEntry) []string {
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name
+	}
+	return names
+}
+
 func TestToolsetValidationProgrammatic(t *testing.T) {
 	base := func() config.Config {
 		return config.Config{

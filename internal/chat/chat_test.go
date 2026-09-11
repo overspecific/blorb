@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -307,6 +308,141 @@ func TestRunScopesToolsToTheAgent(t *testing.T) {
 	if got, want := fmt.Sprint(names), fmt.Sprint([]string{"beta", "alpha"}); got != want {
 		t.Errorf("request tools = %s, want %s (agent's listed order; the shared tool must not appear)", got, want)
 	}
+}
+
+// TestRunScopesToolsToGrantedToolsets verifies a toolset granted to an
+// agent reaches the model under its prefixed names, in the toolset's
+// declared order, and never under the unprefixed leaf names.
+func TestRunScopesToolsToGrantedToolsets(t *testing.T) {
+	t.Parallel()
+
+	t.Run("whole toolset", func(t *testing.T) {
+		t.Parallel()
+		agent := testAgent()
+		agent.Tools = []string{"kb"}
+		cfg := config.Config{
+			Providers: []config.Provider{testProvider()},
+			Models:    []config.Model{testModel()},
+			Agents:    []config.Agent{agent},
+			Toolsets: []config.Toolset{{
+				Name: "kb",
+				Tools: []config.ToolEntry{
+					{Type: config.ToolTypeCommand, Name: "read", Description: "Read.", Command: []string{"true"}},
+					{Type: config.ToolTypeCommand, Name: "grep", Description: "Grep.", Command: []string{"true"}},
+				},
+			}},
+		}
+
+		names := runAndToolNames(t, cfg, agent)
+		if got, want := fmt.Sprint(names), fmt.Sprint([]string{"kb-read", "kb-grep"}); got != want {
+			t.Errorf("request tools = %s, want %s", got, want)
+		}
+		if slices.Contains(names, "read") || slices.Contains(names, "grep") {
+			t.Errorf("request tools = %v, want no unprefixed leaf names", names)
+		}
+	})
+
+	t.Run("single member", func(t *testing.T) {
+		t.Parallel()
+		agent := testAgent()
+		agent.Tools = []string{"kb-read"}
+		cfg := config.Config{
+			Providers: []config.Provider{testProvider()},
+			Models:    []config.Model{testModel()},
+			Agents:    []config.Agent{agent},
+			Toolsets: []config.Toolset{{
+				Name: "kb",
+				Tools: []config.ToolEntry{
+					{Type: config.ToolTypeCommand, Name: "read", Description: "Read.", Command: []string{"true"}},
+					{Type: config.ToolTypeCommand, Name: "grep", Description: "Grep.", Command: []string{"true"}},
+				},
+			}},
+		}
+
+		names := runAndToolNames(t, cfg, agent)
+		if got, want := fmt.Sprint(names), fmt.Sprint([]string{"kb-read"}); got != want {
+			t.Errorf("request tools = %s, want %s", got, want)
+		}
+	})
+}
+
+// TestRunForcedGrantedTool pins that a model forcing a granted toolset
+// member constructs and runs: the engine compares the forced name against
+// the granted definitions.
+func TestRunForcedGrantedTool(t *testing.T) {
+	t.Parallel()
+
+	agent := testAgent()
+	agent.Tools = []string{"kb"}
+	cfg := config.Config{
+		Providers: []config.Provider{testProvider()},
+		Models:    []config.Model{testModel()},
+		Agents:    []config.Agent{agent},
+		Toolsets: []config.Toolset{{
+			Name: "kb",
+			Tools: []config.ToolEntry{
+				{Type: config.ToolTypeCommand, Name: "read", Description: "Read.", Command: []string{"true"}},
+			},
+		}},
+	}
+	cfg.Models[0].ToolChoice = "force"
+	cfg.Models[0].ForcedTool = "kb-read"
+
+	fc := &fakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "ok"), FinishReason: llm.FinishStop},
+	}}
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   agent,
+		Version: "test",
+		Stdin:   strings.NewReader("hi\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return fc, nil
+		},
+	}
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil for a forced granted member", err)
+	}
+	if len(fc.requests) != 1 {
+		t.Fatalf("API calls = %d, want 1", len(fc.requests))
+	}
+	req := fc.requests[0]
+	if req.ToolChoice == nil || req.ToolChoice.Mode != llm.ToolChoiceForce || req.ToolChoice.ForceTool != "kb-read" {
+		t.Errorf("request ToolChoice = %+v, want force/kb-read", req.ToolChoice)
+	}
+}
+
+// runAndToolNames runs a one-turn chat session with the given config and
+// agent and returns the tool names the engine sent to the model.
+func runAndToolNames(t *testing.T, cfg config.Config, agent config.Agent) []string {
+	t.Helper()
+	fc := &fakeClient{responses: []llm.Response{
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "ok"), FinishReason: llm.FinishStop},
+	}}
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   agent,
+		Version: "test",
+		Stdin:   strings.NewReader("hi\nexit\n"),
+		Stdout:  &stdout,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return fc, nil
+		},
+	}
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if len(fc.requests) != 1 {
+		t.Fatalf("API calls = %d, want 1", len(fc.requests))
+	}
+	names := make([]string, 0, len(fc.requests[0].Tools))
+	for _, tl := range fc.requests[0].Tools {
+		names = append(names, tl.Name)
+	}
+	return names
 }
 
 // TestRunNoToolsAgentSendsNoTools verifies a no-tools agent's requests

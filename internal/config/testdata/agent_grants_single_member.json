@@ -1,0 +1,39 @@
+{
+  "providers": [
+    {"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}
+  ],
+  "models": [
+    {"name": "m", "provider": "local", "model_name": "m"}
+  ],
+  "agents": [
+    {
+      "name": "solo",
+      "system_prompt": "You are helpful.",
+      "model": "m",
+      "max_turns": 1,
+      "tools": ["kb-read"]
+    },
+    {
+      "name": "full",
+      "system_prompt": "You are helpful.",
+      "model": "m",
+      "max_turns": 1,
+      "tools": ["kb"]
+    },
+    {
+      "name": "grep_only",
+      "system_prompt": "You are helpful.",
+      "model": "m",
+      "max_turns": 1,
+      "tools": ["kb-grep"]
+    }
+  ],
+  "toolsets": [
+    {
+      "name": "kb",
+      "type": "builtin",
+      "builtin": "file",
+      "config": {"base_dir": "."}
+    }
+  ]
+}

@@ -127,9 +127,9 @@ type Config struct {
 }
 
 // Agent is one named agent definition inside a config. It owns the
-// agent-scoped settings and lists, by name, the top-level tools it may
-// use and the top-level model it talks to; the model and tool
-// definitions themselves live once at the top level and are shared.
+// agent-scoped settings and lists, by name, the tools it may use and the
+// top-level model it talks to; the model and tool declarations themselves
+// live once at the top level and are shared.
 type Agent struct {
 	// Name identifies the agent within the config. It feeds the chat
 	// banner, the chat command's agent argument, and Prefactor's agent
@@ -143,9 +143,11 @@ type Agent struct {
 	// MaxTurns bounds the agent's per-turn tool round trips; 0 means
 	// DefaultMaxTurns (see MaxTurnsOrDefault).
 	MaxTurns int `json:"max_turns,omitempty"`
-	// Tools lists the names of the top-level tools this agent may use.
-	// Absent or empty means the agent has no tools. Every name must
-	// exist in the top-level tools; listing order is the agent's.
+	// Tools lists what this agent may use, by name: top-level tools,
+	// toolsets (granting every member), and individual toolset members
+	// by their granted prefixed name. Absent or empty means the agent
+	// has no tools. Every name must resolve, and no granted name may
+	// repeat. Listing order is the agent's.
 	Tools []string `json:"tools,omitempty"`
 	// Judges lists the agents that judge this agent's run: once the
 	// agent finishes, each end-timing judge is invoked with a
@@ -582,23 +584,144 @@ func (c Config) DefaultAgentName() (string, bool) {
 	return c.DefaultAgent, true
 }
 
-// AgentTools returns the top-level tool entries the agent may use, in the
-// agent's listed order (not the top-level declaration order), so tool
-// listing order is the agent author's. An empty result is valid: a
-// no-tools agent. Validation guarantees every listed name exists in the
-// top-level tools, so the result only comes up short for a programmatically
-// built config that never went through Validate.
+// AgentTools returns the tool entries the agent may use, in the agent's
+// listed order (not the top-level declaration order), so tool listing
+// order is the agent author's. Toolset references expand at their position
+// in the list and in the toolset's declared member order, with each
+// granted member name prefixed by the toolset path (kb-read, dev-clock-read,
+// files-read). An empty result is valid: a no-tools agent, or one granting
+// only an empty toolset. Validation guarantees every listed name resolves
+// and no granted name repeats, so the result only comes up short for a
+// programmatically built config that never went through Validate.
 func (c Config) AgentTools(a Agent) []ToolEntry {
-	out := make([]ToolEntry, 0, len(a.Tools))
-	for _, name := range a.Tools {
-		for _, t := range c.Tools {
-			if t.Name == name {
-				out = append(out, t)
-				break
+	index, err := c.toolReferenceIndex()
+	if err != nil {
+		return nil
+	}
+	out, err := c.agentGrantedTools(a, index)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// expandToolset returns the granted entries of one toolset, with every leaf
+// name prefixed by prefix (the toolset path from the grant root) joined by
+// hyphens. A simple toolset's inline leaves are copied with rewritten
+// names; a toolset-reference entry appends the referenced toolset's name to
+// the path and recurses. A builtin toolset synthesizes its members from the
+// bundle: the member's own name is the leaf name, its description comes
+// from the bundle, and the toolset's shared raw config is copied per
+// member. seen holds the toolset path currently being expanded, so an
+// unvalidated programmatic cycle grants nothing instead of hanging.
+func (c Config) expandToolset(ts Toolset, prefix []string, seen map[string]bool) ([]ToolEntry, error) {
+	if seen[ts.Name] {
+		return nil, nil
+	}
+	seen[ts.Name] = true
+	defer delete(seen, ts.Name)
+
+	if ts.Type == ToolsetTypeBuiltin {
+		members, ok := builtin.ToolsetMembers(ts.Builtin)
+		if !ok {
+			return nil, fmt.Errorf("toolset %q: unknown builtin toolset %q", ts.Name, ts.Builtin)
+		}
+		out := make([]ToolEntry, 0, len(members))
+		for _, m := range members {
+			out = append(out, ToolEntry{
+				Type:        ToolTypeBuiltin,
+				Name:        grantedName(prefix, m.Name),
+				Description: m.Description,
+				Builtin:     m.Name,
+				Config:      append([]byte(nil), ts.Config...),
+			})
+		}
+		return out, nil
+	}
+
+	var out []ToolEntry
+	for _, e := range ts.Tools {
+		if e.Type == ToolTypeToolset {
+			ref, ok := c.Toolset(e.Toolset)
+			if !ok {
+				continue
+			}
+			child, err := c.expandToolset(ref, append(append([]string(nil), prefix...), ref.Name), seen)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, child...)
+			continue
+		}
+		leaf := e
+		leaf.Name = grantedName(prefix, e.Name)
+		out = append(out, leaf)
+	}
+	return out, nil
+}
+
+// grantedName joins a grant path and a leaf name with the hyphen separator
+// the LLM API requires.
+func grantedName(prefix []string, leaf string) string {
+	return strings.Join(append(append([]string(nil), prefix...), leaf), "-")
+}
+
+// toolReferenceIndex builds the agent reference space: each top-level tool
+// name maps to its entry, each toolset name maps to its full expansion, and
+// every granted member name maps to its entry. A duplicate key anywhere is
+// an error, so tools, toolsets, and granted member names share one unique
+// namespace. This also catches hyphen-composition collisions: toolset "a-b"
+// containing "c" and toolset "a" referring to toolset "b" each grant
+// "a-b-c", and both paths land on the same key.
+func (c Config) toolReferenceIndex() (map[string][]ToolEntry, error) {
+	index := make(map[string][]ToolEntry)
+	add := func(name string, entries ...ToolEntry) error {
+		if _, ok := index[name]; ok {
+			return fmt.Errorf("duplicate name %q (tools, toolsets, and toolset members share one reference space)", name)
+		}
+		index[name] = entries
+		return nil
+	}
+	for _, t := range c.Tools {
+		if err := add(t.Name, t); err != nil {
+			return nil, err
+		}
+	}
+	for _, ts := range c.Toolsets {
+		expanded, err := c.expandToolset(ts, []string{ts.Name}, map[string]bool{})
+		if err != nil {
+			return nil, err
+		}
+		if err := add(ts.Name, expanded...); err != nil {
+			return nil, err
+		}
+		for _, e := range expanded {
+			if err := add(e.Name, e); err != nil {
+				return nil, err
 			}
 		}
 	}
-	return out
+	return index, nil
+}
+
+// agentGrantedTools expands an agent's tools list against the reference
+// index into the granted entries, in the agent's listed order (a toolset
+// reference expanding at its position in the toolset's declared member
+// order). Any granted name appearing twice is an error: an exact repeat, a
+// toolset granted alongside one of its members, and any other overlap.
+func (c Config) agentGrantedTools(a Agent, index map[string][]ToolEntry) ([]ToolEntry, error) {
+	var out []ToolEntry
+	seen := make(map[string]struct{})
+	for _, name := range a.Tools {
+		for _, e := range index[name] {
+			if _, ok := seen[e.Name]; ok {
+				return nil, fmt.Errorf("agent %q: duplicate tool %q", a.Name, e.Name)
+			}
+			seen[e.Name] = struct{}{}
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 // Validate checks all required fields and value constraints. Providers
@@ -661,9 +784,19 @@ func (c *Config) Validate() error {
 	if err := c.validateToolsetCycles(); err != nil {
 		return err
 	}
+	// The reference index is built once, after every toolset is validated,
+	// so a collision across the whole reference space surfaces before any
+	// agent error.
+	index, err := c.toolReferenceIndex()
+	if err != nil {
+		return err
+	}
 	seen := make(map[string]struct{}, len(c.Agents))
 	for _, a := range c.Agents {
-		if err := a.validate(c.Models, c.Tools); err != nil {
+		if err := a.validate(c.Models, index); err != nil {
+			return err
+		}
+		if _, err := c.agentGrantedTools(a, index); err != nil {
 			return err
 		}
 		if _, ok := seen[a.Name]; ok {
@@ -691,7 +824,7 @@ func (c *Config) Validate() error {
 	if err := c.validateJudgeRefs(); err != nil {
 		return err
 	}
-	if err := c.validateAgentCycles(); err != nil {
+	if err := c.validateAgentCycles(index); err != nil {
 		return err
 	}
 	return nil
@@ -736,25 +869,22 @@ func (c *Config) validateJudgeRefs() error {
 }
 
 // validateAgentCycles builds the agent delegation graph - an edge from
-// an agent to each subagent tool target it is granted, plus an edge from
-// an agent to each of its judges (all timings: judges recurse
-// agent-to-agent regardless of when they run) - and rejects any cycle,
-// including self-reference. A cycle anywhere is fatal: both delegation
-// kinds recurse agent-to-agent, so depth would otherwise be unbounded.
-func (c *Config) validateAgentCycles() error {
-	// target[toolName] is the agent a subagent tool delegates to.
-	target := make(map[string]string, len(c.Tools))
-	for _, t := range c.Tools {
-		if t.Type == ToolTypeSubagent {
-			target[t.Name] = t.Agent
-		}
-	}
-
+// an agent to each subagent tool target it is granted (expanded through
+// toolsets), plus an edge from an agent to each of its judges (all
+// timings: judges recurse agent-to-agent regardless of when they run) -
+// and rejects any cycle, including self-reference. A cycle anywhere is
+// fatal: both delegation kinds recurse agent-to-agent, so depth would
+// otherwise be unbounded. index is the already-built reference space.
+func (c *Config) validateAgentCycles(index map[string][]ToolEntry) error {
 	edges := make(map[string][]string, len(c.Agents))
 	for _, a := range c.Agents {
-		for _, name := range a.Tools {
-			if to, ok := target[name]; ok {
-				edges[a.Name] = append(edges[a.Name], to)
+		granted, err := c.agentGrantedTools(a, index)
+		if err != nil {
+			return err
+		}
+		for _, t := range granted {
+			if t.Type == ToolTypeSubagent {
+				edges[a.Name] = append(edges[a.Name], t.Agent)
 			}
 		}
 		for _, j := range a.Judges {
@@ -913,10 +1043,11 @@ func (c *Config) validateToolsetRefs() error {
 }
 
 // validate checks one agent definition: its name, settings, and that the
-// model it names and every tool it lists exist in the config's top-level
-// declarations. models and tools are the already-validated top-level
-// entries the agent references by name.
-func (a *Agent) validate(models []Model, tools []ToolEntry) error {
+// model it names is defined and every tool, toolset, or toolset member it
+// lists resolves against the reference index. models is the already-validated
+// top-level model list the agent references by name; index is the reference
+// space built from the top-level tools and toolsets.
+func (a *Agent) validate(models []Model, index map[string][]ToolEntry) error {
 	if a.Name == "" {
 		return fmt.Errorf("agent name is required")
 	}
@@ -935,14 +1066,9 @@ func (a *Agent) validate(models []Model, tools []ToolEntry) error {
 	if a.MaxTurns < 1 {
 		return fmt.Errorf("agent %q: max_turns must be at least 1 (got %d)", a.Name, a.MaxTurns)
 	}
-	seen := make(map[string]struct{}, len(a.Tools))
 	for _, name := range a.Tools {
-		if _, ok := seen[name]; ok {
-			return fmt.Errorf("agent %q: duplicate tool %q", a.Name, name)
-		}
-		seen[name] = struct{}{}
-		if !slices.ContainsFunc(tools, func(t ToolEntry) bool { return t.Name == name }) {
-			return fmt.Errorf("agent %q: unknown tool %q", a.Name, name)
+		if _, ok := index[name]; !ok {
+			return fmt.Errorf("agent %q: unknown tool, toolset, or toolset member %q", a.Name, name)
 		}
 	}
 	seenJudges := make(map[string]struct{}, len(a.Judges))
