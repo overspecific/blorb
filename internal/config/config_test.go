@@ -551,6 +551,16 @@ func TestLoadRejects(t *testing.T) {
 		{"agent_judge_self_cycle.json", []string{`agent cycle detected: "a" -> "a"`}},
 		{"agent_judge_subagent_cycle.json", []string{"agent cycle detected", `"a"`, `"b"`}},
 		{"duplicate_tool_names.json", []string{"duplicate tool name"}},
+		{"toolset_missing_name.json", []string{"toolset name is required"}},
+		{"toolset_bad_name.json", []string{`toolset name "has space" must match`}},
+		{"duplicate_toolset_names.json", []string{`duplicate toolset name "kb"`}},
+		{"toolset_unknown_ref.json", []string{`toolset "a": unknown toolset "nope"`}},
+		{"toolset_self_cycle.json", []string{`toolset cycle detected: "a" -> "a"`}},
+		{"toolset_cycle.json", []string{`toolset cycle detected: "a" -> "b" -> "a"`}},
+		{"toolset_toolset_at_top_level.json", []string{"toolset entries are valid only inside a toolset"}},
+		{"toolset_ref_with_fields.json", []string{"name is not valid for toolset entries"}},
+		{"toolset_subagent_unknown_agent.json", []string{`toolset "a": agent "nope" is not a defined agent`}},
+		{"toolset_entry_bad_command.json", []string{"command is required"}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
 		{"prefactor_unknown_field.json", []string{"no_such_field"}},
 		{"prefactor_empty_token_env.json", []string{"api_token_env must not be empty when set"}},
@@ -814,6 +824,98 @@ func TestLoadBuiltinValid(t *testing.T) {
 	// base_dir "." resolves relative to the config file, so the fixture's
 	// builtin read with base_dir "." anchors at testdata/ — proven by the
 	// fixture loading at all (the parse stats the directory).
+}
+
+// TestLoadToolsetValid pins the parsed shape of the two-kind toolset
+// declarations: a toolset holding inline entries, and one referring to it
+// by name.
+func TestLoadToolsetValid(t *testing.T) {
+	cfg, err := loadTestdata(t, "toolset_valid.json")
+	if err != nil {
+		t.Fatalf("Load(toolset_valid.json) error = %v, want nil", err)
+	}
+	if len(cfg.Toolsets) != 2 {
+		t.Fatalf("len(Toolsets) = %d, want 2", len(cfg.Toolsets))
+	}
+
+	kb := cfg.Toolsets[0]
+	if kb.Name != "kb" {
+		t.Errorf("Toolsets[0].Name = %q, want kb", kb.Name)
+	}
+	if len(kb.Tools) != 2 {
+		t.Fatalf("len(kb.Tools) = %d, want 2", len(kb.Tools))
+	}
+	if kb.Tools[0].Type != config.ToolTypeCommand || kb.Tools[0].Name != "echo" {
+		t.Errorf("kb.Tools[0] = %q/%q, want command/echo", kb.Tools[0].Type, kb.Tools[0].Name)
+	}
+	if kb.Tools[1].Type != config.ToolTypeBuiltin || kb.Tools[1].Builtin != "read" {
+		t.Errorf("kb.Tools[1] = %q/%q, want builtin/read", kb.Tools[1].Type, kb.Tools[1].Builtin)
+	}
+
+	dev := cfg.Toolsets[1]
+	if dev.Name != "dev" {
+		t.Errorf("Toolsets[1].Name = %q, want dev", dev.Name)
+	}
+	if len(dev.Tools) != 1 {
+		t.Fatalf("len(dev.Tools) = %d, want 1", len(dev.Tools))
+	}
+	if dev.Tools[0].Type != config.ToolTypeToolset {
+		t.Errorf("dev.Tools[0].Type = %q, want toolset", dev.Tools[0].Type)
+	}
+	if dev.Tools[0].Toolset != "kb" {
+		t.Errorf("dev.Tools[0].Toolset = %q, want kb", dev.Tools[0].Toolset)
+	}
+}
+
+// TestToolsetValidationProgrammatic covers the toolset rules that Load
+// fixtures cannot express or that are clearer to pin directly: toolsets are
+// optional, an empty toolset is valid, and an unknown type inside a toolset
+// names all four accepted types.
+func TestToolsetValidationProgrammatic(t *testing.T) {
+	base := func() config.Config {
+		return config.Config{
+			Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel()},
+			Agents: []config.Agent{validAgent()},
+		}
+	}
+
+	t.Run("no toolsets is valid", func(t *testing.T) {
+		cfg := base()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate error = %v, want nil when toolsets is absent", err)
+		}
+	})
+
+	t.Run("empty toolset is valid", func(t *testing.T) {
+		cfg := base()
+		cfg.Toolsets = []config.Toolset{{Name: "empty", Tools: []config.ToolEntry{}}}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate error = %v, want nil for an empty toolset", err)
+		}
+	})
+
+	t.Run("unknown tool type inside a toolset lists four", func(t *testing.T) {
+		cfg := base()
+		cfg.Toolsets = []config.Toolset{{
+			Name:  "a",
+			Tools: []config.ToolEntry{{Type: "webhook"}},
+		}}
+		err := cfg.Validate()
+		if err == nil || !contains(err.Error(), `unknown tool type "webhook" (supported: builtin, command, subagent, toolset)`) {
+			t.Errorf("Validate error = %v, want the four-value supported list", err)
+		}
+	})
+
+	t.Run("toolset ref requires a toolset name", func(t *testing.T) {
+		cfg := base()
+		cfg.Toolsets = []config.Toolset{{
+			Name:  "a",
+			Tools: []config.ToolEntry{{Type: config.ToolTypeToolset}},
+		}}
+		if err := cfg.Validate(); err == nil || !contains(err.Error(), "toolset is required") {
+			t.Errorf("Validate error = %v, want a toolset-required error", err)
+		}
+	})
 }
 
 func TestConfigDir(t *testing.T) {

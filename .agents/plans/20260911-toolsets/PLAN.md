@@ -4,7 +4,7 @@ A toolset is a named group of tools declared once at the top level and granted t
 
 ## Todo
 
-- [ ] Commit 1: simple toolset declarations and validation
+- [x] Commit 1: simple toolset declarations and validation
 - [ ] Commit 2: toolset types and the builtin file toolset
 - [ ] Commit 3: granting toolsets and members
 - [ ] Commit 4: docs, example, and fixture polish

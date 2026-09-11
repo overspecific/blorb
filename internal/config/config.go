@@ -34,6 +34,11 @@ const ToolTypeBuiltin ToolType = "builtin"
 // its final assistant text.
 const ToolTypeSubagent ToolType = "subagent"
 
+// ToolTypeToolset selects an entry that refers to another top-level
+// toolset by name. It is valid only inside a toolset's tools list. The
+// referred toolset's own name supplies the granted prefix.
+const ToolTypeToolset ToolType = "toolset"
+
 // JudgeWhenEnd is the judge timing that runs after the judged agent
 // finishes: after the single turn in run mode, at session end in chat
 // mode. Currently the only supported timing.
@@ -96,7 +101,11 @@ type Config struct {
 	DefaultAgent string `json:"default_agent,omitempty"`
 	// Tools is the shared tool vocabulary. Agents grant themselves tools
 	// by name; the declarations live here, once.
-	Tools     []ToolEntry      `json:"tools,omitempty"`
+	Tools []ToolEntry `json:"tools,omitempty"`
+	// Toolsets is the shared toolset vocabulary: named groups of tools
+	// that agents grant whole. A toolset's members are renamed with the
+	// toolset name as a prefix when granted; see AgentTools.
+	Toolsets  []Toolset        `json:"toolsets,omitempty"`
 	Logging   LogConfig        `json:"logging"`
 	Prefactor *PrefactorConfig `json:"prefactor,omitempty"`
 
@@ -430,6 +439,27 @@ type ToolEntry struct {
 	// Agent names the target agent this tool delegates to; it must be
 	// a defined agent in the same config.
 	Agent string `json:"agent,omitempty"`
+
+	// Fields for type "toolset": a reference to another top-level
+	// toolset. Valid only inside a toolset's tools list; the granted
+	// prefix comes from the referenced toolset's own name.
+	Toolset string `json:"toolset,omitempty"`
+}
+
+// Toolset is a named group of tool declarations an agent can grant by
+// naming the toolset in its tools list. Its members are copied and renamed
+// with a hyphen-joined prefix at grant time (see Config.AgentTools).
+// Absent or empty tools is a valid empty toolset, which grants nothing.
+type Toolset struct {
+	// Name identifies the toolset within the config and becomes the
+	// prefix of every granted member name. It must match NamePattern
+	// and be unique among toolsets.
+	Name string `json:"name"`
+	// Tools lists the tool declarations this toolset groups: inline
+	// tool entries plus entries that refer to other top-level toolsets
+	// by name (type "toolset"). Nesting is allowed; granted prefixes
+	// compose along the path.
+	Tools []ToolEntry `json:"tools,omitempty"`
 }
 
 // Load reads and parses the blorb.json file at path, then validates it.
@@ -504,6 +534,17 @@ func (c Config) Provider(name string) (Provider, bool) {
 	return Provider{}, false
 }
 
+// Toolset returns the named toolset definition and whether it exists in
+// the config.
+func (c Config) Toolset(name string) (Toolset, bool) {
+	for _, ts := range c.Toolsets {
+		if ts.Name == name {
+			return ts, true
+		}
+	}
+	return Toolset{}, false
+}
+
 // DefaultAgentName returns the configured default agent name and whether
 // one is set.
 func (c Config) DefaultAgentName() (string, bool) {
@@ -571,11 +612,25 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("agents must not be empty")
 	}
 	for _, t := range c.Tools {
-		if err := t.validate(c.dir); err != nil {
+		if err := t.validate(c.dir, false); err != nil {
 			return fmt.Errorf("tool %q: %w", t.Name, err)
 		}
 	}
 	if err := validateUniqueToolNames(c.Tools); err != nil {
+		return err
+	}
+	for i := range c.Toolsets {
+		if err := c.Toolsets[i].validate(c.dir); err != nil {
+			return err
+		}
+	}
+	if err := validateUniqueToolsetNames(c.Toolsets); err != nil {
+		return err
+	}
+	if err := c.validateToolsetRefs(); err != nil {
+		return err
+	}
+	if err := c.validateToolsetCycles(); err != nil {
 		return err
 	}
 	seen := make(map[string]struct{}, len(c.Agents))
@@ -615,8 +670,8 @@ func (c *Config) Validate() error {
 }
 
 // validateSubagentRefs checks that every subagent tool entry names a
-// defined agent. Runs after per-agent validation so all agent names are
-// known.
+// defined agent, at the top level and inside every toolset. Runs after
+// per-agent validation so all agent names are known.
 func (c *Config) validateSubagentRefs() error {
 	for _, t := range c.Tools {
 		if t.Type != ToolTypeSubagent {
@@ -624,6 +679,16 @@ func (c *Config) validateSubagentRefs() error {
 		}
 		if _, ok := c.Agent(t.Agent); !ok {
 			return fmt.Errorf("tool %q: agent %q is not a defined agent", t.Name, t.Agent)
+		}
+	}
+	for _, ts := range c.Toolsets {
+		for _, t := range ts.Tools {
+			if t.Type != ToolTypeSubagent {
+				continue
+			}
+			if _, ok := c.Agent(t.Agent); !ok {
+				return fmt.Errorf("toolset %q: agent %q is not a defined agent", ts.Name, t.Agent)
+			}
 		}
 	}
 	return nil
@@ -669,19 +734,57 @@ func (c *Config) validateAgentCycles() error {
 		}
 	}
 
+	return detectCycle(agentNames(c.Agents), edges, "agent")
+}
+
+// validateToolsetCycles rejects any cycle among toolset references,
+// including self-reference. Cycles are fatal because expansion at grant
+// time would otherwise recurse forever. References are known to resolve:
+// validateToolsetRefs runs first.
+func (c *Config) validateToolsetCycles() error {
+	edges := make(map[string][]string, len(c.Toolsets))
+	for _, ts := range c.Toolsets {
+		for _, t := range ts.Tools {
+			if t.Type == ToolTypeToolset {
+				edges[ts.Name] = append(edges[ts.Name], t.Toolset)
+			}
+		}
+	}
+
+	nodes := make([]string, len(c.Toolsets))
+	for i, ts := range c.Toolsets {
+		nodes[i] = ts.Name
+	}
+	return detectCycle(nodes, edges, "toolset")
+}
+
+// agentNames returns the names of the agents in declaration order.
+func agentNames(agents []Agent) []string {
+	names := make([]string, len(agents))
+	for i, a := range agents {
+		names[i] = a.Name
+	}
+	return names
+}
+
+// detectCycle walks the directed graph given by edges from the nodes in
+// order and returns an error naming the first cycle found, including a
+// self-reference. label prefixes the message ("agent", "toolset"). A node
+// absent from edges is a leaf.
+func detectCycle(nodes []string, edges map[string][]string, label string) error {
 	const (
 		white = 0 // unvisited
 		gray  = 1 // on the current DFS path
 		black = 2 // fully explored
 	)
-	color := make(map[string]int, len(c.Agents))
+	color := make(map[string]int, len(nodes))
 	var stack []string
 
-	var visit func(agent string) error
-	visit = func(agent string) error {
-		color[agent] = gray
-		stack = append(stack, agent)
-		for _, next := range edges[agent] {
+	var visit func(node string) error
+	visit = func(node string) error {
+		color[node] = gray
+		stack = append(stack, node)
+		for _, next := range edges[node] {
 			switch color[next] {
 			case white:
 				if err := visit(next); err != nil {
@@ -691,29 +794,62 @@ func (c *Config) validateAgentCycles() error {
 				// Found a cycle: report the path from its first
 				// occurrence on the current stack.
 				start := 0
-				for i, a := range stack {
-					if a == next {
+				for i, n := range stack {
+					if n == next {
 						start = i
 						break
 					}
 				}
 				path := append(append([]string(nil), stack[start:]...), next)
 				quoted := make([]string, len(path))
-				for i, a := range path {
-					quoted[i] = fmt.Sprintf("%q", a)
+				for i, n := range path {
+					quoted[i] = fmt.Sprintf("%q", n)
 				}
-				return fmt.Errorf("agent cycle detected: %s", strings.Join(quoted, " -> "))
+				return fmt.Errorf("%s cycle detected: %s", label, strings.Join(quoted, " -> "))
 			}
 		}
 		stack = stack[:len(stack)-1]
-		color[agent] = black
+		color[node] = black
 		return nil
 	}
 
-	for _, a := range c.Agents {
-		if color[a.Name] == white {
-			if err := visit(a.Name); err != nil {
+	for _, n := range nodes {
+		if color[n] == white {
+			if err := visit(n); err != nil {
 				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validate checks one toolset definition: its name and every member entry.
+// dir anchors builtin base_dir resolution; see ToolEntry.validate.
+func (t *Toolset) validate(dir string) error {
+	if t.Name == "" {
+		return fmt.Errorf("toolset name is required")
+	}
+	if !NamePattern.MatchString(t.Name) {
+		return fmt.Errorf("toolset name %q must match %s", t.Name, NamePattern)
+	}
+	for i := range t.Tools {
+		if err := t.Tools[i].validate(dir, true); err != nil {
+			return fmt.Errorf("toolset %q: %w", t.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateToolsetRefs checks that every toolset-reference entry names a
+// defined toolset. Runs after toolset name validation.
+func (c *Config) validateToolsetRefs() error {
+	for _, ts := range c.Toolsets {
+		for _, t := range ts.Tools {
+			if t.Type != ToolTypeToolset {
+				continue
+			}
+			if _, ok := c.Toolset(t.Toolset); !ok {
+				return fmt.Errorf("toolset %q: unknown toolset %q", ts.Name, t.Toolset)
 			}
 		}
 	}
@@ -996,15 +1132,35 @@ func validateFormat(format json.RawMessage, providerType string) error {
 	return nil
 }
 
-// SupportedToolTypes lists the tool types this build recognizes, sorted
-// alphabetically.
+// SupportedToolTypes lists the tool types this build recognizes at the top
+// level, sorted alphabetically. The toolset-reference type is valid only
+// inside a toolset; see supportedToolEntryTypes.
 func SupportedToolTypes() []string {
 	return []string{string(ToolTypeBuiltin), string(ToolTypeCommand), string(ToolTypeSubagent)}
 }
 
-func (t *ToolEntry) validate(dir string) error {
+// supportedToolEntryTypes lists the tool types valid in the given location,
+// sorted alphabetically: the three registry types everywhere, plus the
+// toolset-reference type inside a toolset's tools list.
+func supportedToolEntryTypes(inToolset bool) []string {
+	if inToolset {
+		return []string{string(ToolTypeBuiltin), string(ToolTypeCommand), string(ToolTypeSubagent), string(ToolTypeToolset)}
+	}
+	return SupportedToolTypes()
+}
+
+// validate checks one tool entry. inToolset distinguishes a top-level tools
+// entry from one declared inside a toolset: the toolset-reference type is
+// valid only in the latter. dir anchors builtin base_dir resolution.
+func (t *ToolEntry) validate(dir string, inToolset bool) error {
 	if t.Type == "" {
-		return fmt.Errorf("type is required (one of: %s)", strings.Join(SupportedToolTypes(), ", "))
+		return fmt.Errorf("type is required (one of: %s)", strings.Join(supportedToolEntryTypes(inToolset), ", "))
+	}
+	if t.Type == ToolTypeToolset {
+		return t.validateToolsetRef(inToolset)
+	}
+	if !slices.Contains(SupportedToolTypes(), string(t.Type)) {
+		return fmt.Errorf("unknown tool type %q (supported: %s)", t.Type, strings.Join(supportedToolEntryTypes(inToolset), ", "))
 	}
 	if t.Name == "" {
 		return fmt.Errorf("name is required")
@@ -1069,8 +1225,53 @@ func (t *ToolEntry) validate(dir string) error {
 		if len(t.Config) > 0 {
 			return fmt.Errorf("config is not valid for subagent tools")
 		}
-	default:
-		return fmt.Errorf("unknown tool type %q (supported: %s)", t.Type, strings.Join(SupportedToolTypes(), ", "))
+	}
+	return nil
+}
+
+// validateToolsetRef checks a toolset-reference entry: valid only inside a
+// toolset, it names the referenced toolset and carries no other fields.
+func (t *ToolEntry) validateToolsetRef(inToolset bool) error {
+	if !inToolset {
+		return fmt.Errorf("toolset entries are valid only inside a toolset")
+	}
+	if t.Toolset == "" {
+		return fmt.Errorf("toolset is required")
+	}
+	if !NamePattern.MatchString(t.Toolset) {
+		return fmt.Errorf("toolset %q must match %s", t.Toolset, NamePattern)
+	}
+	if t.Name != "" {
+		return fmt.Errorf("name is not valid for toolset entries")
+	}
+	if t.Description != "" {
+		return fmt.Errorf("description is not valid for toolset entries")
+	}
+	if len(t.Command) > 0 {
+		return fmt.Errorf("command is not valid for toolset entries")
+	}
+	if len(t.ArgsSchema) > 0 {
+		return fmt.Errorf("args_schema is not valid for toolset entries")
+	}
+	if t.Builtin != "" {
+		return fmt.Errorf("builtin is not valid for toolset entries")
+	}
+	if len(t.Config) > 0 {
+		return fmt.Errorf("config is not valid for toolset entries")
+	}
+	if t.Agent != "" {
+		return fmt.Errorf("agent is not valid for toolset entries")
+	}
+	return nil
+}
+
+func validateUniqueToolsetNames(toolsets []Toolset) error {
+	seen := make(map[string]struct{}, len(toolsets))
+	for _, ts := range toolsets {
+		if _, ok := seen[ts.Name]; ok {
+			return fmt.Errorf("duplicate toolset name %q", ts.Name)
+		}
+		seen[ts.Name] = struct{}{}
 	}
 	return nil
 }
