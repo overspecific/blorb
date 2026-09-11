@@ -101,6 +101,7 @@ An `ollama` provider, with a model on it, looks like this instead:
 | `agents`        | yes      | The agent definitions (see below).                                                   |
 | `default_agent` | no       | Name of the agent commands use when none is given; must name a defined agent.        |
 | `tools`         | no       | Top-level tool declarations, shared across agents (see below).                       |
+| `toolsets`      | no       | Named groups of tools, granted to agents by name (see below).                        |
 | `logging`       | no       | Wire logging config (see below).                                                     |
 | `prefactor`     | no       | Prefactor tracing config (see below).                                                |
 
@@ -186,10 +187,10 @@ Each agent definition carries its own settings and the names of the top-level mo
 | `system_prompt` | yes      | The agent's system prompt.                                                                       |
 | `model`         | yes      | Name of the top-level model entry this agent talks to.                                          |
 | `max_turns`     | yes      | Max model turns per user message; must be at least 1.                                            |
-| `tools`         | no       | The _names_ of the top-level tools this agent may use. Absent or empty means no tools.           |
+| `tools`         | no       | The names of the top-level tools, toolsets, and toolset members this agent may use. Absent or empty means no tools. |
 | `judges`        | no       | The judge entries for this agent's runs: each names an agent that receives the run's transcript as its first user message, plus an optional `when` selecting the moment it runs (default `"end"`). See the [Judges](#judges) section below. |
 
-Tools are shared vocabulary: they are declared once at the top level, and each agent lists, by name, the ones it may use. An agent listing an unknown tool is a config error, and listing the same tool twice within one agent is an error too. The listed order is the agent's - that is the order the tools are presented to the model. Agent names must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
+Tools are shared vocabulary: they are declared once (as top-level `tools` or inside a `toolsets` group), and each agent lists, by name, the ones it may use. An agent's `tools` list may name a top-level tool, a whole toolset, or one toolset member by its granted name. Naming something that does not exist is a config error, and granting the same tool twice - directly or through a toolset - is an error too. The listed order is the agent's: that is the order the tools are presented to the model, with a toolset's members expanding at the toolset's position. See [Toolsets](#toolsets) below. Agent names must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
 
 Models work the same way: an agent's `model` must name a defined top-level model entry.
 
@@ -198,6 +199,8 @@ Models work the same way: an agent's `model` must name a defined top-level model
 ## Tools
 
 Each tool has a required `type` field selecting one of three kinds:
+
+The top-level `tools` list takes only these three types. A `"type": "toolset"` entry is not valid there: it is a reference to another toolset, allowed only inside a toolset's `tools` list. See [Toolsets](#toolsets).
 
 **`command` tools** run an executable as a subprocess:
 
@@ -253,6 +256,96 @@ Execution semantics:
 - The chat interface shows the subagent's activity live - its assistant messages and tool calls - indented and labeled with the subagent's name, so you watch it work.
 - Subagent LLM calls are attributed to the subagent with their own footer line (and in chat's session totals), so a turn's usage shows how much each agent spent.
 - Limitation: nested LLM calls inside subagents are not traced to Prefactor; only the parent agent's spans are recorded.
+
+## Toolsets
+
+A toolset is a named group of tools declared once at the top level and granted to an agent by naming the toolset in the agent's `tools` list. It is useful when several agents share the same bundle of tools, or when a tool needs the same configuration repeated across agents. Two kinds exist, selected by the toolset's `type` field.
+
+**Simple toolsets** (the default when `type` is absent) hold inline tool declarations plus references to other toolsets:
+
+```json
+{
+  "toolsets": [
+    {
+      "name": "kb",
+      "tools": [
+        {
+          "type": "command",
+          "name": "read",
+          "description": "Read a knowledgebase file.",
+          "command": ["cat"]
+        },
+        {
+          "type": "builtin",
+          "name": "grep",
+          "description": "Search the knowledgebase.",
+          "builtin": "grep",
+          "config": { "base_dir": "knowledgebase" }
+        }
+      ]
+    },
+    {
+      "name": "dev",
+      "tools": [{ "type": "toolset", "toolset": "kb" }]
+    }
+  ]
+}
+```
+
+A simple toolset entry is an ordinary `command`, `builtin`, or `subagent` declaration, or a `"type": "toolset"` reference to another top-level toolset. Referencing a toolset nests it; prefixes compose along the path.
+
+**Builtin toolsets** wrap a bundle shipped inside Blorb. Instead of per-member declarations, they name the `builtin` bundle and carry one shared `config` object. Currently the only bundle is `file`, which bundles the `read` and `grep` builtins and takes the same `base_dir` setting they do:
+
+```json
+{
+  "toolsets": [
+    {
+      "name": "kb",
+      "type": "builtin",
+      "builtin": "file",
+      "config": { "base_dir": "knowledgebase" }
+    }
+  ]
+}
+```
+
+The settings are written once; each member parses them independently. Members carry the builtins' own descriptions, so there are none to write.
+
+### Granting and naming
+
+Name a toolset in an agent's `tools` list and every member is granted:
+
+```json
+{
+  "name": "scholar",
+  "system_prompt": "...",
+  "model": "small",
+  "tools": ["kb", "search"]
+}
+```
+
+Name a single member by its granted name to pull just that one:
+
+```json
+{
+  "tools": ["kb-read", "search"]
+}
+```
+
+A granted tool is renamed with its toolset as a prefix, joined by a single hyphen: toolset `kb` containing `read` grants `kb-read`, and a builtin toolset `kb` of kind `file` grants `kb-read` and `kb-grep`. Nested toolsets compose: toolset `dev` referring to toolset `clock`, which contains `read`, grants `dev-clock-read`. Granting `dev` and `clock` side by side is fine and yields `dev-clock-read` and `clock-read` - distinct names.
+
+The hyphen is the separator between the toolset path and the leaf name. Leaf names are still the config author's: underscores inside a name are fine and read distinctly from the separating hyphens.
+
+### Validation
+
+- A toolset reference naming an unknown toolset is an error, as is a reference cycle (including a toolset referring to itself).
+- A toolset with no `tools` (or an empty list) is valid and grants nothing.
+- Any redundancy in one agent's `tools` list is an error, whether an exact repeat or a toolset granted alongside one of its own members.
+- Every name an agent can write must be unique across the config: top-level tool names, toolset names, and granted member names share one reference space. This also catches composition collisions, for example a toolset `a-b` containing `c` and a toolset `a` referring to a toolset `b` containing `c` both grant `a-b-c`.
+
+### A note on function names
+
+A granted name goes to the LLM API verbatim as the function name. OpenAI and OpenAI-compatible servers that copy its validation accept only `^[a-zA-Z0-9_-]{1,64}$`, so a composed name inherits that 64-character cap. Blorb does not enforce the cap (it is OpenAI's limit, not a universal one), but keep composed names short if you target such a server.
 
 ## Judges
 

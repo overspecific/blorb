@@ -9,7 +9,7 @@ A tool for making AI agents, shipped as a single binary.
 
 Blorb lets you define agents in a `blorb.json` file and chat with any of them. It's built for experimentation: try different system prompts and tool setups in a plain JSON file - a single config can hold several named agents sharing one tool set, and you pick which one to run per invocation.
 
-Tools are plain executables declared in the config, built-ins implemented inside Blorb, or other agents in the same config (subagents). When the model calls a tool, Blorb runs it, pipes the JSON arguments to its stdin (for command tools), and returns the output to the model. Anything that can read stdin and write stdout can be a tool.
+Tools are plain executables declared in the config, built-ins implemented inside Blorb, or other agents in the same config (subagents). A toolset groups tools under one name so an agent can grant them together - or grant one member at a time by its prefixed name such as `kb-read`. When the model calls a tool, Blorb runs it, pipes the JSON arguments to its stdin (for command tools), and returns the output to the model. Anything that can read stdin and write stdout can be a tool.
 
 ## Features
 
@@ -20,7 +20,7 @@ Tools are plain executables declared in the config, built-ins implemented inside
 - Tool results summarize by default in chat (a character and line count); `--tool-output` shows the full output, and failed results and subagent output always show in full
 - Usage stats: every turn ends with a usage footer with one line per agent and a `total:` line. Each line carries tokens plus, when the client measures, elapsed time, output bytes with a text/reasoning/tool-call split, and derived throughput; chat prints the same session totals at exit
 - Full wire logging: every LLM request/response and tool call/result is written to a timestamped file per session, so a plain sort of the filenames replays a turn in order (see [Logging](docs/configuration.md#logging))
-- Tools as local subprocesses, built-ins (`read`, `grep`), or subagents - one agent delegating to another defined in the same config, with JSON Schema argument declarations
+- Tools as local subprocesses, built-ins (`read`, `grep`), subagents - one agent delegating to another defined in the same config - or toolsets: named groups of tools granted whole or one member at a time, with prefixed names, nestable, and a built-in `file` bundle - all with JSON Schema argument declarations
 - Judges: agents that review another agent's completed run, receiving its transcript and printing their judgement
 - OpenAI-compatible chat completions endpoints and Ollama servers (local or cloud) as LLM backends, with provider-level sampling defaults, structured output, tool-choice control, and per-token logprobs
 - `blorb models` - per provider, what the server has installed, flagging configured models that are missing
@@ -203,11 +203,11 @@ A `blorb.json` defines the shared provider, model, and tool vocabularies and the
 
 With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb chat --agent quiet` runs the quiet one, and `./blorb chat --agent nope` fails naming the defined agents. Both agents share the `echo` tool; only `simple` also uses the `read` builtin. Both models share one provider - one server declaration, two model entries.
 
-See [docs/configuration.md](docs/configuration.md) for the complete field reference: providers (and their sampling fields), models (tool choice, logprobs, structured output), agents, tools (command, builtin, subagent), judges, wire logging, and Prefactor tracing.
+See [docs/configuration.md](docs/configuration.md) for the complete field reference: providers (and their sampling fields), models (tool choice, logprobs, structured output), agents, tools (command, builtin, subagent), toolsets, judges, wire logging, and Prefactor tracing.
 
 ## Examples
 
-See [examples/simple](examples/simple) for a five-agent config sharing one tool set: `echo`, `current_time`, `calendar`, and `days_until` command tools, `read`/`grep` builtins (sandboxed to the example's `knowledgebase/` directory), and three subagent tools - `simple` delegates biscuit questions to the scholar and time questions to the horologist, and the scholar delegates its digging to the search agent - plus a `reviewer` agent attached to `simple` as a judge, including notes on pointing the model at different OpenAI-compatible servers.
+See [examples/simple](examples/simple) for a five-agent config sharing one tool set: `echo`, `current_time`, `calendar`, and `days_until` command tools, a `kb` builtin toolset bundling `read`/`grep` (sandboxed to the example's `knowledgebase/` directory, granted whole or one member at a time), and three subagent tools - `simple` delegates biscuit questions to the scholar and time questions to the horologist, and the scholar delegates its digging to the search agent - plus a `reviewer` agent attached to `simple` as a judge, including notes on pointing the model at different OpenAI-compatible servers.
 
 See [examples/prefactor-tracing](examples/prefactor-tracing) for a single-agent variant with just the `read`/`grep` builtins (sharing simple's `knowledgebase/`) and Prefactor tracing enabled.
 

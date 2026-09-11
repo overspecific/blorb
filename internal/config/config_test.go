@@ -47,7 +47,7 @@ func TestLoadValid(t *testing.T) {
 	if got, want := main.MaxTurnsOrDefault(), 3; got != want {
 		t.Errorf("main MaxTurnsOrDefault() = %d, want %d", got, want)
 	}
-	if got, want := main.Tools, []string{"echo", "read_fixture"}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if got, want := main.Tools, []string{"echo", "files"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("main.Tools = %v, want %v", got, want)
 	}
 
@@ -67,8 +67,8 @@ func TestLoadValid(t *testing.T) {
 	if cfg.DefaultAgent != "main" {
 		t.Errorf("DefaultAgent = %q, want %q", cfg.DefaultAgent, "main")
 	}
-	if len(cfg.Tools) != 2 {
-		t.Fatalf("len(Tools) = %d, want 2", len(cfg.Tools))
+	if len(cfg.Tools) != 1 {
+		t.Fatalf("len(Tools) = %d, want 1", len(cfg.Tools))
 	}
 	if len(cfg.Providers) != 2 {
 		t.Fatalf("len(Providers) = %d, want 2", len(cfg.Providers))
@@ -111,8 +111,27 @@ func TestLoadValid(t *testing.T) {
 	if schema["type"] != "object" {
 		t.Errorf("Tools[0].ArgsSchema type = %v, want object", schema["type"])
 	}
-	if len(cfg.Tools[1].ArgsSchema) != 0 {
-		t.Errorf("Tools[1].ArgsSchema = %s, want empty (builtins define their own schema)", cfg.Tools[1].ArgsSchema)
+
+	// The builtin file toolset: one declaration configured once, granting
+	// both members under the toolset prefix.
+	if len(cfg.Toolsets) != 1 {
+		t.Fatalf("len(Toolsets) = %d, want 1", len(cfg.Toolsets))
+	}
+	files := cfg.Toolsets[0]
+	if files.Name != "files" {
+		t.Errorf("Toolsets[0].Name = %q, want files", files.Name)
+	}
+	if files.Type != config.ToolsetTypeBuiltin {
+		t.Errorf("Toolsets[0].Type = %q, want builtin", files.Type)
+	}
+	if files.Builtin != "file" {
+		t.Errorf("Toolsets[0].Builtin = %q, want file", files.Builtin)
+	}
+	if len(files.Config) == 0 || !json.Valid(files.Config) {
+		t.Errorf("Toolsets[0].Config = %s, want the raw settings object", files.Config)
+	}
+	if got, want := toolNames(cfg.AgentTools(main)), []string{"echo", "files-read", "files-grep"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("AgentTools(main) = %v, want %v", got, want)
 	}
 }
 

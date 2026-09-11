@@ -26,21 +26,20 @@
     },
     {
       "name": "scholar",
-      "system_prompt": "You are an enthusiastic biscuit scholar. You have access to a knowledgebase of biscuits of the world using the `read` tool, and the `search` tool which delegates the digging to your research assistant, an expert searcher who returns matching lines from the knowledgebase. Use them to answer questions about biscuits, and never take no for an answer: look it up.",
+      "system_prompt": "You are an enthusiastic biscuit scholar. You have access to a knowledgebase of biscuits of the world using the `kb-read` tool, and the `search` tool which delegates the digging to your research assistant, an expert searcher who returns matching lines from the knowledgebase. Use them to answer questions about biscuits, and never take no for an answer: look it up.",
       "max_turns": 10,
       "tools": [
-        "read",
+        "kb",
         "search"
       ],
       "model": "small"
     },
     {
       "name": "search",
-      "system_prompt": "You are an expert search agent. You have the `grep` and `read` tools, and you are relentless at finding things. The grep tool matches regular expressions, so exploit that: use alternation to cover variants in one pass (e.g. `biscuit|cookie`), character classes and optional parts for spelling variations (e.g. `flavou?r`), and case-insensitive matching (e.g. `(?i)jam`) where case might vary. Cover both singular and plural forms (e.g. `biscuits?`). If a pattern comes up empty, try alternatives before giving up: other spellings, synonyms, broader and narrower terms, and remember to try the other number (biscuit vs biscuits). You may read a file to confirm or disambiguate a match. Report back only the most relevant matching lines, in grep's path:line:text format \u2014 exclude matches that are beside the point, and do not pad the results with noise. Do not paraphrase the lines you do return.",
+      "system_prompt": "You are an expert search agent. You have the `kb-grep` and `kb-read` tools, and you are relentless at finding things. The grep tool matches regular expressions, so exploit that: use alternation to cover variants in one pass (e.g. `biscuit|cookie`), character classes and optional parts for spelling variations (e.g. `flavou?r`), and case-insensitive matching (e.g. `(?i)jam`) where case might vary. Cover both singular and plural forms (e.g. `biscuits?`). If a pattern comes up empty, try alternatives before giving up: other spellings, synonyms, broader and narrower terms, and remember to try the other number (biscuit vs biscuits). You may read a file to confirm or disambiguate a match. Report back only the most relevant matching lines, in grep's path:line:text format \u2014 exclude matches that are beside the point, and do not pad the results with noise. Do not paraphrase the lines you do return.",
       "max_turns": 10,
       "tools": [
-        "read",
-        "grep"
+        "kb"
       ],
       "model": "small"
     },
@@ -57,10 +56,10 @@
     },
     {
       "name": "reviewer",
-      "system_prompt": "You are a reviewer. You are given the transcript of another agent's run. Judge whether it answered the user's question well: check its claims against the knowledgebase with your `read` and `search` tools where you can, and report a short verdict saying what it got right and what it missed.",
+      "system_prompt": "You are a reviewer. You are given the transcript of another agent's run. Judge whether it answered the user's question well: check its claims against the knowledgebase with your `kb-read` and `search` tools where you can, and report a short verdict saying what it got right and what it missed.",
       "max_turns": 10,
       "tools": [
-        "read",
+        "kb-read",
         "search"
       ],
       "model": "small"
@@ -144,24 +143,6 @@
       }
     },
     {
-      "type": "builtin",
-      "name": "read",
-      "description": "Read a file at the given path and return its contents.",
-      "builtin": "read",
-      "config": {
-        "base_dir": "knowledgebase"
-      }
-    },
-    {
-      "type": "builtin",
-      "name": "grep",
-      "description": "Search the knowledgebase files for lines matching a regular expression pattern, returning matches as path:line:text.",
-      "builtin": "grep",
-      "config": {
-        "base_dir": "knowledgebase"
-      }
-    },
-    {
       "type": "subagent",
       "name": "ask_scholar",
       "description": "Delegate a biscuit research question to the scholar agent, who will dig through the knowledgebase for you and report back. Use it when the user asks about biscuits and you want a thorough, well-sourced answer.",
@@ -170,7 +151,7 @@
     {
       "type": "subagent",
       "name": "search",
-      "description": "Delegate the search to the search agent, an expert searcher with the `read` and `grep` tools who is relentless at finding things: trying alternative patterns until something turns up. Give it a description of what to find; it returns matching knowledgebase lines as path:line:text, just like grep, but it tries alternatives when a first attempt comes up empty. Prefer it to grepping by hand when the thing you are looking for might be spelled or phrased in more than one way.",
+      "description": "Delegate the search to the search agent, an expert searcher with the `kb-read` and `kb-grep` tools who is relentless at finding things: trying alternative patterns until something turns up. Give it a description of what to find; it returns matching knowledgebase lines as path:line:text, just like grep, but it tries alternatives when a first attempt comes up empty. Prefer it to grepping by hand when the thing you are looking for might be spelled or phrased in more than one way.",
       "agent": "search"
     },
     {
@@ -178,6 +159,16 @@
       "name": "ask_horologist",
       "description": "Delegate a time, date, or calendar question to the horologist agent, who owns the clock and calendar tools. Use it whenever the user asks what time it is, what today's date is, for a month calendar, or how many days until some date.",
       "agent": "horologist"
+    }
+  ],
+  "toolsets": [
+    {
+      "name": "kb",
+      "type": "builtin",
+      "builtin": "file",
+      "config": {
+        "base_dir": "knowledgebase"
+      }
     }
   ],
   "providers": [

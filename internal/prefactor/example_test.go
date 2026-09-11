@@ -85,15 +85,23 @@ func TestSimpleExampleTracingDisabled(t *testing.T) {
 			t.Errorf("agent simple tools = %v, want it to exclude %q (specialists own those domains)", simple.Tools, name)
 		}
 	}
-	if got, want := scholar.Tools, []string{"read", "search"}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if got, want := scholar.Tools, []string{"kb", "search"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("scholar.Tools = %v, want %v (the scholar delegates its digging to the search agent)", got, want)
+	}
+	// Granting the kb builtin toolset expands to its prefixed members, in
+	// the toolset's declared order, before the explicitly listed search.
+	if got, want := toolNames(cfg.AgentTools(scholar)), []string{"kb-read", "kb-grep", "search"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("AgentTools(scholar) = %v, want %v", got, want)
 	}
 	search, ok := cfg.Agent("search")
 	if !ok {
 		t.Fatalf("Agent(search) missing; agents = %v", cfg.Agents)
 	}
-	if got, want := search.Tools, []string{"read", "grep"}; fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("search.Tools = %v, want %v (the search agent needs read and grep, nothing else)", got, want)
+	if got, want := search.Tools, []string{"kb"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("search.Tools = %v, want %v (the search agent needs the kb tools, nothing else)", got, want)
+	}
+	if got, want := toolNames(cfg.AgentTools(search)), []string{"kb-read", "kb-grep"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("AgentTools(search) = %v, want %v", got, want)
 	}
 	horologist, ok := cfg.Agent("horologist")
 	if !ok {
@@ -105,4 +113,13 @@ func TestSimpleExampleTracingDisabled(t *testing.T) {
 	if cfg.PrefactorEnabled() {
 		t.Error("PrefactorEnabled() = true, want false — the simple example should not require a tracing token")
 	}
+}
+
+// toolNames returns the granted entry names in order.
+func toolNames(entries []config.ToolEntry) []string {
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name
+	}
+	return names
 }

@@ -31,7 +31,7 @@
       "max_turns": 3,
       "tools": [
         "echo",
-        "read_fixture"
+        "files"
       ],
       "model": "m2"
     },
@@ -55,12 +55,13 @@
       "args_schema": {
         "type": "object"
       }
-    },
+    }
+  ],
+  "toolsets": [
     {
+      "name": "files",
       "type": "builtin",
-      "name": "read_fixture",
-      "description": "Read a fixture file.",
-      "builtin": "read",
+      "builtin": "file",
       "config": {
         "base_dir": "."
       }
