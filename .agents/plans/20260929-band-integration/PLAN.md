@@ -10,7 +10,7 @@ Out of scope for v1: contacts (contact request events are ignored), room tasks (
 
 - [x] Commit 1: config band section
 - [x] Commit 2: internal/ws frame codec
-- [ ] Commit 3: internal/ws client dial and lifecycle
+- [x] Commit 3: internal/ws client dial and lifecycle
 - [ ] Commit 4: internal/band Phoenix socket
 - [ ] Commit 5: internal/band REST client core
 - [ ] Commit 6: internal/band REST client collaboration endpoints
