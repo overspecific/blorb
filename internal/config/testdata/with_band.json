@@ -1,0 +1,30 @@
+{
+  "providers": [
+    {
+      "name": "remote",
+      "type": "openai-compatible",
+      "base_url": "https://api.example.com/v1"
+    }
+  ],
+  "models": [
+    {
+      "name": "m",
+      "provider": "remote",
+      "model_name": "m"
+    }
+  ],
+  "agents": [
+    {
+      "name": "helper",
+      "system_prompt": "You are helpful.",
+      "max_turns": 5,
+      "model": "m"
+    }
+  ],
+  "band": {
+    "agent_id": "agent-123",
+    "api_key_env": "MY_BAND_KEY",
+    "rest_url": "https://band.example.com",
+    "ws_url": "wss://band.example.com/socket"
+  }
+}

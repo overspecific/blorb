@@ -89,6 +89,18 @@ const (
 	// DefaultPrefactorTokenEnv is the environment variable the Prefactor
 	// API token is read from when api_token_env is unset.
 	DefaultPrefactorTokenEnv = "PREFACTOR_API_TOKEN"
+
+	// DefaultBandAPIKeyEnv is the environment variable the Band agent API
+	// key is read from when api_key_env is unset in the band config block.
+	DefaultBandAPIKeyEnv = "BAND_API_KEY"
+
+	// DefaultBandRESTURL is the Band Agent API base URL used when
+	// rest_url is unset in the band config block.
+	DefaultBandRESTURL = "https://api.band.ai"
+
+	// DefaultBandWSURL is the Band subscriptions WebSocket URL used when
+	// ws_url is unset in the band config block.
+	DefaultBandWSURL = "wss://app.band.ai/api/v1/socket/websocket"
 )
 
 // Config is the top-level blorb.json schema. It declares the shared
@@ -118,6 +130,7 @@ type Config struct {
 	Toolsets  []Toolset        `json:"toolsets,omitempty"`
 	Logging   LogConfig        `json:"logging"`
 	Prefactor *PrefactorConfig `json:"prefactor,omitempty"`
+	Band      *BandConfig      `json:"band,omitempty"`
 
 	// dir is the directory of the loaded config file, the anchor for all
 	// config-relative paths (logging.path, builtin base_dir). Empty for a
@@ -283,6 +296,96 @@ func (p *PrefactorConfig) validate() error {
 	}
 	if p.APITokenEnv != nil && *p.APITokenEnv == "" {
 		return fmt.Errorf("api_token_env must not be empty when set")
+	}
+	return nil
+}
+
+// BandEnabled reports whether the Band frontend is configured: a
+// present band block enables it.
+func (c *Config) BandEnabled() bool {
+	return c.Band != nil
+}
+
+// BandConfig is the optional band object in blorb.json, connecting blorb
+// to the Band platform as a remote agent.
+type BandConfig struct {
+	// AgentID is the Band agent UUID this blorb serves. Required when
+	// the block is present.
+	AgentID string `json:"agent_id"`
+	// APIKeyEnv names the environment variable holding the Band agent
+	// API key. It is a pointer following the api_key_env convention:
+	// absent defaults to DefaultBandAPIKeyEnv, explicit empty is a
+	// config error.
+	APIKeyEnv *string `json:"api_key_env,omitempty"`
+	// RESTURL is the Band Agent API base URL. Optional; when empty
+	// DefaultBandRESTURL applies (see RESTURLOrDefault).
+	RESTURL string `json:"rest_url,omitempty"`
+	// WSURL is the Band subscriptions WebSocket URL. Optional; when
+	// empty DefaultBandWSURL applies (see WSURLOrDefault).
+	WSURL string `json:"ws_url,omitempty"`
+}
+
+// APIKeyEnvOrDefault returns the configured api_key_env, or
+// DefaultBandAPIKeyEnv when unset.
+func (b *BandConfig) APIKeyEnvOrDefault() string {
+	if b.APIKeyEnv == nil {
+		return DefaultBandAPIKeyEnv
+	}
+	return *b.APIKeyEnv
+}
+
+// RESTURLOrDefault returns the configured rest_url, or
+// DefaultBandRESTURL when unset.
+func (b *BandConfig) RESTURLOrDefault() string {
+	if b.RESTURL == "" {
+		return DefaultBandRESTURL
+	}
+	return b.RESTURL
+}
+
+// WSURLOrDefault returns the configured ws_url, or DefaultBandWSURL
+// when unset.
+func (b *BandConfig) WSURLOrDefault() string {
+	if b.WSURL == "" {
+		return DefaultBandWSURL
+	}
+	return b.WSURL
+}
+
+// validate checks the band block: agent_id is required and non-empty,
+// rest_url must be http/https with a host when set, and ws_url must be
+// ws/wss with a host when set. An explicitly-set api_key_env must be
+// non-empty.
+func (b *BandConfig) validate() error {
+	if b.AgentID == "" {
+		return fmt.Errorf("agent_id is required")
+	}
+	if b.RESTURL != "" {
+		u, err := url.Parse(b.RESTURL)
+		if err != nil {
+			return fmt.Errorf("rest_url %q: %w", b.RESTURL, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("rest_url %q must use http or https scheme", b.RESTURL)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("rest_url %q must include a host", b.RESTURL)
+		}
+	}
+	if b.WSURL != "" {
+		u, err := url.Parse(b.WSURL)
+		if err != nil {
+			return fmt.Errorf("ws_url %q: %w", b.WSURL, err)
+		}
+		if u.Scheme != "ws" && u.Scheme != "wss" {
+			return fmt.Errorf("ws_url %q must use ws or wss scheme", b.WSURL)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("ws_url %q must include a host", b.WSURL)
+		}
+	}
+	if b.APIKeyEnv != nil && *b.APIKeyEnv == "" {
+		return fmt.Errorf("api_key_env must not be empty when set")
 	}
 	return nil
 }
@@ -810,6 +913,11 @@ func (c *Config) Validate() error {
 	if c.Prefactor != nil {
 		if err := c.Prefactor.validate(); err != nil {
 			return fmt.Errorf("prefactor: %w", err)
+		}
+	}
+	if c.Band != nil {
+		if err := c.Band.validate(); err != nil {
+			return fmt.Errorf("band: %w", err)
 		}
 	}
 	// Last so a per-agent error surfaces first.
