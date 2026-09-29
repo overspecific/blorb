@@ -76,6 +76,9 @@ type Registry struct {
 	subagentRunner SubagentRunner
 	// subagentEvents receives subagent activity for display; may be nil.
 	subagentEvents func(SubagentEvent) error
+	// bandExecutor executes Band platform tools; required only when the
+	// entries include a band tool.
+	bandExecutor BandExecutor
 }
 
 // Option customizes a Registry.
@@ -140,6 +143,8 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 			t, err = newBuiltinTool(e, r.baseDir)
 		case config.ToolTypeSubagent:
 			t, err = newSubagentTool(e, r.subagentRunner, r.subagentEvents)
+		case config.ToolTypeBand:
+			t, err = newBandTool(e, r.bandExecutor)
 		default:
 			err = fmt.Errorf("tool %q: unknown tool type %q (supported: %s)",
 				e.Name, e.Type, strings.Join(config.SupportedToolTypes(), ", "))

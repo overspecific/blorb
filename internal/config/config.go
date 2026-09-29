@@ -39,6 +39,11 @@ const ToolTypeSubagent ToolType = "subagent"
 // referred toolset's own name supplies the granted prefix.
 const ToolTypeToolset ToolType = "toolset"
 
+// ToolTypeBand selects a tool that calls the Band platform. It is never
+// valid in blorb.json: band tools are constructed programmatically by
+// the band command and injected into the registry.
+const ToolTypeBand ToolType = "band"
+
 // ToolsetTypeSimple selects a plain toolset: a group of inline tool
 // declarations plus references to other toolsets. It is the default when
 // a toolset's type field is absent.
@@ -559,6 +564,12 @@ type ToolEntry struct {
 	// toolset. Valid only inside a toolset's tools list; the granted
 	// prefix comes from the referenced toolset's own name.
 	Toolset string `json:"toolset,omitempty"`
+
+	// Fields for type "band": the platform tool this entry invokes,
+	// one of the band package's fixed names (band_send_message and
+	// friends). Band tools are built by the band command, never
+	// declared in blorb.json, so validation rejects the type at load.
+	Band string `json:"band,omitempty"`
 }
 
 // Toolset is a named group of tool declarations an agent can grant by
@@ -1449,6 +1460,12 @@ func (t *ToolEntry) validate(dir string, inToolset bool) error {
 	if t.Type == ToolTypeToolset {
 		return t.validateToolsetRef(inToolset)
 	}
+	// The band type is deliberately absent from SupportedToolTypes: band
+	// tools exist only inside the band command's runtime. Name the fact
+	// so a user writing one by hand is told where it belongs.
+	if t.Type == ToolTypeBand {
+		return fmt.Errorf("band tools are wired by the band command")
+	}
 	if !slices.Contains(SupportedToolTypes(), string(t.Type)) {
 		return fmt.Errorf("unknown tool type %q (supported: %s)", t.Type, strings.Join(supportedToolEntryTypes(inToolset), ", "))
 	}
@@ -1460,6 +1477,9 @@ func (t *ToolEntry) validate(dir string, inToolset bool) error {
 	}
 	if t.Description == "" {
 		return fmt.Errorf("description is required")
+	}
+	if t.Band != "" {
+		return fmt.Errorf("band is not valid for %s tools", t.Type)
 	}
 	switch t.Type {
 	case ToolTypeCommand:
@@ -1551,6 +1571,9 @@ func (t *ToolEntry) validateToolsetRef(inToolset bool) error {
 	}
 	if t.Agent != "" {
 		return fmt.Errorf("agent is not valid for toolset entries")
+	}
+	if t.Band != "" {
+		return fmt.Errorf("band is not valid for toolset entries")
 	}
 	return nil
 }
