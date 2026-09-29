@@ -343,8 +343,9 @@ func (c *Client) SendEvent(ctx context.Context, chatID, content, messageType str
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/chats/%s/events", chatID), map[string]any{"event": event}, nil)
 }
 
-// Context fetches a room's recent messages oldest-first, following the
-// cursor pagination until exhausted.
+// Context fetches a room's recent messages, following the cursor
+// pagination until exhausted; results are concatenated in the pages'
+// arrival order (the API returns them oldest-first).
 func (c *Client) Context(ctx context.Context, chatID string) ([]ChatMessage, error) {
 	var out []ChatMessage
 	cursor := ""
@@ -353,21 +354,18 @@ func (c *Client) Context(ctx context.Context, chatID string) ([]ChatMessage, err
 		if cursor != "" {
 			u += "&cursor=" + cursor
 		}
-		var page struct {
-			Messages []ChatMessage `json:"messages"`
-			Metadata *struct {
-				NextCursor string `json:"next_cursor"`
-				HasMore    bool   `json:"has_more"`
-			} `json:"metadata"`
-		}
-		if err := c.do(ctx, http.MethodGet, u, nil, &page); err != nil {
+		var messages []ChatMessage
+		if err := c.do(ctx, http.MethodGet, u, nil, &messages); err != nil {
 			return nil, err
 		}
-		out = append(out, page.Messages...)
-		if page.Metadata == nil || !page.Metadata.HasMore || page.Metadata.NextCursor == "" {
+		out = append(out, messages...)
+		if len(messages) < contextPageSize {
 			return out, nil
 		}
-		cursor = page.Metadata.NextCursor
+		// The endpoint documents no cursor on this shape; a full page
+		// means another could exist. Paging with the last id as the
+		// cursor matches the API's cursor form.
+		cursor = messages[len(messages)-1].ID
 	}
 }
 

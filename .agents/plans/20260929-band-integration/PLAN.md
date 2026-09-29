@@ -15,7 +15,7 @@ Out of scope for v1: contacts (contact request events are ignored), room tasks (
 - [x] Commit 5: internal/band REST client core
 - [x] Commit 6: internal/band REST client collaboration endpoints
 - [x] Commit 7: band tool type and executor wiring
-- [ ] Commit 8: internal/band room runtime
+- [x] Commit 8: internal/band room runtime
 - [ ] Commit 9: internal/band runner
 - [ ] Commit 10: blorb band command, docs, example
 

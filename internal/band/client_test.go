@@ -269,20 +269,26 @@ func TestContextCursorPagination(t *testing.T) {
 	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.URL.Query().Get("cursor") == "" {
-			_, _ = w.Write([]byte(`{"data":{"messages":[{"id":"m-1"}],"metadata":{"next_cursor":"c2","has_more":true}}}`))
+			writeData(w, http.StatusOK, "["+strings.Repeat(`{"id":"m-1"},`, contextPageSizeForTest-1)+`{"id":"c1"}]`)
 			return
 		}
-		_, _ = w.Write([]byte(`{"data":{"messages":[{"id":"m-2"},{"id":"m-1"}],"metadata":{"has_more":false}}}`))
+		writeData(w, http.StatusOK, `[{"id":"m-2"}]`)
 	})
 	c := f.client(t, logging.NewNop())
 	messages, err := c.Context(context.Background(), "room-1")
 	if err != nil {
 		t.Fatalf("Context error = %v, want nil", err)
 	}
-	if len(messages) != 3 || messages[0].ID != "m-1" || messages[1].ID != "m-2" {
-		t.Errorf("messages = %+v, want pages concatenated in order", messages)
+	// Both pages concatenate in order: 100 on the first, 1 on the
+	// second.
+	if len(messages) != contextPageSizeForTest+1 || messages[0].ID != "m-1" || messages[len(messages)-1].ID != "m-2" {
+		t.Errorf("messages = %d items, want %d+1 stitched in order", len(messages), contextPageSizeForTest)
 	}
 }
+
+// contextPageSizeForTest mirrors the client's internal page size so the
+// pagination test can force a full first page.
+const contextPageSizeForTest = 100
 
 func TestAPIErrorMapping(t *testing.T) {
 	for _, status := range []int{401, 403, 404, 422} {
