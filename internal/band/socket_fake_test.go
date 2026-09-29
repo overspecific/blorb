@@ -27,8 +27,9 @@ type fakeBandWSServer struct {
 
 	handshook chan struct{}
 
-	mu   sync.Mutex
-	conn net.Conn
+	handshakeOnce sync.Once
+	mu            sync.Mutex
+	conn          net.Conn
 
 	// script holds raw envelope bytes pushed after the handshake.
 	scriptMu sync.Mutex
@@ -63,11 +64,17 @@ func newFakeBandWSServer(t *testing.T) *fakeBandWSServer {
 }
 
 func (s *fakeBandWSServer) serve() {
-	conn, err := s.ln.Accept()
-	if err != nil {
-		return
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		go s.serveConn(conn)
 	}
+}
 
+// serveConn answers one connection's handshake and runs its read loop.
+func (s *fakeBandWSServer) serveConn(conn net.Conn) {
 	br := bufio.NewReader(conn)
 	req, err := http.ReadRequest(br)
 	if err != nil {
@@ -81,7 +88,7 @@ func (s *fakeBandWSServer) serve() {
 	s.mu.Lock()
 	s.conn = conn
 	s.mu.Unlock()
-	close(s.handshook)
+	s.handshakeOnce.Do(func() { close(s.handshook) })
 
 	done := make(chan struct{})
 	defer func() { close(done); conn.Close() }()
@@ -151,6 +158,17 @@ func (s *fakeBandWSServer) serve() {
 	}
 }
 
+// waitHandshake blocks until the server completed its upgrade handshake.
+func (s *fakeBandWSServer) waitHandshake(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.handshook:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the test server handshake")
+	}
+}
+
+// popScript removes and returns the next scripted envelope, or nil.
 func (s *fakeBandWSServer) popScript() []byte {
 	s.scriptMu.Lock()
 	defer s.scriptMu.Unlock()
@@ -160,16 +178,6 @@ func (s *fakeBandWSServer) popScript() []byte {
 	raw := s.script[0]
 	s.script = s.script[1:]
 	return raw
-}
-
-// waitHandshake blocks until the server completed its upgrade handshake.
-func (s *fakeBandWSServer) waitHandshake(t *testing.T) {
-	t.Helper()
-	select {
-	case <-s.handshook:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the test server handshake")
-	}
 }
 
 // push enqueues one raw envelope for delivery to the client.

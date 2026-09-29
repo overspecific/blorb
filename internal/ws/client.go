@@ -163,10 +163,15 @@ func Dial(ctx context.Context, rawURL string, opts ...DialOption) (*Conn, error)
 	}
 
 	// The handshake honors ctx cancellation through the connection
-	// deadline.
+	// deadline, and through a watcher that interrupts a blocked read
+	// when ctx is cancelled without a deadline.
 	if deadline, ok := ctx.Deadline(); ok {
 		raw.SetDeadline(deadline)
 	}
+	stopWatch := context.AfterFunc(ctx, func() {
+		_ = raw.SetDeadline(time.Now())
+	})
+	defer stopWatch()
 	if _, err := raw.Write([]byte(req.String())); err != nil {
 		raw.Close()
 		return nil, fmt.Errorf("write websocket handshake: %w", err)

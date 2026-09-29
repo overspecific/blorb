@@ -289,11 +289,15 @@ func (c *Client) NextMessage(ctx context.Context, chatID string) (*ChatMessage, 
 		return nil, decodeAPIError(resp.StatusCode, respBytes)
 	}
 
-	var msg ChatMessage
-	if err := json.Unmarshal(respBytes, &msg); err != nil {
+	// The response arrives in the same {"data": ...} envelope as every
+	// other endpoint; unwrap it before decoding the message.
+	var envelope struct {
+		Data ChatMessage `json:"data"`
+	}
+	if err := json.Unmarshal(respBytes, &envelope); err != nil {
 		return nil, fmt.Errorf("decode next message: %w", err)
 	}
-	return &msg, nil
+	return &envelope.Data, nil
 }
 
 // MarkProcessing tells the platform the message is being handled.

@@ -1,0 +1,231 @@
+package band_test
+
+import (
+	"context"
+	"io"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/overspecific/blorb/internal/band"
+	"github.com/overspecific/blorb/internal/config"
+)
+
+// runnerConfig points the config's provider base_url at the LLM fake so
+// the room engines reach it through the real openai client.
+func runnerConfig(t *testing.T, llmBaseURL string) (config.Config, config.Agent) {
+	t.Helper()
+	cfg, agent := roomTestConfig()
+	cfg.Providers[0].BaseURL = llmBaseURL
+	return cfg, agent
+}
+
+// stderrWriter writes each line to the test log.
+type stderrWriter struct{ t *testing.T }
+
+func (w stderrWriter) Write(p []byte) (int, error) {
+	w.t.Log(string(p))
+	return len(p), nil
+}
+
+// syncBuffer is a mutex-guarded strings.Builder.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// waitFor polls cond until it holds or the wait expires.
+func waitFor(t *testing.T, wait time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for the condition")
+}
+
+func TestRunnerFullFlow(t *testing.T) {
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFake(t, roomListJSON("room-1"), map[string][]string{
+		"room-1": drainBodies("queued one", "queued two"),
+	})
+
+	llmSrv, llmFactory := newRunnerLLMFake(t)
+	cfg, agent := runnerConfig(t, llmSrv.srv.URL)
+
+	opts := band.Options{
+		Config:            cfg,
+		Agent:             agent,
+		Stderr:            io.Discard,
+		BandAgentID:       runnerAgentID,
+		APIKey:            "k",
+		RESTURL:           rest.srv.URL,
+		WSURL:             "ws://" + ws.addr,
+		NewClient:         llmFactory,
+		Getenv:            func(string) string { return "test-key" },
+		ReconnectBase:     5 * time.Millisecond,
+		ReconnectMax:      50 * time.Millisecond,
+		HeartbeatInterval: 30 * time.Millisecond,
+	}
+
+	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { done <- band.Run(ctx, opts) }()
+
+	// The startup drain processes the two queued messages: two replies
+	// and four marks (processing and processed per message).
+	waitFor(t, 5*time.Second, func() bool {
+		return len(rest.sentMessages()) == 2 && len(rest.marks()) == 4
+	})
+	for _, m := range rest.sentMessages() {
+		if m.Content != "the reply" {
+			t.Errorf("drained reply = %q, want the tool-path reply", m.Content)
+		}
+		if len(m.Mentions) != 1 || m.Mentions[0].ID != "u-1" {
+			t.Errorf("drained reply mentions = %+v, want u-1", m.Mentions)
+		}
+	}
+	if marks := rest.marks(); marks[0] != "processing room-1" || marks[1] != "processed room-1" {
+		t.Errorf("startup marks = %v, want processing then processed per message", marks)
+	}
+
+	// A live push flows through the room to a sent reply and the
+	// processed mark.
+	ws.pushMessageCreated("room-1", mentionFor("room-1", "m-live", "live hello"))
+	waitFor(t, 5*time.Second, func() bool {
+		return len(rest.sentMessages()) == 3 && len(rest.marks()) == 6
+	})
+
+	// room_added mid-run joins the new room; a later push is
+	// processed there.
+	ws.pushRoomAdded(t, "room-9")
+	ws.pushMessageCreated("room-9", mentionFor("room-9", "m-9", "new room hello"))
+	waitFor(t, 5*time.Second, func() bool {
+		return len(rest.sentMessages()) == 4 && len(rest.marks()) == 8
+	})
+
+	// room_removed tears the room down; a later push on it is ignored
+	// (its state is gone) without crashing the runner.
+	ws.pushRoomRemoved(t, "room-9")
+	time.Sleep(50 * time.Millisecond)
+	ws.pushMessageCreated("room-9", mentionFor("room-9", "m-9b", "after removal"))
+	time.Sleep(50 * time.Millisecond)
+	if got := len(rest.sentMessages()); got != 4 {
+		t.Errorf("sends after room_removed = %d, want 4 (the removed room is ignored)", got)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil on graceful shutdown", err)
+	}
+}
+
+func TestRunnerInvalidKeyFailsFast(t *testing.T) {
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFakeUnauthorized(t)
+	opts := band.Options{
+		BandAgentID: runnerAgentID,
+		APIKey:      "wrong",
+		RESTURL:     rest.srv.URL,
+		WSURL:       "ws://" + ws.addr,
+		Stderr:      stderrWriter{t},
+	}
+
+	start := time.Now()
+	err := band.Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("Run error = nil with a rejected key, want the clear message")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error = %v, want it to name the 401", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Run took %v, want a fast startup failure", elapsed)
+	}
+}
+
+func TestRunnerGracefulShutdownOnCtxCancel(t *testing.T) {
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFake(t, roomListJSON("room-1"), nil)
+
+	var stderr syncBuffer
+	opts := band.Options{
+		BandAgentID:       runnerAgentID,
+		APIKey:            "k",
+		RESTURL:           rest.srv.URL,
+		WSURL:             "ws://" + ws.addr,
+		Stderr:            &stderr,
+		ReconnectBase:     5 * time.Millisecond,
+		ReconnectMax:      50 * time.Millisecond,
+		HeartbeatInterval: 30 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- band.Run(ctx, opts) }()
+
+	// Let it come up, then cancel: Run returns nil.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil on ctx cancel", err)
+	}
+}
+
+func TestRunnerReconnectsAfterSocketDeath(t *testing.T) {
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFake(t, roomListJSON("room-1"), nil)
+
+	var stderr syncBuffer
+	opts := band.Options{
+		BandAgentID:       runnerAgentID,
+		APIKey:            "k",
+		RESTURL:           rest.srv.URL,
+		WSURL:             "ws://" + ws.addr,
+		Stderr:            &stderr,
+		ReconnectBase:     5 * time.Millisecond,
+		ReconnectMax:      50 * time.Millisecond,
+		HeartbeatInterval: 30 * time.Millisecond,
+	}
+
+	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { done <- band.Run(ctx, opts) }()
+
+	// Wait for the first join round, then kill the socket: the runner
+	// must dial again and re-join, so the fake sees the agent_rooms
+	// join twice.
+	ws.awaitSeen(t, 1)
+	ws.pushClose()
+	waitFor(t, 5*time.Second, func() bool {
+		joins := 0
+		for _, env := range ws.seenEnvelopes() {
+			if bandUnquote(env[3]) == "phx_join" && bandUnquote(env[2]) == "agent_rooms:"+runnerAgentID {
+				joins++
+			}
+		}
+		return joins >= 2
+	})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v after a reconnect cycle, want nil", err)
+	}
+}
