@@ -87,7 +87,10 @@ func TestRunnerFullFlow(t *testing.T) {
 	done := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { done <- band.Run(ctx, opts) }()
+	go func() {
+		_, err := band.Run(ctx, opts)
+		done <- err
+	}()
 
 	// The startup drain processes the two queued messages: two replies
 	// and four marks (processing and processed per message).
@@ -149,7 +152,7 @@ func TestRunnerInvalidKeyFailsFast(t *testing.T) {
 	}
 
 	start := time.Now()
-	err := band.Run(context.Background(), opts)
+	_, err := band.Run(context.Background(), opts)
 	if err == nil {
 		t.Fatal("Run error = nil with a rejected key, want the clear message")
 	}
@@ -179,7 +182,10 @@ func TestRunnerGracefulShutdownOnCtxCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- band.Run(ctx, opts) }()
+	go func() {
+		_, err := band.Run(ctx, opts)
+		done <- err
+	}()
 
 	// Let it come up, then cancel: Run returns nil.
 	time.Sleep(100 * time.Millisecond)
@@ -208,7 +214,10 @@ func TestRunnerReconnectsAfterSocketDeath(t *testing.T) {
 	done := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { done <- band.Run(ctx, opts) }()
+	go func() {
+		_, err := band.Run(ctx, opts)
+		done <- err
+	}()
 
 	// Wait for the first join round, then kill the socket: the runner
 	// must dial again and re-join, so the fake sees the agent_rooms

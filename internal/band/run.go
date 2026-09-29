@@ -83,8 +83,9 @@ type Runner struct {
 // subscriptions socket, sync the rooms, and dispatch live events until
 // ctx is cancelled. A socket death reconnects with exponential backoff
 // (re-joining and re-draining everything); a startup error returns
-// immediately with it.
-func Run(ctx context.Context, opts Options) error {
+// immediately with it. The returned account carries the session's LLM
+// usage for the caller's footer; it is non-nil even on a startup error.
+func Run(ctx context.Context, opts Options) (*usage.Account, error) {
 	opts.applyDefaults()
 
 	// 1. Validate the key up front: a 401 means the agent API key or
@@ -94,9 +95,9 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		var apiErr *APIError
 		if asAPIError(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
-			return errors.New("the Band agent API key or agent id was rejected (401); check the key in the environment variable and agent_id in the band config block")
+			return &usage.Account{}, errors.New("the Band agent API key or agent id was rejected (401); check the key in the environment variable and agent_id in the band config block")
 		}
-		return fmt.Errorf("validate agent api key: %w", err)
+		return &usage.Account{}, fmt.Errorf("validate agent api key: %w", err)
 	}
 
 	st := &Runner{
@@ -113,10 +114,10 @@ func Run(ctx context.Context, opts Options) error {
 	for {
 		err := st.connectAndServe(ctx, profile)
 		if err == nil {
-			return nil // graceful shutdown
+			return st.sessionAccount, nil // graceful shutdown
 		}
 		if ctx.Err() != nil {
-			return nil
+			return st.sessionAccount, nil
 		}
 		// 4. Any socket death reconnects with backoff: the platform's
 		// last-connection-wins policy evicts the stale connection
@@ -124,7 +125,7 @@ func Run(ctx context.Context, opts Options) error {
 		wait := st.nextBackoff()
 		select {
 		case <-ctx.Done():
-			return nil
+			return st.sessionAccount, nil
 		case <-time.After(wait):
 		}
 	}

@@ -11,12 +11,14 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/overspecific/blorb/internal/band"
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/run"
+	"github.com/overspecific/blorb/internal/usage"
 )
 
 // version is set at build time via -ldflags "-X main.version=..." (see bin/build).
@@ -40,6 +42,7 @@ func rootCommand() *cli.Command {
 		Commands: []*cli.Command{
 			chatCommand(),
 			runCommand(),
+			bandCommand(),
 			modelsCommand(),
 			{
 				Name:   "version",
@@ -318,8 +321,86 @@ func runCommand() *cli.Command {
 	}
 }
 
-// resolveAgent picks the agent a chat session runs: the given name when
-// non-empty, else the config's default_agent. It fails with the available
+// bandCommand builds the band subcommand: run the agent as a remote
+// agent on the Band platform until interrupted.
+func bandCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "band",
+		Usage: "Connect to the Band platform and answer room mentions",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Value:   config.DefaultPath,
+				Usage:   "Path to blorb.json",
+			},
+			&cli.StringFlag{
+				Name:  "agent",
+				Usage: "Name of the agent to run; defaults to the config's default_agent",
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			cfg, err := config.Load(cmd.String("config"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("band: %v", err), 1)
+			}
+
+			if !cfg.BandEnabled() {
+				return cli.Exit("band: band section is required to run the band command; see examples/band", 1)
+			}
+
+			agent, err := resolveAgent(cfg, cmd.String("agent"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("band: %v", err), 1)
+			}
+
+			// The agent API key comes from the configured environment
+			// variable; it must be set and non-empty.
+			bandCfg := cfg.Band
+			envName := bandCfg.APIKeyEnvOrDefault()
+			apiKey := os.Getenv(envName)
+			if apiKey == "" {
+				return cli.Exit(fmt.Sprintf("band: api_key_env %q is set but the environment variable is empty", envName), 1)
+			}
+
+			// Wire logging follows the same rules as chat and run.
+			sink, err := chat.ResolveSink(cmd.String("config"), cfg)
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("band: %v", err), 1)
+			}
+
+			// SIGINT: the first cancels the context for a graceful stop
+			// (finishing the in-flight message); a second exits
+			// immediately, matching chat's interrupt ladder.
+			sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt)
+			defer stop()
+
+			account, err := band.Run(sigCtx, band.Options{
+				Config:      cfg,
+				Agent:       agent,
+				Stderr:      os.Stderr,
+				ConfigPath:  cmd.String("config"),
+				Sink:        sink,
+				BandAgentID: bandCfg.AgentID,
+				APIKey:      apiKey,
+				RESTURL:     bandCfg.RESTURLOrDefault(),
+				WSURL:       bandCfg.WSURLOrDefault(),
+			})
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("band: %v", err), 1)
+			}
+
+			// The session footer prints for the work that completed, on
+			// a clean shutdown too.
+			if len(account.Records()) > 0 {
+				fmt.Fprintf(os.Stderr, "%s\n", usage.FormatSession(account))
+			}
+			return nil
+		},
+	}
+}
+
+// resolveAgent picks the agent a chat session runs: the given name when// non-empty, else the config's default_agent. It fails with the available
 // agent names when nothing is chosen and with a not-defined error when the
 // chosen name is not in the config.
 func resolveAgent(cfg config.Config, name string) (config.Agent, error) {

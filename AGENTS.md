@@ -18,6 +18,8 @@ We build high-quality, well-architected, correct code. We don't take shortcuts; 
 - `internal/engine` - the agent loop: model calls, tool execution, turn limits
 - `internal/chat` - the interactive chat REPL
 - `internal/run` - the one-shot run command
+- `internal/band` - the `blorb band` frontend: Band REST and Phoenix socket clients, per-room agent runtime, and the long-running runner
+- `internal/ws` - a hand-rolled RFC 6455 WebSocket client (frame codec, dial, lifecycle)
 - `internal/tools` - tool registry and subprocess execution
 - `internal/tools/builtin` - built-in tools (`read`, `grep`)
 - `internal/llm` - provider-neutral LLM types

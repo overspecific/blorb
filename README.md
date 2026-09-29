@@ -66,6 +66,7 @@ Commands:
 
 - `chat` - chat with an agent defined in `blorb.json`
 - `run` - run one agent turn and exit
+- `band` - connect to the Band platform and answer room mentions
 - `models` - list the models each provider's server has installed
 - `version` - print the version
 - `help` - print help
@@ -131,6 +132,25 @@ See the [output formats reference](docs/formats.md) for the format details: the 
 ### Listing installed models
 
 `blorb models` enumerates, per provider in the config, what that provider's server has installed - a quick check that every configured `model_name` is actually served, flagging configured models the server does not have. See [Listing installed models](docs/configuration.md#listing-installed-models) for the full reference and sample output.
+
+### Running on Band
+
+`blorb band` connects an agent to the [Band](https://band.ai) platform as a remote agent: blorb opens an outbound connection with the agent's API key, receives messages that mention it in chat rooms, runs them through the normal agent loop, and replies by calling Band platform tools. The agent answers a room by calling `band_send_message`, mentioning the participants it addresses; a plain-text answer is delivered as a fallback.
+
+The command needs a `band` section in the config and the agent API key in the environment:
+
+```json
+"band": {
+  "agent_id": "the-agent-uuid-from-band",
+  "api_key_env": "BAND_API_KEY",
+  "rest_url": "https://api.band.ai",
+  "ws_url": "wss://app.band.ai/api/v1/socket/websocket"
+}
+```
+
+`agent_id` is required when the block is present; `api_key_env` defaults to `BAND_API_KEY`, and `rest_url` and `ws_url` default to the values shown. The command takes `-c | --config <path>` and `--agent <name>` like `chat` and `run`. It runs until interrupted: the first Ctrl-C stops gracefully after the in-flight message, a second exits immediately. On shutdown it prints the session usage footer to stderr. One `blorb band` process serves one Band agent.
+
+See [examples/band](examples/band) for a minimal working setup.
 
 ## Configuration
 
@@ -212,6 +232,8 @@ See [examples/simple](examples/simple) for a five-agent config sharing one tool 
 See [examples/prefactor-tracing](examples/prefactor-tracing) for a single-agent variant with just the `read`/`grep` builtins (sharing simple's `knowledgebase/`) and Prefactor tracing enabled.
 
 See [examples/ollama-cloud](examples/ollama-cloud) for a single-agent variant pointed at Ollama cloud (native `ollama` model type, API key via `api_key_env`, `reasoning_effort` on a thinking model).
+
+See [examples/plaud](examples/plaud) for a two-agent config exposing the Plaud CLI (`files` and `transcript`) as command tools the agents can call to list the user's recordings and fetch their transcripts, plus a `summarize` subagent tool that delegates to a summarizer agent returning a JSON summary with action items.
 
 ## Contributing
 

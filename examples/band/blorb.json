@@ -1,0 +1,31 @@
+{
+  "default_agent": "roommate",
+  "models": [
+    {
+      "name": "small",
+      "model_name": "Gemma-4-E4B-it-GGUF",
+      "provider": "local"
+    }
+  ],
+  "agents": [
+    {
+      "name": "roommate",
+      "system_prompt": "You are Roommate, a demo agent that participates in Band chat rooms. Keep your answers short. Address the participants you reply to by mentioning them.",
+      "max_turns": 10,
+      "model": "small"
+    }
+  ],
+  "band": {
+    "agent_id": "00000000-0000-0000-0000-000000000000",
+    "api_key_env": "BAND_API_KEY",
+    "rest_url": "https://api.band.ai",
+    "ws_url": "wss://app.band.ai/api/v1/socket/websocket"
+  },
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:13305/v1"
+    }
+  ]
+}
