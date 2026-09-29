@@ -313,6 +313,107 @@ func errorsAs(err error, target **band.APIError) bool {
 	return false
 }
 
+func TestListParticipants(t *testing.T) {
+	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chats/room-1/participants") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeData(w, http.StatusOK, `[{"id":"u-1","role":"owner","status":"active","type":"User","name":"User One"}]`)
+	})
+	c := f.client(t, logging.NewNop())
+	participants, err := c.ListParticipants(context.Background(), "room-1")
+	if err != nil {
+		t.Fatalf("ListParticipants error = %v, want nil", err)
+	}
+	if len(participants) != 1 || participants[0].ID != "u-1" || participants[0].Role != "owner" {
+		t.Errorf("participants = %+v, want one owner u-1", participants)
+	}
+}
+
+func TestAddParticipantOmitsRole(t *testing.T) {
+	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		writeData(w, http.StatusCreated, `{"id":"u-2","role":"member","status":"active","type":"User"}`)
+	})
+	c := f.client(t, logging.NewNop())
+	participant, err := c.AddParticipant(context.Background(), "room-1", "u-2", "admin")
+	if err != nil {
+		t.Fatalf("AddParticipant error = %v, want nil", err)
+	}
+	if participant.ID != "u-2" {
+		t.Errorf("participant = %+v, want id u-2", participant)
+	}
+
+	req := f.seen()[0]
+	if !strings.Contains(string(req.Body), `"role":"admin"`) {
+		t.Errorf("body %s lacks the explicit role", req.Body)
+	}
+}
+
+func TestAddParticipantRoleOmittedWhenEmpty(t *testing.T) {
+	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		writeData(w, http.StatusCreated, `{"id":"u-2","role":"member","status":"active","type":"User"}`)
+	})
+	c := f.client(t, logging.NewNop())
+	if _, err := c.AddParticipant(context.Background(), "room-1", "u-2", ""); err != nil {
+		t.Fatalf("AddParticipant error = %v, want nil", err)
+	}
+	if strings.Contains(string(f.seen()[0].Body), `"role"`) {
+		t.Errorf("body %s carries role though unset", f.seen()[0].Body)
+	}
+}
+
+func TestRemoveParticipantMethod(t *testing.T) {
+	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE", r.Method)
+		}
+		writeData(w, http.StatusOK, `{"id":"u-2","role":"member","status":"removed","type":"User"}`)
+	})
+	c := f.client(t, logging.NewNop())
+	if err := c.RemoveParticipant(context.Background(), "room-1", "u-2"); err != nil {
+		t.Fatalf("RemoveParticipant error = %v, want nil", err)
+	}
+	if !strings.Contains(f.seen()[0].Path, "/participants/u-2") {
+		t.Errorf("path = %q, want the participant id in the path", f.seen()[0].Path)
+	}
+}
+
+func TestLookupPeersFollowsPagination(t *testing.T) {
+	// A full first page forces the second.
+	full := make([]string, peersPageSizeForTest)
+	for i := range full {
+		full[i] = `{"id":"p-` + strconv.Itoa(i+1) + `","name":"Peer","handle":"h","type":"Agent"}`
+	}
+	calls := 0
+	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if got := r.URL.Query().Get("page"); got != strconv.Itoa(calls) {
+			t.Errorf("page = %q, want %d", got, calls)
+		}
+		if calls == 1 {
+			writeData(w, http.StatusOK, "["+strings.Join(full, ",")+"]")
+			return
+		}
+		writeData(w, http.StatusOK, `[{"id":"p-last","name":"Last","handle":"l","type":"User"}]`)
+	})
+	c := f.client(t, logging.NewNop())
+	peers, err := c.LookupPeers(context.Background())
+	if err != nil {
+		t.Fatalf("LookupPeers error = %v, want nil", err)
+	}
+	if len(peers) != peersPageSizeForTest+1 {
+		t.Errorf("peers = %d, want %d across two pages", len(peers), peersPageSizeForTest+1)
+	}
+	if peers[len(peers)-1].ID != "p-last" || peers[len(peers)-1].Type != "User" {
+		t.Errorf("last peer = %+v, want p-last User", peers[len(peers)-1])
+	}
+}
+
+// peersPageSizeForTest mirrors the client's internal page size so the
+// pagination test can force a full first page.
+const peersPageSizeForTest = 100
+
 func TestSinkRequestResponseRecords(t *testing.T) {
 	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
 		writeData(w, http.StatusOK, `{}`)

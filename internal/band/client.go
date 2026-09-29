@@ -188,6 +188,58 @@ func (c *Client) ListChats(ctx context.Context) ([]ChatRoom, error) {
 // listChatsPageSize is how many rooms one page asks for.
 const listChatsPageSize = 100
 
+// ListParticipants returns a room's participants. The endpoint answers
+// in one response; following pages are not documented, so one call
+// suffices.
+func (c *Client) ListParticipants(ctx context.Context, chatID string) ([]ChatParticipant, error) {
+	var participants []ChatParticipant
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/chats/%s/participants", chatID), nil, &participants); err != nil {
+		return nil, err
+	}
+	return participants, nil
+}
+
+// AddParticipant adds one participant to a room; role may be empty (the
+// platform defaults to member).
+func (c *Client) AddParticipant(ctx context.Context, chatID, participantID, role string) (ChatParticipant, error) {
+	participant := map[string]any{"participant_id": participantID}
+	if role != "" {
+		participant["role"] = role
+	}
+	var participantOut ChatParticipant
+	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/chats/%s/participants", chatID),
+		map[string]any{"participant": participant}, &participantOut); err != nil {
+		return ChatParticipant{}, err
+	}
+	return participantOut, nil
+}
+
+// RemoveParticipant removes one participant from a room.
+func (c *Client) RemoveParticipant(ctx context.Context, chatID, participantID string) error {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/chats/%s/participants/%s", chatID, participantID), nil, nil)
+}
+
+// peersPageSize is how many peers one page asks for.
+const peersPageSize = 100
+
+// LookupPeers lists the agents and users the agent can interact with,
+// following pagination until exhausted.
+func (c *Client) LookupPeers(ctx context.Context) ([]Peer, error) {
+	var out []Peer
+	page := 1
+	for {
+		var peers []Peer
+		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/peers?page=%d&page_size=%d", page, peersPageSize), nil, &peers); err != nil {
+			return nil, err
+		}
+		out = append(out, peers...)
+		if len(peers) < peersPageSize {
+			return out, nil
+		}
+		page++
+	}
+}
+
 // CreateChat creates a room; either field may be empty.
 func (c *Client) CreateChat(ctx context.Context, title, taskID string) (ChatRoom, error) {
 	body := map[string]any{}
