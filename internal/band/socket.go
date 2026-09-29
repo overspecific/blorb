@@ -214,8 +214,11 @@ func (s *Socket) send(joinRef, ref, topic, event string, payload any) error {
 }
 
 // readLoop decodes envelopes until the connection dies, routing replies
-// to their callers and server pushes to Events.
+// to their callers and server pushes to Events. It is the only sender
+// on Events and closes the channel when it exits, so an Events consumer
+// knows the socket is finished.
 func (s *Socket) readLoop() {
+	defer close(s.events)
 	for {
 		_, data, err := s.conn.ReadMessage(context.Background())
 		if err != nil {
@@ -370,6 +373,10 @@ func (s *Socket) logWire(kind, topic string, body []byte) {
 
 // shutdown records the terminal error once and closes the event channel.
 // A nil err means a deliberate close, not a failure.
+// shutdown records the terminal error once and signals the loops. The
+// events channel is closed by readLoop (the only sender), so a
+// concurrent shutdown can never close it under a send. A nil err means
+// a deliberate close, not a failure.
 func (s *Socket) shutdown(err error) {
 	s.once.Do(func() {
 		if err == nil {
@@ -377,7 +384,6 @@ func (s *Socket) shutdown(err error) {
 		}
 		s.done <- err
 		close(s.closed)
-		close(s.events)
 	})
 }
 

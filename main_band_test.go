@@ -152,8 +152,9 @@ type bandWSFake struct {
 	ln        net.Listener
 	handshake chan struct{}
 
-	mu   sync.Mutex
-	conn net.Conn
+	mu      sync.Mutex
+	writeMu sync.Mutex
+	conn    net.Conn
 }
 
 func newBandWSFake(t *testing.T) *bandWSFake {
@@ -198,8 +199,10 @@ func (s *bandWSFake) serve() {
 		event := bandUnquote(env[3])
 		switch event {
 		case "phx_join", "phx_leave", "heartbeat":
+			s.writeMu.Lock()
 			bandWriteFrame(conn, ws.Frame{FIN: true, Opcode: ws.OpcodeText,
 				Payload: []byte(`[null,` + string(env[1]) + `,"phoenix","phx_reply",{"status":"ok","response":{}}]`)})
+			s.writeMu.Unlock()
 		}
 	}
 }
@@ -221,8 +224,11 @@ func (s *bandWSFake) pushMessageCreated(roomID, id, content string) {
 	})
 	raw, _ := json.Marshal([]any{nil, nil, "chat_room:" + roomID, "message_created", json.RawMessage(payload)})
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	bandWriteFrame(s.conn, ws.Frame{FIN: true, Opcode: ws.OpcodeText, Payload: raw})
+	conn := s.conn
+	s.mu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	bandWriteFrame(conn, ws.Frame{FIN: true, Opcode: ws.OpcodeText, Payload: raw})
 }
 
 // --- minimal frame and handshake helpers (the ws codec is internal) ---
@@ -398,10 +404,11 @@ func TestBandCommandEndToEnd(t *testing.T) {
 
 	e.ws.waitHandshake(t)
 	// Push one mention; the room replies through band_send_message and
-	// the message is marked processed.
-	e.ws.pushMessageCreated("room-1", "m-e2e", "hello")
-
+	// the message is marked processed. The push repeats until the runner
+	// has joined the room (an early push is dropped: no room state yet);
+	// the repeated id deduplicates, so it is processed at most once.
 	waitForE2E(t, func() bool {
+		e.ws.pushMessageCreated("room-1", "m-e2e", "hello")
 		return len(e.sentMessages()) == 1 && len(e.markKinds()) >= 2
 	})
 	sent := e.sentMessages()[0]

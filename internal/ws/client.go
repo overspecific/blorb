@@ -325,17 +325,16 @@ func (c *Conn) SetReadLimit(n int64) {
 	c.readLimit = n
 }
 
-// Close performs the closing handshake: send a close frame, briefly wait
-// for the peer's close, then shut the underlying connection down. A
-// second Close is a no-op returning the first Close's result.
+// Close sends a close frame and shuts the underlying connection down. A
+// second Close is a no-op returning the first Close's result. It does not
+// wait for the peer's close: a connection may have a concurrent reader
+// (the Socket's read loop), and two readers competing on one conn would
+// race on the read deadline, so the closing handshake's drain is skipped.
 func (c *Conn) Close(code uint16, reason string) error {
 	c.closeOnce.Do(func() {
 		payload := makeClosePayload(code, reason)
 		c.raw.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		err := c.writeFrameLocked(Frame{FIN: true, Opcode: OpcodeClose, Payload: payload})
-		if err == nil {
-			drainBriefly(c.raw)
-		}
 		c.closeErr = errors.Join(err, c.raw.Close())
 	})
 	return c.closeErr
@@ -369,20 +368,4 @@ func parseClosePayload(payload []byte) (uint16, string) {
 	}
 	code := uint16(payload[0])<<8 | uint16(payload[1])
 	return code, string(payload[2:])
-}
-
-// drainBriefly reads frames for a bounded window looking for the peer's
-// close frame and discards anything else. Failure is fine: the connection
-// closes right after regardless.
-func drainBriefly(raw net.Conn) {
-	raw.SetReadDeadline(time.Now().Add(2 * time.Second))
-	for {
-		f, err := readFrame(raw, DefaultReadLimit)
-		if err != nil {
-			return
-		}
-		if f.Opcode == OpcodeClose {
-			return
-		}
-	}
 }
