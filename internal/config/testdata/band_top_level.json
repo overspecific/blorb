@@ -18,12 +18,10 @@
       "name": "helper",
       "system_prompt": "You are helpful.",
       "max_turns": 5,
-      "model": "m",
-      "band": {
-        "api_key_env": "MY_BAND_KEY",
-        "rest_url": "https://band.example.com",
-        "ws_url": "wss://band.example.com/socket"
-      }
+      "model": "m"
     }
-  ]
+  ],
+  "band": {
+    "agent_id": "agent-123"
+  }
 }

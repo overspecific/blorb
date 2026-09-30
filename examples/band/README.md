@@ -1,26 +1,20 @@
 # Band example agent
 
-A minimal [Band](https://band.ai) setup: one agent (`roommate`, the config's `default_agent`) with a `band` section, ready to connect to the platform as a remote agent.
+A minimal [Band](https://band.ai) setup: one agent (`roommate`, the config's `default_agent`) with a `band` block, ready to connect to the platform as a remote agent.
 
 ## Setup
 
-Register an external agent on Band and copy two things from it:
+Register an external agent on Band and copy its agent API key, which the command reads from the environment.
 
-- the agent UUID, which goes in the `band` section's `agent_id`
-- the agent API key, which the command reads from the environment
-
-`blorb.json` ships with placeholder values:
+`blorb.json` ships with a placeholder connection:
 
 ```json
 "band": {
-  "agent_id": "00000000-0000-0000-0000-000000000000",
-  "api_key_env": "BAND_API_KEY",
-  "rest_url": "https://api.band.ai",
-  "ws_url": "wss://app.band.ai/api/v1/socket/websocket"
+  "api_key_env": "BAND_API_KEY"
 }
 ```
 
-Replace `agent_id` with the agent's UUID. `api_key_env` names the environment variable holding the API key; it defaults to `BAND_API_KEY`. `rest_url` and `ws_url` point at Band's Agent API and subscriptions socket and only need changing for a self-hosted deployment.
+The `band` block requires `api_key_env`, the environment variable holding the API key. The endpoints default to Band's hosted Agent API and subscriptions socket, so `rest_url` and `ws_url` only need setting for a self-hosted deployment. The agent's Band id is not configured; the command reads it from the API key at startup.
 
 The model config points at a local [Lemonade](https://lemonade-server.com) server (`http://localhost:13305/v1`) with the `Gemma-4-E4B-it-GGUF` model. Adjust `base_url` and `model_name` in the top-level `models` list in `blorb.json` to match whatever OpenAI-compatible endpoint you want to use (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...). If your endpoint needs an API key, add an `api_key_env` entry naming the environment variable that holds it.
 

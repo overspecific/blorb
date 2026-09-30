@@ -137,18 +137,15 @@ See the [output formats reference](docs/formats.md) for the format details: the 
 
 `blorb band` connects an agent to the [Band](https://band.ai) platform as a remote agent: blorb opens an outbound connection with the agent's API key, receives messages that mention it in chat rooms, runs them through the normal agent loop, and replies by calling Band platform tools. The agent answers a room by calling `band_send_message`, mentioning the participants it addresses; a plain-text answer is delivered as a fallback.
 
-The command needs a `band` section in the config and the agent API key in the environment:
+The agent the command runs needs a `band` block, and the agent API key must be in the environment:
 
 ```json
 "band": {
-  "agent_id": "the-agent-uuid-from-band",
-  "api_key_env": "BAND_API_KEY",
-  "rest_url": "https://api.band.ai",
-  "ws_url": "wss://app.band.ai/api/v1/socket/websocket"
+  "api_key_env": "BAND_API_KEY"
 }
 ```
 
-`agent_id` is required when the block is present; `api_key_env` defaults to `BAND_API_KEY`, and `rest_url` and `ws_url` default to the values shown. The command takes `-c | --config <path>`, `--agent <name>`, `--no-stream`, and `--tool-output` like `chat` and `run`. While it runs it prints each room's agent activity - assistant text, tool calls and results, and subagent activity - to standard output, so you can watch it work; assistant responses stream as they arrive, so pass `--no-stream` to wait for each whole response, and pass `--tool-output` to show full tool result bodies. It runs until interrupted: the first Ctrl-C stops gracefully after the in-flight message, a second exits immediately. On shutdown it prints the session usage footer to stderr. One `blorb band` process serves one Band agent.
+The block requires `api_key_env`, the environment variable holding the agent API key; `rest_url` and `ws_url` are optional and default to Band's hosted Agent API and subscriptions socket, so they only need setting for a self-hosted deployment. The agent's Band id is not configured; the command reads it from the API key at startup. The command takes `-c | --config <path>`, `--agent <name>`, `--no-stream`, and `--tool-output` like `chat` and `run`. While it runs it prints each room's agent activity - assistant text, tool calls and results, and subagent activity - to standard output, so you can watch it work; assistant responses stream as they arrive, so pass `--no-stream` to wait for each whole response, and pass `--tool-output` to show full tool result bodies. It runs until interrupted: the first Ctrl-C stops gracefully after the in-flight message, a second exits immediately. On shutdown it prints the session usage footer to stderr. One `blorb band` process serves one Band agent.
 
 See [examples/band](examples/band) for a minimal working setup.
 

@@ -329,8 +329,8 @@ func bandUnquote(raw json.RawMessage) string {
 	return s
 }
 
-// writeBandConfig writes a blorb.json with a band section pointing at the
-// fakes.
+// writeBandConfig writes a blorb.json with an agent band section pointing at
+// the fakes.
 func writeBandConfig(t *testing.T, llmBaseURL, restURL, wsURL string) string {
 	t.Helper()
 	cfg := map[string]any{
@@ -340,13 +340,13 @@ func writeBandConfig(t *testing.T, llmBaseURL, restURL, wsURL string) string {
 		"models": []map[string]any{{"name": "m", "provider": "local", "model_name": "m"}},
 		"agents": []map[string]any{{
 			"name": "helper", "system_prompt": "You are helpful.", "model": "m", "max_turns": 3,
+			"band": map[string]any{
+				"api_key_env": "BAND_API_KEY",
+				"rest_url":    restURL,
+				"ws_url":      wsURL,
+			},
 		}},
 		"default_agent": "helper",
-		"band": map[string]any{
-			"agent_id": bandAgentID,
-			"rest_url": restURL,
-			"ws_url":   wsURL,
-		},
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -360,7 +360,7 @@ func writeBandConfig(t *testing.T, llmBaseURL, restURL, wsURL string) string {
 }
 
 func TestBandCommandMissingSection(t *testing.T) {
-	// A config without a band block is a clear startup error.
+	// An agent without a band block is a clear startup error.
 	dir := t.TempDir()
 	cfg := map[string]any{
 		"providers":     []map[string]any{{"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}},
@@ -381,8 +381,8 @@ func TestBandCommandMissingSection(t *testing.T) {
 	if err := cmd.Run(context.Background(), []string{"blorb", "band", "-c", path}); err == nil {
 		t.Fatal("band without a band section succeeded, want an error")
 	}
-	if !strings.Contains(errOut.String(), "band section is required") {
-		t.Errorf("error = %q, want the band-section message", errOut.String())
+	if !strings.Contains(errOut.String(), "has no band section") {
+		t.Errorf("error = %q, want the missing-band-section message", errOut.String())
 	}
 }
 

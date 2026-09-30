@@ -691,6 +691,7 @@ func TestLoadRejects(t *testing.T) {
 		{"toolset_reference_space_collision.json", []string{`duplicate name "a-b-c"`, "tools, toolsets, and toolset members share one reference space"}},
 		{"toolset_subagent_agent_cycle.json", []string{`agent cycle detected: "a" -> "b" -> "a"`}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
+		{"band_top_level.json", []string{"unknown field", `"band"`}},
 		{"prefactor_unknown_field.json", []string{"no_such_field"}},
 		{"prefactor_empty_token_env.json", []string{"api_token_env must not be empty when set"}},
 		{"prefactor_bad_api_url_scheme.json", []string{"ftp", "http or https"}},

@@ -12,7 +12,7 @@ import (
 // validBand returns the canonical valid band block for programmatic
 // configs.
 func validBand() *config.BandConfig {
-	return &config.BandConfig{AgentID: "agent-uuid"}
+	return &config.BandConfig{APIKeyEnv: "BAND_API_KEY"}
 }
 
 func TestLoadWithBand(t *testing.T) {
@@ -20,18 +20,16 @@ func TestLoadWithBand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(with_band.json) error = %v, want nil", err)
 	}
-	if !cfg.BandEnabled() {
+	agent := cfg.Agents[0]
+	if !agent.BandEnabled() {
 		t.Fatal("BandEnabled() = false, want true")
 	}
-	b := cfg.Band
+	b := agent.Band
 	if b == nil {
 		t.Fatal("Band = nil, want non-nil")
 	}
-	if b.AgentID != "agent-123" {
-		t.Errorf("AgentID = %q, want %q", b.AgentID, "agent-123")
-	}
-	if got := b.APIKeyEnvOrDefault(); got != "MY_BAND_KEY" {
-		t.Errorf("APIKeyEnvOrDefault() = %q, want %q", got, "MY_BAND_KEY")
+	if got := b.APIKeyEnv; got != "MY_BAND_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", got, "MY_BAND_KEY")
 	}
 	if got := b.RESTURLOrDefault(); got != "https://band.example.com" {
 		t.Errorf("RESTURLOrDefault() = %q, want %q", got, "https://band.example.com")
@@ -46,31 +44,32 @@ func TestBandAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(valid.json) error = %v, want nil", err)
 	}
-	if cfg.BandEnabled() {
+	if cfg.Agents[0].BandEnabled() {
 		t.Error("BandEnabled() = true, want false when the band block is absent")
 	}
 }
 
 func TestBandDefaults(t *testing.T) {
+	agent := validAgent()
+	agent.Band = &config.BandConfig{APIKeyEnv: "MY_BAND_KEY"}
 	cfg := config.Config{
 		Providers: []config.Provider{validProvider()},
 		Models:    []config.Model{validModel()},
-		Agents:    []config.Agent{validAgent()},
-		Band:      &config.BandConfig{AgentID: "agent-uuid"},
+		Agents:    []config.Agent{agent},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate error = %v, want nil", err)
 	}
-	if !cfg.BandEnabled() {
+	if !cfg.Agents[0].BandEnabled() {
 		t.Error("BandEnabled() = false, want true with a band block present")
 	}
-	if got := cfg.Band.APIKeyEnvOrDefault(); got != config.DefaultBandAPIKeyEnv {
-		t.Errorf("APIKeyEnvOrDefault() = %q, want %q", got, config.DefaultBandAPIKeyEnv)
+	if got := cfg.Agents[0].Band.APIKeyEnv; got != "MY_BAND_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", got, "MY_BAND_KEY")
 	}
-	if got := cfg.Band.RESTURLOrDefault(); got != config.DefaultBandRESTURL {
+	if got := cfg.Agents[0].Band.RESTURLOrDefault(); got != config.DefaultBandRESTURL {
 		t.Errorf("RESTURLOrDefault() = %q, want %q", got, config.DefaultBandRESTURL)
 	}
-	if got := cfg.Band.WSURLOrDefault(); got != config.DefaultBandWSURL {
+	if got := cfg.Agents[0].Band.WSURLOrDefault(); got != config.DefaultBandWSURL {
 		t.Errorf("WSURLOrDefault() = %q, want %q", got, config.DefaultBandWSURL)
 	}
 }
@@ -81,13 +80,17 @@ func TestBandRoundTripAllFields(t *testing.T) {
 	data := `{
 	  "providers": [{"name": "remote", "type": "openai-compatible", "base_url": "https://api.example.com/v1"}],
 	  "models": [{"name": "m", "provider": "remote", "model_name": "m"}],
-	  "agents": [{"name": "helper", "system_prompt": "Be helpful.", "max_turns": 1, "model": "m"}],
-	  "band": {
-	    "agent_id": "uuid-1",
-	    "api_key_env": "KEY_ENV",
-	    "rest_url": "https://rest.example.com",
-	    "ws_url": "ws://ws.example.com/socket"
-	  }
+	  "agents": [{
+	    "name": "helper",
+	    "system_prompt": "Be helpful.",
+	    "max_turns": 1,
+	    "model": "m",
+	    "band": {
+	      "api_key_env": "KEY_ENV",
+	      "rest_url": "https://rest.example.com",
+	      "ws_url": "ws://ws.example.com/socket"
+	    }
+	  }]
 	}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -96,16 +99,14 @@ func TestBandRoundTripAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load error = %v, want nil", err)
 	}
-	if got, want := cfg.Band.AgentID, "uuid-1"; got != want {
-		t.Errorf("AgentID = %q, want %q", got, want)
+	b := cfg.Agents[0].Band
+	if got, want := b.APIKeyEnv, "KEY_ENV"; got != want {
+		t.Errorf("APIKeyEnv = %q, want %q", got, want)
 	}
-	if got, want := cfg.Band.APIKeyEnvOrDefault(), "KEY_ENV"; got != want {
-		t.Errorf("APIKeyEnvOrDefault() = %q, want %q", got, want)
-	}
-	if got, want := cfg.Band.RESTURLOrDefault(), "https://rest.example.com"; got != want {
+	if got, want := b.RESTURLOrDefault(), "https://rest.example.com"; got != want {
 		t.Errorf("RESTURLOrDefault() = %q, want %q", got, want)
 	}
-	if got, want := cfg.Band.WSURLOrDefault(), "ws://ws.example.com/socket"; got != want {
+	if got, want := b.WSURLOrDefault(), "ws://ws.example.com/socket"; got != want {
 		t.Errorf("WSURLOrDefault() = %q, want %q", got, want)
 	}
 }
@@ -117,19 +118,9 @@ func TestBandInvalid(t *testing.T) {
 		want string
 	}{
 		{
-			name: "missing agent_id",
+			name: "missing api_key_env",
 			band: &config.BandConfig{},
-			want: "agent_id is required",
-		},
-		{
-			name: "empty api_key_env",
-			band: func() *config.BandConfig {
-				b := validBand()
-				empty := ""
-				b.APIKeyEnv = &empty
-				return b
-			}(),
-			want: "api_key_env must not be empty when set",
+			want: "api_key_env is required",
 		},
 		{
 			name: "rest_url with ws scheme",
@@ -170,11 +161,12 @@ func TestBandInvalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			agent := validAgent()
+			agent.Band = tt.band
 			cfg := config.Config{
 				Providers: []config.Provider{validProvider()},
 				Models:    []config.Model{validModel()},
-				Agents:    []config.Agent{validAgent()},
-				Band:      tt.band,
+				Agents:    []config.Agent{agent},
 			}
 			err := cfg.Validate()
 			if err == nil {

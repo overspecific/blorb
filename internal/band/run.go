@@ -64,11 +64,9 @@ type Options struct {
 	ConfigPath string
 	// Sink is the resolved sink; nil means no wire logging.
 	Sink logging.Sink
-	// BandAgentID is the Band agent UUID this process serves (the
-	// config band block's agent_id).
-	BandAgentID string
 	// APIKey is the resolved agent API key (read from the configured
-	// env var by the caller).
+	// env var by the caller). The agent's Band id is discovered from it
+	// at startup (GET /me).
 	APIKey string
 	// RESTURL and WSURL are the resolved Band endpoints (the config
 	// defaults applied by the caller).
@@ -98,6 +96,10 @@ type Runner struct {
 	// rootCtx is Run's context. Each room worker derives a cancellable
 	// context from it, so workers outlive individual socket connections.
 	rootCtx context.Context
+
+	// agentID is this process's Band agent id, discovered from the API
+	// key at startup (GET /me).
+	agentID string
 
 	mu    sync.Mutex
 	rooms map[string]*roomState
@@ -150,16 +152,20 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 func Run(ctx context.Context, opts Options) (*usage.Account, error) {
 	opts.applyDefaults()
 
-	// 1. Validate the key up front: a 401 means the agent API key or
-	// the agent id is wrong, said plainly.
+	// 1. Validate the key up front: a 401 means the agent API key is
+	// wrong. The same call yields the agent's own id, which the rooms
+	// topic and self-recognition need.
 	client := NewClient(opts.RESTURL, opts.APIKey, opts.Sink)
 	profile, err := client.Me(ctx)
 	if err != nil {
 		var apiErr *APIError
 		if asAPIError(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
-			return &usage.Account{}, errors.New("the Band agent API key or agent id was rejected (401); check the key in the environment variable and agent_id in the band config block")
+			return &usage.Account{}, errors.New("the Band agent API key was rejected (401); check the key in the environment variable")
 		}
 		return &usage.Account{}, fmt.Errorf("validate agent api key: %w", err)
+	}
+	if profile.ID == "" {
+		return &usage.Account{}, errors.New("the Band agent profile has no id")
 	}
 
 	// runCtx is ctx plus a platform-terminate cancel: a terminate stops
@@ -173,6 +179,7 @@ func Run(ctx context.Context, opts Options) (*usage.Account, error) {
 		diag:           opts.Stderr,
 		out:            roomOutput(opts.Stdout),
 		rootCtx:        runCtx,
+		agentID:        profile.ID,
 		rooms:          map[string]*roomState{},
 		reconnectBase:  opts.ReconnectBase,
 		sessionAccount: &usage.Account{},
@@ -185,7 +192,7 @@ func Run(ctx context.Context, opts Options) (*usage.Account, error) {
 	defer st.shutdownRooms()
 
 	for {
-		err := st.connectAndServe(runCtx, profile)
+		err := st.connectAndServe(runCtx)
 		if err == nil || runCtx.Err() != nil {
 			return st.sessionAccount, st.finishSession()
 		}
@@ -261,7 +268,7 @@ func (st *Runner) resetBackoff() {
 // connectAndServe is one socket lifetime: dial, join everything, sync
 // the rooms, and dispatch live events. Returns nil on graceful ctx
 // shutdown; a non-nil error means the socket died.
-func (st *Runner) connectAndServe(ctx context.Context, profile AgentProfile) error {
+func (st *Runner) connectAndServe(ctx context.Context) error {
 	socket, err := Connect(ctx, st.opts.WSURL, st.opts.APIKey,
 		WithHeartbeatInterval(st.opts.HeartbeatInterval),
 		WithSocketSink(socketSinkOrNop(st.opts.Sink)))
@@ -270,7 +277,7 @@ func (st *Runner) connectAndServe(ctx context.Context, profile AgentProfile) err
 	}
 	defer socket.Close()
 
-	roomsTopic := "agent_rooms:" + st.opts.BandAgentID
+	roomsTopic := "agent_rooms:" + st.agentID
 	if err := socket.Join(ctx, roomsTopic); err != nil {
 		return fmt.Errorf("join %s: %w", roomsTopic, err)
 	}
@@ -325,7 +332,7 @@ func (st *Runner) connectRoom(ctx context.Context, socket *Socket, roomsTopic, r
 		Agent:       st.opts.Agent,
 		Client:      st.client,
 		RoomID:      roomID,
-		AgentID:     st.opts.BandAgentID,
+		AgentID:     st.agentID,
 		Sink:        st.opts.Sink,
 		Diagnostics: st.diag,
 		Stdout:      st.out,

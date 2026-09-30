@@ -77,7 +77,6 @@ func TestRunnerFullFlow(t *testing.T) {
 		Config:            cfg,
 		Agent:             agent,
 		Stderr:            io.Discard,
-		BandAgentID:       runnerAgentID,
 		APIKey:            "k",
 		RESTURL:           rest.srv.URL,
 		WSURL:             "ws://" + ws.addr,
@@ -160,7 +159,6 @@ func TestRunnerTracedTurn(t *testing.T) {
 		Config:            cfg,
 		Agent:             agent,
 		Stderr:            io.Discard,
-		BandAgentID:       runnerAgentID,
 		APIKey:            "k",
 		RESTURL:           rest.srv.URL,
 		WSURL:             "ws://" + ws.addr,
@@ -225,7 +223,6 @@ func TestRunnerPlatformTerminateStopsCleanly(t *testing.T) {
 		Config:            cfg,
 		Agent:             agent,
 		Stderr:            io.Discard,
-		BandAgentID:       runnerAgentID,
 		APIKey:            "k",
 		RESTURL:           rest.srv.URL,
 		WSURL:             "ws://" + ws.addr,
@@ -283,7 +280,6 @@ func TestRunnerTracedSessionFailureMarksFailed(t *testing.T) {
 		Config:            cfg,
 		Agent:             agent,
 		Stderr:            io.Discard,
-		BandAgentID:       runnerAgentID,
 		APIKey:            "k",
 		RESTURL:           rest.srv.URL,
 		WSURL:             "ws://" + ws.addr,
@@ -332,7 +328,6 @@ func TestRunnerStopsDrainingARepeatedMessage(t *testing.T) {
 		Config:            cfg,
 		Agent:             agent,
 		Stderr:            io.Discard,
-		BandAgentID:       runnerAgentID,
 		APIKey:            "k",
 		RESTURL:           rest.srv.URL,
 		WSURL:             "ws://" + ws.addr,
@@ -390,7 +385,6 @@ func TestRunnerFailedMessageDoesNotReconnect(t *testing.T) {
 		Config:            cfg,
 		Agent:             agent,
 		Stderr:            io.Discard,
-		BandAgentID:       runnerAgentID,
 		APIKey:            "k",
 		RESTURL:           rest.srv.URL,
 		WSURL:             "ws://" + ws.addr,
@@ -442,11 +436,10 @@ func TestRunnerInvalidKeyFailsFast(t *testing.T) {
 	ws := newRunnerWSFake(t)
 	rest := newRunnerRestFakeUnauthorized(t)
 	opts := band.Options{
-		BandAgentID: runnerAgentID,
-		APIKey:      "wrong",
-		RESTURL:     rest.srv.URL,
-		WSURL:       "ws://" + ws.addr,
-		Stderr:      stderrWriter{t},
+		APIKey:  "wrong",
+		RESTURL: rest.srv.URL,
+		WSURL:   "ws://" + ws.addr,
+		Stderr:  stderrWriter{t},
 	}
 
 	start := time.Now()
@@ -462,13 +455,31 @@ func TestRunnerInvalidKeyFailsFast(t *testing.T) {
 	}
 }
 
+func TestRunnerProfileWithoutIDFailsFast(t *testing.T) {
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFakeNoID(t)
+	opts := band.Options{
+		APIKey:  "k",
+		RESTURL: rest.srv.URL,
+		WSURL:   "ws://" + ws.addr,
+		Stderr:  stderrWriter{t},
+	}
+
+	_, err := band.Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("Run error = nil with an id-less profile, want an error")
+	}
+	if !strings.Contains(err.Error(), "no id") {
+		t.Errorf("error = %v, want it to name the missing id", err)
+	}
+}
+
 func TestRunnerGracefulShutdownOnCtxCancel(t *testing.T) {
 	ws := newRunnerWSFake(t)
 	rest := newRunnerRestFake(t, roomListJSON("room-1"), nil)
 
 	var stderr syncBuffer
 	opts := band.Options{
-		BandAgentID:       runnerAgentID,
 		APIKey:            "k",
 		RESTURL:           rest.srv.URL,
 		WSURL:             "ws://" + ws.addr,
@@ -499,7 +510,6 @@ func TestRunnerReconnectsAfterSocketDeath(t *testing.T) {
 
 	var stderr syncBuffer
 	opts := band.Options{
-		BandAgentID:       runnerAgentID,
 		APIKey:            "k",
 		RESTURL:           rest.srv.URL,
 		WSURL:             "ws://" + ws.addr,

@@ -235,6 +235,19 @@ func newRunnerRestFakeUnauthorized(t *testing.T) *runnerRestFake {
 	return f
 }
 
+// newRunnerRestFakeNoID serves /me with a profile that has no id.
+func newRunnerRestFakeNoID(t *testing.T) *runnerRestFake {
+	t.Helper()
+	f := &runnerRestFake{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agent/me", func(w http.ResponseWriter, _ *http.Request) {
+		writeData(w, http.StatusOK, `{"name":"blorb agent"}`)
+	})
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
 func newRunnerRestFake(t *testing.T, roomsJSON string, nextBodies map[string][]string) *runnerRestFake {
 	t.Helper()
 	f := &runnerRestFake{next: nextBodies}

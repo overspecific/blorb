@@ -95,10 +95,6 @@ const (
 	// API token is read from when api_token_env is unset.
 	DefaultPrefactorTokenEnv = "PREFACTOR_API_TOKEN"
 
-	// DefaultBandAPIKeyEnv is the environment variable the Band agent API
-	// key is read from when api_key_env is unset in the band config block.
-	DefaultBandAPIKeyEnv = "BAND_API_KEY"
-
 	// DefaultBandRESTURL is the Band Agent API base URL used when
 	// rest_url is unset in the band config block.
 	DefaultBandRESTURL = "https://api.band.ai"
@@ -135,7 +131,6 @@ type Config struct {
 	Toolsets  []Toolset        `json:"toolsets,omitempty"`
 	Logging   LogConfig        `json:"logging"`
 	Prefactor *PrefactorConfig `json:"prefactor,omitempty"`
-	Band      *BandConfig      `json:"band,omitempty"`
 
 	// dir is the directory of the loaded config file, the anchor for all
 	// config-relative paths (logging.path, builtin base_dir). Empty for a
@@ -174,6 +169,10 @@ type Agent struct {
 	// is a supported timing, and no judge chain (judges, possibly
 	// combined with subagent edges) forms a cycle.
 	Judges []Judge `json:"judges,omitempty"`
+	// Band is the optional Band platform connection for this agent. A
+	// present block lets the band command serve this agent as a remote
+	// agent on Band; see BandConfig.
+	Band *BandConfig `json:"band,omitempty"`
 }
 
 // Judge names one agent that judges this agent's run, and when it
@@ -305,38 +304,28 @@ func (p *PrefactorConfig) validate() error {
 	return nil
 }
 
-// BandEnabled reports whether the Band frontend is configured: a
+// BandEnabled reports whether the agent is configured to run on Band: a
 // present band block enables it.
-func (c *Config) BandEnabled() bool {
-	return c.Band != nil
+func (a Agent) BandEnabled() bool {
+	return a.Band != nil
 }
 
-// BandConfig is the optional band object in blorb.json, connecting blorb
-// to the Band platform as a remote agent.
+// BandConfig is the optional band object in an agent definition, connecting
+// blorb to the Band platform as a remote agent. The block's presence enables
+// the band command for that agent. The agent's Band id is not configured: it
+// comes from the agent API key at startup (GET /me).
 type BandConfig struct {
-	// AgentID is the Band agent UUID this blorb serves. Required when
-	// the block is present.
-	AgentID string `json:"agent_id"`
 	// APIKeyEnv names the environment variable holding the Band agent
-	// API key. It is a pointer following the api_key_env convention:
-	// absent defaults to DefaultBandAPIKeyEnv, explicit empty is a
-	// config error.
-	APIKeyEnv *string `json:"api_key_env,omitempty"`
+	// API key. It is required: the agent API key is the one thing a
+	// Band connection cannot do without, and there is no sensible
+	// default for where it lives.
+	APIKeyEnv string `json:"api_key_env"`
 	// RESTURL is the Band Agent API base URL. Optional; when empty
 	// DefaultBandRESTURL applies (see RESTURLOrDefault).
 	RESTURL string `json:"rest_url,omitempty"`
 	// WSURL is the Band subscriptions WebSocket URL. Optional; when
 	// empty DefaultBandWSURL applies (see WSURLOrDefault).
 	WSURL string `json:"ws_url,omitempty"`
-}
-
-// APIKeyEnvOrDefault returns the configured api_key_env, or
-// DefaultBandAPIKeyEnv when unset.
-func (b *BandConfig) APIKeyEnvOrDefault() string {
-	if b.APIKeyEnv == nil {
-		return DefaultBandAPIKeyEnv
-	}
-	return *b.APIKeyEnv
 }
 
 // RESTURLOrDefault returns the configured rest_url, or
@@ -357,13 +346,12 @@ func (b *BandConfig) WSURLOrDefault() string {
 	return b.WSURL
 }
 
-// validate checks the band block: agent_id is required and non-empty,
+// validate checks the band block: api_key_env is required and non-empty,
 // rest_url must be http/https with a host when set, and ws_url must be
-// ws/wss with a host when set. An explicitly-set api_key_env must be
-// non-empty.
+// ws/wss with a host when set.
 func (b *BandConfig) validate() error {
-	if b.AgentID == "" {
-		return fmt.Errorf("agent_id is required")
+	if b.APIKeyEnv == "" {
+		return fmt.Errorf("api_key_env is required")
 	}
 	if b.RESTURL != "" {
 		u, err := url.Parse(b.RESTURL)
@@ -389,8 +377,8 @@ func (b *BandConfig) validate() error {
 			return fmt.Errorf("ws_url %q must include a host", b.WSURL)
 		}
 	}
-	if b.APIKeyEnv != nil && *b.APIKeyEnv == "" {
-		return fmt.Errorf("api_key_env must not be empty when set")
+	if b.APIKeyEnv == "" {
+		return fmt.Errorf("api_key_env is required")
 	}
 	return nil
 }
@@ -926,11 +914,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("prefactor: %w", err)
 		}
 	}
-	if c.Band != nil {
-		if err := c.Band.validate(); err != nil {
-			return fmt.Errorf("band: %w", err)
-		}
-	}
 	// Last so a per-agent error surfaces first.
 	if c.DefaultAgent != "" && !slices.ContainsFunc(c.Agents, func(a Agent) bool { return a.Name == c.DefaultAgent }) {
 		return fmt.Errorf("default_agent %q is not a defined agent", c.DefaultAgent)
@@ -1161,11 +1144,12 @@ func (c *Config) validateToolsetRefs() error {
 	return nil
 }
 
-// validate checks one agent definition: its name, settings, and that the
-// model it names is defined and every tool, toolset, or toolset member it
-// lists resolves against the reference index. models is the already-validated
-// top-level model list the agent references by name; index is the reference
-// space built from the top-level tools and toolsets.
+// validate checks one agent definition: its name, settings, its band block
+// when present, and that the model it names is defined and every tool,
+// toolset, or toolset member it lists resolves against the reference index.
+// models is the already-validated top-level model list the agent references
+// by name; index is the reference space built from the top-level tools and
+// toolsets.
 func (a *Agent) validate(models []Model, index map[string][]ToolEntry) error {
 	if a.Name == "" {
 		return fmt.Errorf("agent name is required")
@@ -1202,6 +1186,11 @@ func (a *Agent) validate(models []Model, index map[string][]ToolEntry) error {
 		when := j.WhenOrDefault()
 		if !slices.Contains(supportedJudgeWhens(), when) {
 			return fmt.Errorf("agent %q: judge %q: unknown when %q (supported: %s)", a.Name, j.Agent, j.When, strings.Join(supportedJudgeWhens(), ", "))
+		}
+	}
+	if a.Band != nil {
+		if err := a.Band.validate(); err != nil {
+			return fmt.Errorf("agent %q: band: %w", a.Name, err)
 		}
 	}
 	return nil

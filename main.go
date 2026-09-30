@@ -351,19 +351,19 @@ func bandCommand() *cli.Command {
 				return cli.Exit(fmt.Sprintf("band: %v", err), 1)
 			}
 
-			if !cfg.BandEnabled() {
-				return cli.Exit("band: band section is required to run the band command; see examples/band", 1)
-			}
-
 			agent, err := resolveAgent(cfg, cmd.String("agent"))
 			if err != nil {
 				return cli.Exit(fmt.Sprintf("band: %v", err), 1)
 			}
 
+			if !agent.BandEnabled() {
+				return cli.Exit(fmt.Sprintf("band: agent %q has no band section; see examples/band", agent.Name), 1)
+			}
+
 			// The agent API key comes from the configured environment
 			// variable; it must be set and non-empty.
-			bandCfg := cfg.Band
-			envName := bandCfg.APIKeyEnvOrDefault()
+			bandCfg := agent.Band
+			envName := bandCfg.APIKeyEnv
 			apiKey := os.Getenv(envName)
 			if apiKey == "" {
 				return cli.Exit(fmt.Sprintf("band: api_key_env %q is set but the environment variable is empty", envName), 1)
@@ -392,19 +392,18 @@ func bandCommand() *cli.Command {
 			defer stop()
 
 			account, err := band.Run(sigCtx, band.Options{
-				Config:      cfg,
-				Agent:       agent,
-				Stdout:      os.Stdout,
-				Stderr:      os.Stderr,
-				Stream:      !cmd.Bool("no-stream"),
-				ToolOutput:  cmd.Bool("tool-output"),
-				ConfigPath:  cmd.String("config"),
-				Sink:        sink,
-				BandAgentID: bandCfg.AgentID,
-				APIKey:      apiKey,
-				RESTURL:     bandCfg.RESTURLOrDefault(),
-				WSURL:       bandCfg.WSURLOrDefault(),
-				Tracer:      tracer,
+				Config:     cfg,
+				Agent:      agent,
+				Stdout:     os.Stdout,
+				Stderr:     os.Stderr,
+				Stream:     !cmd.Bool("no-stream"),
+				ToolOutput: cmd.Bool("tool-output"),
+				ConfigPath: cmd.String("config"),
+				Sink:       sink,
+				APIKey:     apiKey,
+				RESTURL:    bandCfg.RESTURLOrDefault(),
+				WSURL:      bandCfg.WSURLOrDefault(),
+				Tracer:     tracer,
 			})
 			if err != nil {
 				return cli.Exit(fmt.Sprintf("band: %v", err), 1)
