@@ -143,6 +143,59 @@ func TestRunnerFullFlow(t *testing.T) {
 	}
 }
 
+func TestRunnerRoomAddedFlatPayloadJoinsRoom(t *testing.T) {
+	// Band delivers the room object itself on room_added; the runner must
+	// join the new room's chat_room channel from it, with no decode
+	// diagnostic. A wrapper-shaped payload would break live delivery.
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFake(t, roomListJSON(), nil)
+	llmSrv, llmFactory := newRunnerLLMFake(t)
+	cfg, agent := runnerConfig(t, llmSrv.srv.URL)
+
+	var stderr syncBuffer
+	opts := band.Options{
+		Config:            cfg,
+		Agent:             agent,
+		APIKey:            "k",
+		RESTURL:           rest.srv.URL,
+		WSURL:             "ws://" + ws.addr,
+		Stderr:            &stderr,
+		NewClient:         llmFactory,
+		Getenv:            func(string) string { return "test-key" },
+		ReconnectBase:     5 * time.Millisecond,
+		ReconnectMax:      50 * time.Millisecond,
+		HeartbeatInterval: 30 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := band.Run(ctx, opts)
+		done <- err
+	}()
+
+	ws.awaitSeen(t, 1)
+	ws.pushRoomAdded(t, "room-9")
+
+	waitFor(t, 5*time.Second, func() bool {
+		for _, env := range ws.seenEnvelopes() {
+			if bandUnquote(env[3]) == "phx_join" && bandUnquote(env[2]) == "chat_room:room-9" {
+				return true
+			}
+		}
+		return false
+	})
+	if got := stderr.String(); strings.Contains(got, "room_added") {
+		t.Errorf("stderr = %q, want no room_added decode diagnostic", got)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil on graceful shutdown", err)
+	}
+}
+
 func TestRunnerTracedTurn(t *testing.T) {
 	// One process-level Prefactor session: register and start once, a
 	// turn span per handled message, and the instance finished on

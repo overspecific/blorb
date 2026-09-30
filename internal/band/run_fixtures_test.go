@@ -158,16 +158,18 @@ func (s *runnerWSFake) pushMessageCreated(roomID string, msg band.ChatMessage) {
 	s.push(string(raw))
 }
 
-// pushRoomAdded enqueues one room_added on the rooms topic.
+// pushRoomAdded enqueues one room_added on the rooms topic. Band sends
+// the room object itself, with id at the top level.
 func (s *runnerWSFake) pushRoomAdded(t *testing.T, roomID string) {
 	t.Helper()
-	s.pushEvent("agent_rooms:"+runnerAgentID, "room_added", `{"room":{"id":"`+roomID+`"}}`)
+	s.pushEvent("agent_rooms:"+runnerAgentID, "room_added", `{"id":"`+roomID+`","title":"r"}`)
 }
 
-// pushRoomRemoved enqueues one room_removed on the rooms topic.
+// pushRoomRemoved enqueues one room_removed on the rooms topic, with the
+// same top-level room shape as room_added.
 func (s *runnerWSFake) pushRoomRemoved(t *testing.T, roomID string) {
 	t.Helper()
-	s.pushEvent("agent_rooms:"+runnerAgentID, "room_removed", `{"room":{"id":"`+roomID+`"}}`)
+	s.pushEvent("agent_rooms:"+runnerAgentID, "room_removed", `{"id":"`+roomID+`","title":"r"}`)
 }
 
 // pushClose enqueues one phx_close ending the socket.

@@ -499,34 +499,26 @@ func (st *Runner) pumpUntilDead(ctx context.Context, socket *Socket, roomsTopic 
 func (st *Runner) dispatch(ctx context.Context, socket *Socket, roomsTopic string, ev Event) {
 	switch {
 	case ev.Topic == roomsTopic && ev.Event == "room_added":
-		var payload struct {
-			Room struct {
-				ID string `json:"id"`
-			} `json:"room"`
-		}
-		if err := json.Unmarshal(ev.Payload, &payload); err != nil || payload.Room.ID == "" {
+		roomID, err := roomEventID(ev.Payload)
+		if err != nil {
 			st.diagf("decode room_added on %s (payload %s): %v", roomsTopic, ev.Payload, err)
 			return
 		}
-		if err := st.connectRoom(ctx, socket, roomsTopic, payload.Room.ID); err != nil {
-			st.diagf("room_added %s: %v", payload.Room.ID, err)
+		if err := st.connectRoom(ctx, socket, roomsTopic, roomID); err != nil {
+			st.diagf("room_added %s: %v", roomID, err)
 			return
 		}
-		if err := st.drainRoom(ctx, payload.Room.ID); err != nil {
-			st.diagf("drain %s after room_added: %v", payload.Room.ID, err)
+		if err := st.drainRoom(ctx, roomID); err != nil {
+			st.diagf("drain %s after room_added: %v", roomID, err)
 		}
 
 	case ev.Topic == roomsTopic && ev.Event == "room_removed":
-		var payload struct {
-			Room struct {
-				ID string `json:"id"`
-			} `json:"room"`
-		}
-		if err := json.Unmarshal(ev.Payload, &payload); err != nil || payload.Room.ID == "" {
+		roomID, err := roomEventID(ev.Payload)
+		if err != nil {
 			st.diagf("decode room_removed on %s (payload %s): %v", roomsTopic, ev.Payload, err)
 			return
 		}
-		st.dropRoom(payload.Room.ID)
+		st.dropRoom(roomID)
 
 	case ev.Event == "message_created" && strings.HasPrefix(ev.Topic, "chat_room:"):
 		roomID := strings.TrimPrefix(ev.Topic, "chat_room:")
@@ -541,6 +533,20 @@ func (st *Runner) dispatch(ctx context.Context, socket *Socket, roomsTopic strin
 		}
 		st.enqueue(roomID, msg)
 	}
+}
+
+// roomEventID decodes the room id from a room_added or room_removed
+// payload. Band sends the room object itself, with id at the top level,
+// not wrapped in a "room" object.
+func roomEventID(payload json.RawMessage) (string, error) {
+	var room ChatRoom
+	if err := json.Unmarshal(payload, &room); err != nil {
+		return "", err
+	}
+	if room.ID == "" {
+		return "", errors.New("room payload has no id")
+	}
+	return room.ID, nil
 }
 
 // diagf writes one best-effort diagnostic line; a write failure is
