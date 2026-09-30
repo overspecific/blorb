@@ -316,7 +316,7 @@ func (r *Room) seedHistory(ctx context.Context) error {
 		}
 		history = append(history, llm.NewTextMessage(llm.RoleUser, senderPrefix(m)+m.Content))
 	}
-	r.eng.SeedHistoryForTest(history)
+	r.eng.SeedHistory(history)
 	return nil
 }
 

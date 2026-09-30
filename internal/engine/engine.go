@@ -275,8 +275,10 @@ func (e *Engine) History() []llm.Message {
 	return out
 }
 
-// SeedHistoryForTest replaces the conversation history. Tests only.
-func (e *Engine) SeedHistoryForTest(msgs []llm.Message) {
+// SeedHistory replaces the conversation history with msgs. A frontend
+// that holds prior context (a resumed session) calls it before the first
+// turn; the engine's own turns append to it afterward.
+func (e *Engine) SeedHistory(msgs []llm.Message) {
 	e.history = append([]llm.Message(nil), msgs...)
 }
 

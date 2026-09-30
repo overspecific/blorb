@@ -1094,7 +1094,7 @@ func TestRepairUnansweredToolCallsPreservesCallOrder(t *testing.T) {
 	// Seed history directly: an assistant message with two unanswered tool
 	// calls in non-sorted order. The engine has no mutation API for this,
 	// so call the repair pass directly (white-box).
-	e.SeedHistoryForTest([]llm.Message{
+	e.SeedHistory([]llm.Message{
 		llm.NewTextMessage(llm.RoleUser, "go"),
 		{
 			Role: llm.RoleAssistant,
