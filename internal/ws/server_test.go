@@ -174,21 +174,29 @@ func (s *testServer) sendPing(t *testing.T, payload []byte) {
 	}
 }
 
-// awaitCloseAndMirror reads frames until a close frame arrives, then
-// mirrors it back.
-func (s *testServer) awaitCloseAndMirror(t *testing.T) (uint16, string) {
+// awaitClose reads frames until a close frame arrives and returns its
+// code and reason. It reports errors instead of failing the test so it is
+// safe to call from a helper goroutine. It does not mirror the close: the
+// client does not wait for the peer's close (see ws.Conn.Close).
+func (s *testServer) awaitClose(t *testing.T) (uint16, string, error) {
 	t.Helper()
-	f := s.awaitOpcode(t, ws.OpcodeClose)
-	var code uint16
-	var reason string
-	if len(f.Payload) >= 2 {
-		code = uint16(f.Payload[0])<<8 | uint16(f.Payload[1])
-		reason = string(f.Payload[2:])
+	raw := s.connection(t)
+	for {
+		f, err := srvReadFrame(raw)
+		if err != nil {
+			return 0, "", err
+		}
+		if f.Opcode != ws.OpcodeClose {
+			continue
+		}
+		var code uint16
+		var reason string
+		if len(f.Payload) >= 2 {
+			code = uint16(f.Payload[0])<<8 | uint16(f.Payload[1])
+			reason = string(f.Payload[2:])
+		}
+		return code, reason, nil
 	}
-	if err := srvWriteFrame(s.connection(t), ws.Frame{FIN: true, Opcode: ws.OpcodeClose, Payload: f.Payload}); err != nil {
-		t.Fatalf("server mirror close: %v", err)
-	}
-	return code, reason
 }
 
 // kill drops the connection abruptly.

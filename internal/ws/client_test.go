@@ -133,21 +133,30 @@ func TestClientCloseHandshake(t *testing.T) {
 		t.Fatalf("Dial error = %v, want nil", err)
 	}
 
-	// The server mirrors the close concurrently: the client drains for
-	// the peer's close right after sending its own.
-	mirrored := make(chan [2]any, 1)
+	// The server reads the close frame the client sends. The client does
+	// not wait for a mirrored close (it shuts the connection down as soon
+	// as the frame is written), so only the frame's arrival is asserted.
+	type closeResult struct {
+		code   uint16
+		reason string
+		err    error
+	}
+	closed := make(chan closeResult, 1)
 	go func() {
-		code, reason := srv.awaitCloseAndMirror(t)
-		mirrored <- [2]any{code, reason}
+		code, reason, err := srv.awaitClose(t)
+		closed <- closeResult{code: code, reason: reason, err: err}
 	}()
 
 	if err := conn.Close(1000, "done"); err != nil {
 		t.Fatalf("Close error = %v, want nil", err)
 	}
 	select {
-	case got := <-mirrored:
-		if got[0] != uint16(1000) || got[1] != "done" {
-			t.Errorf("server saw close (%v, %q), want (1000, \"done\")", got[0], got[1])
+	case got := <-closed:
+		if got.err != nil {
+			t.Fatalf("server reading close: %v", got.err)
+		}
+		if got.code != uint16(1000) || got.reason != "done" {
+			t.Errorf("server saw close (%d, %q), want (1000, \"done\")", got.code, got.reason)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the server to see the close frame")
