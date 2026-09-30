@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/engine"
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/logging"
+	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/usage"
 )
 
@@ -65,6 +67,11 @@ type Options struct {
 	HeartbeatInterval time.Duration
 	ReconnectBase     time.Duration
 	ReconnectMax      time.Duration
+	// Tracer, when non-nil, records the session to Prefactor: one agent
+	// instance for the process, one turn span per handled message.
+	// Tracing is a hard dependency like run and chat: a tracing failure
+	// fails the turn, and a platform terminate stops the process.
+	Tracer *prefactor.Tracer
 }
 
 // Runner is one Run's live state: the shared REST client, the current
@@ -89,6 +96,13 @@ type Runner struct {
 	// sessionAccount accumulates the session's usage: every engine
 	// EventUsage event across rooms, subagents, and judges.
 	sessionAccount *usage.Account
+
+	// trace is the Prefactor session shared by every room (nil when
+	// tracing is off); terminated reports a platform terminate, and
+	// onTerminate cancels the run so the pump stops.
+	trace       *traceSession
+	terminated  atomic.Bool
+	onTerminate func()
 }
 
 // roomState is one room's worker: the per-room runtime, its inbound
@@ -120,35 +134,60 @@ func Run(ctx context.Context, opts Options) (*usage.Account, error) {
 		return &usage.Account{}, fmt.Errorf("validate agent api key: %w", err)
 	}
 
+	// runCtx is ctx plus a platform-terminate cancel: a terminate stops
+	// the pump and the loop without looking like a caller cancellation.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
 	st := &Runner{
 		opts:           opts,
 		client:         client,
 		diag:           opts.Stderr,
-		rootCtx:        ctx,
+		rootCtx:        runCtx,
 		rooms:          map[string]*roomState{},
 		reconnectBase:  opts.ReconnectBase,
 		sessionAccount: &usage.Account{},
+		trace:          newTraceSession(opts.Tracer),
+	}
+	st.onTerminate = func() {
+		st.terminated.Store(true)
+		cancelRun()
 	}
 	defer st.shutdownRooms()
 
 	for {
-		err := st.connectAndServe(ctx, profile)
-		if err == nil {
-			return st.sessionAccount, nil // graceful shutdown
-		}
-		if ctx.Err() != nil {
-			return st.sessionAccount, nil
+		err := st.connectAndServe(runCtx, profile)
+		if err == nil || runCtx.Err() != nil {
+			return st.sessionAccount, st.finishSession()
 		}
 		// 4. Any socket death reconnects with backoff: the platform's
 		// last-connection-wins policy evicts the stale connection
 		// server-side, so reconnecting is always safe.
 		wait := st.nextBackoff()
 		select {
-		case <-ctx.Done():
-			return st.sessionAccount, nil
+		case <-runCtx.Done():
+			return st.sessionAccount, st.finishSession()
 		case <-time.After(wait):
 		}
 	}
+}
+
+// finishSession closes the Prefactor session when tracing is on and the
+// platform did not terminate it (a terminate is already recorded
+// server-side, and a second finish would be rejected). The finish uses a
+// background context: when the run ended by ctx cancellation the run ctx
+// is already dead, and a clean exit must still record its terminal state.
+func (st *Runner) finishSession() error {
+	if st.opts.Tracer == nil || st.terminated.Load() {
+		return nil
+	}
+	if st.trace == nil || !st.trace.opened.Load() {
+		return nil
+	}
+	if err := st.opts.Tracer.FinishSession(context.Background(), prefactor.InstanceComplete); err != nil {
+		return fmt.Errorf("finish prefactor session: %w", err)
+	}
+	return nil
 }
 
 // applyDefaults fills the timing knobs' zero values.
@@ -266,6 +305,7 @@ func (st *Runner) connectRoom(ctx context.Context, socket *Socket, roomsTopic, r
 		st.mu.Unlock()
 		return fmt.Errorf("build room %s: %w", roomID, err)
 	}
+	room.setTracer(st.trace, st.opts.Tracer, st.onTerminate)
 	roomCtx, cancel := context.WithCancel(st.rootCtx)
 	state := &roomState{room: room, msgs: make(chan ChatMessage, roomMsgBuffer), cancel: cancel}
 	st.rooms[roomID] = state

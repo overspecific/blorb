@@ -12,6 +12,7 @@ import (
 	"github.com/overspecific/blorb/internal/band"
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/prefactor"
 )
 
 // runnerConfig points the config's provider base_url at the LLM fake so
@@ -139,6 +140,129 @@ func TestRunnerFullFlow(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run error = %v, want nil on graceful shutdown", err)
+	}
+}
+
+func TestRunnerTracedTurn(t *testing.T) {
+	// One process-level Prefactor session: register and start once, a
+	// turn span per handled message, and the instance finished on
+	// shutdown.
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFake(t, roomListJSON("room-1"), map[string][]string{
+		"room-1": drainBodies("hello"),
+	})
+	llmSrv, llmFactory := newRunnerLLMFake(t)
+	cfg, agent := runnerConfig(t, llmSrv.srv.URL)
+	pf := newPFFake(t)
+
+	opts := band.Options{
+		Config:            cfg,
+		Agent:             agent,
+		Stderr:            io.Discard,
+		BandAgentID:       runnerAgentID,
+		APIKey:            "k",
+		RESTURL:           rest.srv.URL,
+		WSURL:             "ws://" + ws.addr,
+		NewClient:         llmFactory,
+		Getenv:            func(string) string { return "test-key" },
+		ReconnectBase:     5 * time.Millisecond,
+		ReconnectMax:      50 * time.Millisecond,
+		HeartbeatInterval: 30 * time.Millisecond,
+		Tracer: prefactor.NewTracer(prefactor.TracerConfig{
+			Client:    prefactor.New(prefactor.Config{BaseURL: pf.srv.URL, Token: "t"}),
+			AgentName: agent.Name,
+		}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := band.Run(ctx, opts)
+		done <- err
+	}()
+
+	waitFor(t, 5*time.Second, func() bool {
+		return len(rest.sentMessages()) == 1 && pf.count("/agent_instance/register") == 1
+	})
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil on graceful shutdown", err)
+	}
+	if got := pf.count("/agent_instance/register"); got != 1 {
+		t.Errorf("register calls = %d, want 1 (one process session)", got)
+	}
+	if !pf.hasSuffix("/agent_instance/inst-1/start") {
+		t.Error("instance start not called")
+	}
+	if pf.count("/agent_spans") == 0 {
+		t.Error("no turn spans created")
+	}
+	if !pf.hasSuffix("/agent_instance/inst-1/finish") {
+		t.Error("instance finish not called on shutdown")
+	}
+}
+
+func TestRunnerPlatformTerminateStopsCleanly(t *testing.T) {
+	// A platform terminate mid-turn stops the process gracefully and
+	// does not mark the message failed (the instance is marked
+	// server-side).
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFake(t, roomListJSON("room-1"), map[string][]string{
+		"room-1": drainBodies("hello"),
+	})
+	llmSrv, llmFactory := newRunnerLLMFake(t)
+	cfg, agent := runnerConfig(t, llmSrv.srv.URL)
+	pf := newPFFake(t)
+	// Let StartTurn's own two span creates (turn span, user message
+	// span) succeed, then terminate on the turn's first LLM span, so the
+	// terminate is observed inside the turn.
+	pf.setTerminateAfter(2)
+
+	opts := band.Options{
+		Config:            cfg,
+		Agent:             agent,
+		Stderr:            io.Discard,
+		BandAgentID:       runnerAgentID,
+		APIKey:            "k",
+		RESTURL:           rest.srv.URL,
+		WSURL:             "ws://" + ws.addr,
+		NewClient:         llmFactory,
+		Getenv:            func(string) string { return "test-key" },
+		ReconnectBase:     5 * time.Millisecond,
+		ReconnectMax:      50 * time.Millisecond,
+		HeartbeatInterval: 30 * time.Millisecond,
+		Tracer: prefactor.NewTracer(prefactor.TracerConfig{
+			Client:    prefactor.New(prefactor.Config{BaseURL: pf.srv.URL, Token: "t"}),
+			AgentName: agent.Name,
+		}),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := band.Run(context.Background(), opts)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil after a platform terminate", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the terminate to stop the run")
+	}
+
+	// The message was claimed but not failed, and the instance was not
+	// finished a second time (the platform already ended it).
+	for _, m := range rest.marks() {
+		if strings.HasPrefix(m, "failed") {
+			t.Errorf("marks = %v, want no failed mark after terminate", rest.marks())
+		}
+	}
+	if pf.hasSuffix("/agent_instance/inst-1/finish") {
+		t.Error("instance finish called after a platform terminate")
 	}
 }
 

@@ -367,6 +367,16 @@ func bandCommand() *cli.Command {
 				return cli.Exit(fmt.Sprintf("band: %v", err), 1)
 			}
 
+			// Prefactor tracing, when configured, records the whole
+			// process as one agent instance.
+			var tracer *prefactor.Tracer
+			if cfg.PrefactorEnabled() {
+				tracer, err = buildPrefactorTracer(ctx, cfg, agent)
+				if err != nil {
+					return cli.Exit(fmt.Sprintf("band: %v", err), 1)
+				}
+			}
+
 			// SIGINT: the first cancels the context for a graceful stop
 			// (finishing the in-flight message); a second exits
 			// immediately, matching chat's interrupt ladder.
@@ -383,6 +393,7 @@ func bandCommand() *cli.Command {
 				APIKey:      apiKey,
 				RESTURL:     bandCfg.RESTURLOrDefault(),
 				WSURL:       bandCfg.WSURLOrDefault(),
+				Tracer:      tracer,
 			})
 			if err != nil {
 				return cli.Exit(fmt.Sprintf("band: %v", err), 1)

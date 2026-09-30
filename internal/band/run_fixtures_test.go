@@ -17,6 +17,101 @@ import (
 	"github.com/overspecific/blorb/internal/logging"
 )
 
+// pfFake is a minimal Prefactor API server for the runner tracing test:
+// register, start, span create/finish, and instance finish all succeed.
+type pfFake struct {
+	srv *httptest.Server
+
+	mu             sync.Mutex
+	paths          []string
+	terminateAfter int
+	spanCount      int
+}
+
+func newPFFake(t *testing.T) *pfFake {
+	t.Helper()
+	f := &pfFake{terminateAfter: -1}
+	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+// setTerminateAfter makes span creates after the first n answer with a
+// platform terminate, so a terminate can fire mid-turn.
+func (f *pfFake) setTerminateAfter(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminateAfter = n
+}
+
+func (f *pfFake) serve(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.paths = append(f.paths, r.URL.Path)
+	terminate := false
+	if r.URL.Path == "/agent_spans" {
+		f.spanCount++
+		terminate = f.terminateAfter >= 0 && f.spanCount > f.terminateAfter
+	}
+	f.mu.Unlock()
+
+	switch {
+	case terminate:
+		writePF(w, map[string]any{
+			"status":  "success",
+			"control": map[string]any{"terminate": true, "reason": "stop now"},
+			"details": map[string]any{"id": "span-term"},
+		})
+	case r.URL.Path == "/agent_instance/register":
+		writePF(w, map[string]any{"status": "success", "details": map[string]any{"id": "inst-1"}})
+	case r.URL.Path == "/agent_spans":
+		writePF(w, map[string]any{
+			"status":  "success",
+			"control": map[string]any{"terminate": false},
+			"details": map[string]any{"id": "span-1"},
+		})
+	case strings.HasPrefix(r.URL.Path, "/agent_instance/") && strings.HasSuffix(r.URL.Path, "/start"),
+		strings.HasPrefix(r.URL.Path, "/agent_instance/") && strings.HasSuffix(r.URL.Path, "/finish"),
+		strings.HasPrefix(r.URL.Path, "/agent_spans/") && strings.HasSuffix(r.URL.Path, "/finish"):
+		writePF(w, map[string]any{
+			"status":  "success",
+			"control": map[string]any{"terminate": false},
+			"details": map[string]any{"id": "x"},
+		})
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func writePF(w http.ResponseWriter, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// count returns how many calls hit exactly path.
+func (f *pfFake) count(path string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, p := range f.paths {
+		if p == path {
+			n++
+		}
+	}
+	return n
+}
+
+// hasSuffix reports whether any call path ends with suffix.
+func (f *pfFake) hasSuffix(suffix string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.paths {
+		if strings.HasSuffix(p, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // runnerAgentID is this Band agent's own UUID the runner fakes serve.
 const runnerAgentID = "11111111-1111-1111-1111-111111111111"
 

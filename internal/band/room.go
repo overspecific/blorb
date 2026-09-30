@@ -3,6 +3,7 @@ package band
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/overspecific/blorb/internal/engine"
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/logging"
+	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/tools"
 )
 
@@ -68,6 +70,19 @@ type Room struct {
 	diag        io.Writer
 	onEvent     func(engine.Event) error
 	judgeRunner *engine.JudgeRunner
+
+	// baseClient is the room's unwrapped LLM client; holder delegates to
+	// it except during a traced turn, when it wraps baseClient in a
+	// tracing client. modelName is recorded on traced LLM spans.
+	baseClient llm.Client
+	holder     *clientHolder
+	modelName  string
+
+	// trace is the process-wide Prefactor session shared by every room;
+	// tracer is its tracer. Both are nil when tracing is off.
+	trace       *traceSession
+	tracer      *prefactor.Tracer
+	onTerminate func()
 
 	// sentThisTurn reports whether band_send_message executed during
 	// the turn in flight, tracked by the executor's callback. Handle
@@ -158,8 +173,14 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 		Sink:      sink,
 	})
 
+	// The engine holds the holder, not the raw client, so a traced turn
+	// can install the tracing wrapper without rebuilding the engine.
+	r.baseClient = llmClient
+	r.holder = &clientHolder{inner: llmClient}
+	r.modelName = model.ModelName
+
 	r.eng = engine.New(engine.EngineConfig{
-		Client: llmClient,
+		Client: r.holder,
 		Tools:  registry,
 		// The system prompt is the agent's own plus the band preamble:
 		// how to behave as one participant of a multi-agent room.
@@ -173,6 +194,15 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 	})
 
 	return r, nil
+}
+
+// setTracer installs the shared Prefactor session and the terminate
+// callback the runner injects after NewRoom. A nil tracer disables
+// tracing for the room.
+func (r *Room) setTracer(session *traceSession, tracer *prefactor.Tracer, onTerminate func()) {
+	r.trace = session
+	r.tracer = tracer
+	r.onTerminate = onTerminate
 }
 
 // clientFactory returns the LLM client factory shared by the room's
@@ -242,15 +272,59 @@ func (r *Room) Handle(ctx context.Context, msg ChatMessage) error {
 		r.bootstrapped = true
 	}
 
+	prompt := senderMessage(msg)
+	events := r.turnEvents()
+
+	// Tracing: one turn span per handled message under the shared
+	// process session. The tracing client wrapper lasts only for the
+	// turn; the holder restores the base client afterward.
+	var turn *prefactor.Turn
+	if r.tracer != nil {
+		if err := r.trace.start(ctx, r.agent.Name, r.registry); err != nil {
+			return r.traceErr(err)
+		}
+		var startErr error
+		turn, startErr = r.tracer.StartTurn(ctx, prompt)
+		if startErr != nil {
+			return r.traceErr(startErr)
+		}
+		r.holder.inner = chat.NewTracingClient(r.baseClient, turn, r.modelName)
+		events = chat.TraceEvent(turn, events)
+	}
+
 	r.sentThisTurn = false
-	final, turnErr := r.eng.RunTurn(ctx, senderMessage(msg), r.turnEvents())
+	final, turnErr := r.eng.RunTurn(ctx, prompt, events)
+
+	if turn != nil {
+		r.holder.inner = r.baseClient
+	}
+
 	if ctx.Err() != nil {
-		// Shutdown: skip both marks so the platform re-serves the
-		// message next start.
+		// Shutdown: cancel the turn span and skip both marks so the
+		// platform re-serves the message next start.
+		if turn != nil {
+			r.cancelTurn(turn)
+		}
 		return ctx.Err()
 	}
 
+	if turn != nil {
+		if err := r.finishTurn(turn, final, turnErr); err != nil {
+			if errors.Is(err, prefactor.ErrTerminated) {
+				turnErr = err
+			} else if turnErr == nil {
+				turnErr = err
+			}
+		}
+	}
+
 	if turnErr != nil {
+		if errors.Is(turnErr, prefactor.ErrTerminated) {
+			// The platform asked us to stop; the instance is marked
+			// server-side, so the message is not failed here.
+			r.signalTerminate()
+			return turnErr
+		}
 		if err := r.client.MarkFailed(ctx, r.roomID, msg.ID, turnErr.Error()); err != nil {
 			r.diagf("mark failed %s: %v", msg.ID, err)
 		}
@@ -274,6 +348,43 @@ func (r *Room) Handle(ctx context.Context, msg ChatMessage) error {
 
 	r.runJudges(ctx, nil)
 	return nil
+}
+
+// traceErr maps a tracing failure to the room's outcome: a platform
+// terminate signals the runner to stop, anything else is a turn failure.
+func (r *Room) traceErr(err error) error {
+	if errors.Is(err, prefactor.ErrTerminated) {
+		r.signalTerminate()
+		return err
+	}
+	return fmt.Errorf("prefactor: %w", err)
+}
+
+// signalTerminate tells the runner the platform asked the process to
+// stop. Safe to call more than once.
+func (r *Room) signalTerminate() {
+	if r.onTerminate != nil {
+		r.onTerminate()
+	}
+}
+
+// finishTurn records the turn's outcome on its span.
+func (r *Room) finishTurn(turn *prefactor.Turn, final string, turnErr error) error {
+	if turnErr != nil {
+		if errors.Is(turnErr, prefactor.ErrTerminated) {
+			return turnErr
+		}
+		return turn.Fail(turnErr)
+	}
+	return turn.Complete(final)
+}
+
+// cancelTurn closes a turn span for a cancelled turn; a tracing failure
+// here is logged, not fatal.
+func (r *Room) cancelTurn(turn *prefactor.Turn) {
+	if err := turn.Cancel(); err != nil && !errors.Is(err, prefactor.ErrTerminated) {
+		r.diagf("cancel prefactor turn: %v", err)
+	}
 }
 
 // seenMessage records a message id and reports whether it was seen
