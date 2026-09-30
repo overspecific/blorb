@@ -25,6 +25,14 @@ const (
 	DefaultReconnectMax      = 30 * time.Second
 )
 
+// roomMsgBuffer bounds how many queued messages one room worker holds
+// before an enqueue blocks.
+const roomMsgBuffer = 64
+
+// shutdownGrace bounds how long shutdown waits for in-flight room work
+// before closing rooms out from under their workers.
+const shutdownGrace = 5 * time.Second
+
 // Options configure the long-running band frontend.
 type Options struct {
 	Config config.Config
@@ -66,9 +74,13 @@ type Runner struct {
 	client *Client
 	diag   io.Writer
 
-	mu      sync.Mutex
-	rooms   map[string]*Room
-	cancels map[string]context.CancelFunc
+	// rootCtx is Run's context. Each room worker derives a cancellable
+	// context from it, so workers outlive individual socket connections.
+	rootCtx context.Context
+
+	mu    sync.Mutex
+	rooms map[string]*roomState
+	wg    sync.WaitGroup
 
 	// reconnectBase doubles to ReconnectMax across failures and resets
 	// after a successful join round.
@@ -77,6 +89,14 @@ type Runner struct {
 	// sessionAccount accumulates the session's usage: every engine
 	// EventUsage event across rooms, subagents, and judges.
 	sessionAccount *usage.Account
+}
+
+// roomState is one room's worker: the per-room runtime, its inbound
+// message queue, and the cancel that stops the worker.
+type roomState struct {
+	room   *Room
+	msgs   chan ChatMessage
+	cancel context.CancelFunc
 }
 
 // Run is the long-running frontend loop: validate the key, connect the
@@ -104,12 +124,12 @@ func Run(ctx context.Context, opts Options) (*usage.Account, error) {
 		opts:           opts,
 		client:         client,
 		diag:           opts.Stderr,
-		rooms:          map[string]*Room{},
-		cancels:        map[string]context.CancelFunc{},
+		rootCtx:        ctx,
+		rooms:          map[string]*roomState{},
 		reconnectBase:  opts.ReconnectBase,
 		sessionAccount: &usage.Account{},
 	}
-	defer st.closeAllRooms()
+	defer st.shutdownRooms()
 
 	for {
 		err := st.connectAndServe(ctx, profile)
@@ -200,23 +220,27 @@ func (st *Runner) connectAndServe(ctx context.Context, profile AgentProfile) err
 	return st.pumpUntilDead(ctx, socket, roomsTopic)
 }
 
-// room returns the room state for roomID, or nil.
+// room returns the room runtime for roomID, or nil.
 func (st *Runner) room(roomID string) *Room {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.rooms[roomID]
+	if s, ok := st.rooms[roomID]; ok {
+		return s.room
+	}
+	return nil
 }
 
-// connectRoom creates the room's state machine and joins its channel.
-// An existing state is reused (a reconnect re-joins without rebuilding).
+// connectRoom creates the room's state machine and worker and joins its
+// channel. An existing state is reused (a reconnect re-joins without
+// rebuilding or restarting the worker).
 func (st *Runner) connectRoom(ctx context.Context, socket *Socket, roomsTopic, roomID string) error {
 	topic := "chat_room:" + roomID
 	if err := socket.Join(ctx, topic); err != nil {
 		return fmt.Errorf("join %s: %w", topic, err)
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	if _, ok := st.rooms[roomID]; ok {
+		st.mu.Unlock()
 		return nil
 	}
 	room, err := NewRoom(RoomOptions{
@@ -239,46 +263,99 @@ func (st *Runner) connectRoom(ctx context.Context, socket *Socket, roomsTopic, r
 		Getenv: st.opts.Getenv,
 	})
 	if err != nil {
+		st.mu.Unlock()
 		return fmt.Errorf("build room %s: %w", roomID, err)
 	}
-	st.rooms[roomID] = room
+	roomCtx, cancel := context.WithCancel(st.rootCtx)
+	state := &roomState{room: room, msgs: make(chan ChatMessage, roomMsgBuffer), cancel: cancel}
+	st.rooms[roomID] = state
+	st.mu.Unlock()
+
+	st.wg.Add(1)
+	go st.serveRoom(roomCtx, state)
 	return nil
 }
 
-// dropRoom cancels the room's worker, closes the room, and drops its
-// state.
+// serveRoom processes one room's queued messages until its context is
+// cancelled, then closes the room. One worker per room means a slow turn
+// in one room never blocks another room or the socket pump.
+func (st *Runner) serveRoom(ctx context.Context, state *roomState) {
+	defer st.wg.Done()
+	defer state.room.Close()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-state.msgs:
+			if err := state.room.Handle(ctx, msg); err != nil && ctx.Err() == nil {
+				st.diagf("process %s in %s: %v", msg.ID, state.room.roomID, err)
+			}
+		}
+	}
+}
+
+// enqueue hands one message to the room's worker, blocking while the
+// worker is behind. An unknown room is dropped: its state was torn down.
+// The send honors Run's context so shutdown is never blocked.
+func (st *Runner) enqueue(roomID string, msg ChatMessage) {
+	st.mu.Lock()
+	state := st.rooms[roomID]
+	st.mu.Unlock()
+	if state == nil {
+		return
+	}
+	select {
+	case state.msgs <- msg:
+	case <-st.rootCtx.Done():
+	}
+}
+
+// dropRoom stops the room's worker and drops its state. The worker
+// closes the room after its in-flight turn finishes.
 func (st *Runner) dropRoom(roomID string) {
 	st.mu.Lock()
-	cancel := st.cancels[roomID]
-	room := st.rooms[roomID]
-	delete(st.cancels, roomID)
+	state := st.rooms[roomID]
 	delete(st.rooms, roomID)
 	st.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	if room != nil {
-		room.Close()
+	if state != nil {
+		state.cancel()
 	}
 }
 
-// closeAllRooms closes every room state and releases their registries.
-func (st *Runner) closeAllRooms() {
+// shutdownRooms cancels every room worker and waits (bounded) for their
+// in-flight work, then closes any room the workers did not reach.
+func (st *Runner) shutdownRooms() {
 	st.mu.Lock()
-	rooms := st.rooms
-	st.rooms = map[string]*Room{}
+	states := make([]*roomState, 0, len(st.rooms))
+	for _, s := range st.rooms {
+		states = append(states, s)
+	}
+	st.rooms = map[string]*roomState{}
 	st.mu.Unlock()
-	for _, room := range rooms {
-		room.Close()
+
+	for _, s := range states {
+		s.cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		st.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(shutdownGrace):
+		st.diagf("shutdown: timed out waiting for in-flight room work")
+	}
+	for _, s := range states {
+		s.room.Close()
 	}
 }
 
-// drainRoom claims and processes every queued message until the queue
-// is empty (204). Messages the platform stuck in processing (a crash
-// mid-handle) are re-served here too.
+// drainRoom claims every queued message until the queue is empty (204)
+// and hands each to the room's worker. Messages the platform stuck in
+// processing (a crash mid-handle) are re-served here too.
 func (st *Runner) drainRoom(ctx context.Context, roomID string) error {
-	room := st.room(roomID)
-	if room == nil {
+	if st.room(roomID) == nil {
 		return fmt.Errorf("room %s has no state", roomID)
 	}
 	for {
@@ -289,12 +366,10 @@ func (st *Runner) drainRoom(ctx context.Context, roomID string) error {
 		if msg == nil {
 			return nil
 		}
-		if err := room.Handle(ctx, *msg); err != nil {
-			return fmt.Errorf("process %s: %w", msg.ID, err)
-		}
 		if ctx.Err() != nil {
 			return nil
 		}
+		st.enqueue(roomID, *msg)
 	}
 }
 
@@ -360,8 +435,7 @@ func (st *Runner) dispatch(ctx context.Context, socket *Socket, roomsTopic strin
 
 	case ev.Event == "message_created" && strings.HasPrefix(ev.Topic, "chat_room:"):
 		roomID := strings.TrimPrefix(ev.Topic, "chat_room:")
-		room := st.room(roomID)
-		if room == nil {
+		if st.room(roomID) == nil {
 			// Unknown room: not joined (yet), nothing to do.
 			return
 		}
@@ -370,9 +444,7 @@ func (st *Runner) dispatch(ctx context.Context, socket *Socket, roomsTopic strin
 			st.diagf("decode message_created on %s: %v", ev.Topic, err)
 			return
 		}
-		if err := room.Handle(ctx, msg); err != nil && ctx.Err() == nil {
-			st.diagf("process %s in %s: %v", msg.ID, roomID, err)
-		}
+		st.enqueue(roomID, msg)
 	}
 }
 

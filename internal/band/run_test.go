@@ -2,6 +2,7 @@ package band_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/overspecific/blorb/internal/band"
 	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/llm"
 )
 
 // runnerConfig points the config's provider base_url at the LLM fake so
@@ -138,6 +140,67 @@ func TestRunnerFullFlow(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Run error = %v, want nil on graceful shutdown", err)
 	}
+}
+
+func TestRunnerFailedMessageDoesNotReconnect(t *testing.T) {
+	// A turn failure marks the message failed and keeps the connection:
+	// the runner must not treat one bad message as a socket death.
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFake(t, roomListJSON("room-1"), map[string][]string{
+		"room-1": drainBodies("boom"),
+	})
+	cfg, agent := roomTestConfig()
+
+	opts := band.Options{
+		Config:            cfg,
+		Agent:             agent,
+		Stderr:            io.Discard,
+		BandAgentID:       runnerAgentID,
+		APIKey:            "k",
+		RESTURL:           rest.srv.URL,
+		WSURL:             "ws://" + ws.addr,
+		NewClient:         func(config.Config, config.Agent) (llm.Client, error) { return failingLLMClient{}, nil },
+		ReconnectBase:     5 * time.Millisecond,
+		ReconnectMax:      50 * time.Millisecond,
+		HeartbeatInterval: 30 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := band.Run(ctx, opts)
+		done <- err
+	}()
+
+	waitFor(t, 5*time.Second, func() bool {
+		marks := rest.marks()
+		return len(marks) == 2 && strings.HasPrefix(marks[1], "failed room-1:")
+	})
+
+	// Give a reconnect (if it were going to happen) time to show up.
+	time.Sleep(150 * time.Millisecond)
+	joins := 0
+	for _, env := range ws.seenEnvelopes() {
+		if bandUnquote(env[3]) == "phx_join" && bandUnquote(env[2]) == "agent_rooms:"+runnerAgentID {
+			joins++
+		}
+	}
+	if joins != 1 {
+		t.Errorf("agent_rooms joins = %d, want 1 (no reconnect on a failed message)", joins)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil on graceful shutdown", err)
+	}
+}
+
+// failingLLMClient always fails, to drive a turn failure.
+type failingLLMClient struct{}
+
+func (failingLLMClient) Chat(context.Context, llm.Request) (*llm.Response, error) {
+	return nil, errors.New("llm down")
 }
 
 func TestRunnerInvalidKeyFailsFast(t *testing.T) {
