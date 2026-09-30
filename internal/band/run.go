@@ -42,6 +42,13 @@ type Options struct {
 	Agent config.Agent
 	// Stderr receives operational diagnostics. Nil discards them.
 	Stderr io.Writer
+	// Stdout receives the rooms' agent turn output (assistant text, tool
+	// calls and results, subagent activity), like chat and run print it.
+	// Nil discards it.
+	Stdout io.Writer
+	// ToolOutput shows full parent tool result bodies on Stdout; when
+	// false a successful result shows a size summary instead.
+	ToolOutput bool
 	// NewClient overrides LLM client construction. Tests only; nil
 	// builds the real client from the config.
 	NewClient func(cfg config.Config, agent config.Agent) (llm.Client, error)
@@ -80,6 +87,8 @@ type Runner struct {
 	opts   Options
 	client *Client
 	diag   io.Writer
+	// out is the agent turn output, serialized across rooms.
+	out io.Writer
 
 	// rootCtx is Run's context. Each room worker derives a cancellable
 	// context from it, so workers outlive individual socket connections.
@@ -113,6 +122,19 @@ type roomState struct {
 	cancel context.CancelFunc
 }
 
+// syncWriter serializes writes to an underlying writer so concurrent
+// room workers do not interleave within a single write.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // Run is the long-running frontend loop: validate the key, connect the
 // subscriptions socket, sync the rooms, and dispatch live events until
 // ctx is cancelled or the Prefactor platform terminates the session. A
@@ -144,6 +166,7 @@ func Run(ctx context.Context, opts Options) (*usage.Account, error) {
 		opts:           opts,
 		client:         client,
 		diag:           opts.Stderr,
+		out:            roomOutput(opts.Stdout),
 		rootCtx:        runCtx,
 		rooms:          map[string]*roomState{},
 		reconnectBase:  opts.ReconnectBase,
@@ -171,6 +194,15 @@ func Run(ctx context.Context, opts Options) (*usage.Account, error) {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// roomOutput wraps the turn-output writer so concurrent rooms serialize
+// their writes; a nil writer discards output.
+func roomOutput(w io.Writer) io.Writer {
+	if w == nil {
+		return io.Discard
+	}
+	return &syncWriter{w: w}
 }
 
 // finishSession closes the Prefactor session when tracing is on and the
@@ -291,6 +323,8 @@ func (st *Runner) connectRoom(ctx context.Context, socket *Socket, roomsTopic, r
 		AgentID:     st.opts.BandAgentID,
 		Sink:        st.opts.Sink,
 		Diagnostics: st.diag,
+		Stdout:      st.out,
+		ToolOutput:  st.opts.ToolOutput,
 		NewClient:   st.opts.NewClient,
 		OnEvent: func(ev engine.Event) error {
 			// Usage accounting flows to the session account; anything

@@ -207,12 +207,26 @@ func (f *bandRestFake) marks() []string {
 // responses.
 func newRoom(t *testing.T, f *bandRestFake, llmResp []llm.Response) (*band.Room, *roomLLM) {
 	t.Helper()
-	return newRoomWithDiag(t, f, llmResp, nil)
+	return newRoomFull(t, f, llmResp, nil, nil, false)
 }
 
 // newRoomWithDiag builds a Room like newRoom, sending best-effort
 // diagnostics to diag.
 func newRoomWithDiag(t *testing.T, f *bandRestFake, llmResp []llm.Response, diag io.Writer) (*band.Room, *roomLLM) {
+	t.Helper()
+	return newRoomFull(t, f, llmResp, diag, nil, false)
+}
+
+// newRoomWithOutput builds a Room like newRoom, printing agent turn
+// output to stdout.
+func newRoomWithOutput(t *testing.T, f *bandRestFake, llmResp []llm.Response, stdout io.Writer) (*band.Room, *roomLLM) {
+	t.Helper()
+	return newRoomFull(t, f, llmResp, nil, stdout, false)
+}
+
+// newRoomFull builds a Room against the fake platform with the given
+// sinks and canned LLM responses.
+func newRoomFull(t *testing.T, f *bandRestFake, llmResp []llm.Response, diag, stdout io.Writer, toolOutput bool) (*band.Room, *roomLLM) {
 	t.Helper()
 	cfg, agent := roomTestConfig()
 	client := band.NewClient(f.srv.URL, "k", logging.NewNop())
@@ -224,6 +238,8 @@ func newRoomWithDiag(t *testing.T, f *bandRestFake, llmResp []llm.Response, diag
 		RoomID:      "room-1",
 		AgentID:     "agent-1",
 		Diagnostics: diag,
+		Stdout:      stdout,
+		ToolOutput:  toolOutput,
 		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return llmFake, nil
 		},

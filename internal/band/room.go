@@ -44,6 +44,13 @@ type RoomOptions struct {
 	// Diagnostics receives best-effort operational warnings (failed
 	// event posts, judge failures). Nil discards them.
 	Diagnostics io.Writer
+	// Stdout receives the agent's turn output (assistant text, tool
+	// calls and results, subagent activity), like chat and run print it.
+	// Nil discards it.
+	Stdout io.Writer
+	// ToolOutput shows full parent tool result bodies on Stdout; when
+	// false a successful result shows a size summary instead.
+	ToolOutput bool
 	// OnEvent receives the turn's engine events (usage accounting).
 	// Nil discards them; its errors fail the turn like any onEvent.
 	OnEvent func(engine.Event) error
@@ -60,14 +67,20 @@ type RoomOptions struct {
 // band tools around it, then mark processed or failed. Safe for use by
 // a single goroutine; the runner serializes per room.
 type Room struct {
-	agent       config.Agent
-	cfg         config.Config
-	eng         *engine.Engine
-	client      *Client
-	roomID      string
-	agentID     string
-	registry    *tools.Registry
-	diag        io.Writer
+	agent      config.Agent
+	cfg        config.Config
+	eng        *engine.Engine
+	client     *Client
+	roomID     string
+	agentID    string
+	registry   *tools.Registry
+	diag       io.Writer
+	stdout     io.Writer
+	toolOutput bool
+	// subagentMu guards onSubagent, the per-turn subagent activity
+	// printer installed while a turn is in flight.
+	subagentMu  sync.Mutex
+	onSubagent  func(tools.SubagentEvent) error
 	onEvent     func(engine.Event) error
 	judgeRunner *engine.JudgeRunner
 
@@ -106,16 +119,22 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 	if sink == nil {
 		sink = logging.NewNop()
 	}
+	stdout := opts.Stdout
+	if stdout == nil {
+		stdout = io.Discard
+	}
 
 	r := &Room{
-		agent:   opts.Agent,
-		cfg:     opts.Config,
-		client:  opts.Client,
-		roomID:  opts.RoomID,
-		agentID: opts.AgentID,
-		onEvent: opts.OnEvent,
-		diag:    opts.Diagnostics,
-		seen:    make(map[string]struct{}),
+		agent:      opts.Agent,
+		cfg:        opts.Config,
+		client:     opts.Client,
+		roomID:     opts.RoomID,
+		agentID:    opts.AgentID,
+		onEvent:    opts.OnEvent,
+		diag:       opts.Diagnostics,
+		stdout:     stdout,
+		toolOutput: opts.ToolOutput,
+		seen:       make(map[string]struct{}),
 	}
 
 	newClient := func(cfg config.Config, agent config.Agent) (llm.Client, error) {
@@ -149,6 +168,7 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 			Stream:    false,
 			Sink:      sink,
 		})),
+		tools.WithSubagentEvents(r.subagentEvent),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build tools: %w", err)
@@ -273,7 +293,13 @@ func (r *Room) Handle(ctx context.Context, msg ChatMessage) error {
 	}
 
 	prompt := senderMessage(msg)
-	events := r.turnEvents()
+	// Print the turn to the console like chat and run do, and route
+	// subagent activity to the same printer for this turn.
+	printEvent, onSubagent, flush := chat.Events(r.stdout, r.toolOutput)
+	r.setSubagentPrinter(onSubagent)
+	defer r.setSubagentPrinter(nil)
+	defer flush()
+	events := r.turnEvents(printEvent)
 
 	// Tracing: one turn span per handled message under the shared
 	// process session. The tracing client wrapper lasts only for the
@@ -462,12 +488,19 @@ func senderMessage(m ChatMessage) string {
 	return senderPrefix(m) + m.Content
 }
 
-// turnEvents wraps the runner's onEvent with the room's event posting:
-// tool_call and tool_result moments are posted to the room as Band
-// events (best-effort: a failure is logged, never fails the turn);
-// everything else flows through to the caller's accounting.
-func (r *Room) turnEvents() func(engine.Event) error {
+// turnEvents wraps the runner's onEvent with the room's event posting
+// and the console printer: the printer renders the agent's activity
+// (assistant text, tool calls and results), tool_call and tool_result
+// moments are posted to the room as Band events (best-effort: a failure
+// is logged, never fails the turn), and everything flows through to the
+// caller's accounting.
+func (r *Room) turnEvents(printEvent func(engine.Event) error) func(engine.Event) error {
 	return func(ev engine.Event) error {
+		if printEvent != nil {
+			if err := printEvent(ev); err != nil {
+				return err
+			}
+		}
 		switch ev.Kind {
 		case engine.EventToolCall:
 			payload, err := json.Marshal(map[string]any{"name": ev.Name, "arguments": json.RawMessage(ev.Args)})
@@ -493,6 +526,26 @@ func (r *Room) turnEvents() func(engine.Event) error {
 		}
 		return nil
 	}
+}
+
+// setSubagentPrinter installs the per-turn subagent activity printer.
+func (r *Room) setSubagentPrinter(f func(tools.SubagentEvent) error) {
+	r.subagentMu.Lock()
+	r.onSubagent = f
+	r.subagentMu.Unlock()
+}
+
+// subagentEvent routes a subagent activity event to the current turn's
+// printer, if one is installed. It is the registry's callback and is
+// best-effort like all event delivery.
+func (r *Room) subagentEvent(ev tools.SubagentEvent) error {
+	r.subagentMu.Lock()
+	f := r.onSubagent
+	r.subagentMu.Unlock()
+	if f == nil {
+		return nil
+	}
+	return f(ev)
 }
 
 // runJudges runs the agent's end-timing judges on the turn transcript,

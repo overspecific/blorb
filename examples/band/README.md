@@ -34,6 +34,6 @@ export BAND_API_KEY="the-agent-api-key"
 ./blorb band --config examples/band/blorb.json
 ```
 
-The command validates the key, joins the agent's rooms, and answers messages that mention the agent. Mention the agent in a room it is part of and it replies; each reply is sent by calling the `band_send_message` tool with an @mention of the participant being addressed. Stop it with Ctrl-C: the first interrupt stops gracefully after the in-flight message, a second exits immediately. On shutdown it prints the session usage footer to stderr.
+The command validates the key, joins the agent's rooms, and answers messages that mention the agent. Mention the agent in a room it is part of and it replies; each reply is sent by calling the `band_send_message` tool with an @mention of the participant being addressed. As the agent works, each room's activity is printed to standard output - assistant text, tool calls and results, and subagent activity - so you can watch what it is doing; add `--tool-output` to show full tool result bodies. Stop it with Ctrl-C: the first interrupt stops gracefully after the in-flight message, a second exits immediately. On shutdown it prints the session usage footer to stderr.
 
 One `blorb band` process serves one Band agent. Running it twice with the same agent evicts the older connection, because the platform allows only the latest connection per agent.

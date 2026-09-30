@@ -236,6 +236,29 @@ func TestRoomDiagnosticsWritten(t *testing.T) {
 	}
 }
 
+func TestRoomPrintsTurnOutput(t *testing.T) {
+	// The room renders the agent's activity to its Stdout like chat and
+	// run do: assistant blocks and tool call headings with arguments.
+	f := newBandRestFake(t, "[]")
+	var out strings.Builder
+	room, _ := newRoomWithOutput(t, f, []llm.Response{
+		roomToolCallResp("band_send_message", `{"content":"the reply","mentions":[{"id":"u-1"}]}`),
+		roomTextResp(""),
+	}, &out)
+
+	if err := handleMsg(t, room, mentionMsg("u-1", "User One", "question")); err != nil {
+		t.Fatalf("Handle error = %v, want nil", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, ">>> Tool: band_send_message") {
+		t.Errorf("output = %q, want a tool heading", got)
+	}
+	if !strings.Contains(got, "the reply") {
+		t.Errorf("output = %q, want the tool call arguments", got)
+	}
+}
+
 func TestRoomJudgesRunAfterTurn(t *testing.T) {
 	// A judge in the config: the room runs it after a successful turn.
 	// The judge's own canned LLM is the room's, so the judged turn and

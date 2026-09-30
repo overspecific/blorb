@@ -336,6 +336,10 @@ func bandCommand() *cli.Command {
 				Name:  "agent",
 				Usage: "Name of the agent to run; defaults to the config's default_agent",
 			},
+			&cli.BoolFlag{
+				Name:  "tool-output",
+				Usage: "Show the full output of tool results (subagent output is always shown)",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			cfg, err := config.Load(cmd.String("config"))
@@ -386,7 +390,9 @@ func bandCommand() *cli.Command {
 			account, err := band.Run(sigCtx, band.Options{
 				Config:      cfg,
 				Agent:       agent,
+				Stdout:      os.Stdout,
 				Stderr:      os.Stderr,
+				ToolOutput:  cmd.Bool("tool-output"),
 				ConfigPath:  cmd.String("config"),
 				Sink:        sink,
 				BandAgentID: bandCfg.AgentID,
