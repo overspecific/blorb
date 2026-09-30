@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -263,6 +264,59 @@ func TestRunnerPlatformTerminateStopsCleanly(t *testing.T) {
 	}
 	if pf.hasSuffix("/agent_instance/inst-1/finish") {
 		t.Error("instance finish called after a platform terminate")
+	}
+}
+
+func TestRunnerTracedSessionFailureMarksFailed(t *testing.T) {
+	// A tracing session that cannot start is a hard dependency failure:
+	// the message is marked failed so the platform is told.
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFake(t, roomListJSON("room-1"), map[string][]string{
+		"room-1": drainBodies("hello"),
+	})
+	llmSrv, llmFactory := newRunnerLLMFake(t)
+	cfg, agent := runnerConfig(t, llmSrv.srv.URL)
+	pf := newPFFake(t)
+	pf.setRegisterFail(http.StatusInternalServerError)
+
+	opts := band.Options{
+		Config:            cfg,
+		Agent:             agent,
+		Stderr:            io.Discard,
+		BandAgentID:       runnerAgentID,
+		APIKey:            "k",
+		RESTURL:           rest.srv.URL,
+		WSURL:             "ws://" + ws.addr,
+		NewClient:         llmFactory,
+		Getenv:            func(string) string { return "test-key" },
+		ReconnectBase:     5 * time.Millisecond,
+		ReconnectMax:      50 * time.Millisecond,
+		HeartbeatInterval: 30 * time.Millisecond,
+		Tracer: prefactor.NewTracer(prefactor.TracerConfig{
+			Client:    prefactor.New(prefactor.Config{BaseURL: pf.srv.URL, Token: "t"}),
+			AgentName: agent.Name,
+		}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := band.Run(ctx, opts)
+		done <- err
+	}()
+
+	waitFor(t, 5*time.Second, func() bool {
+		for _, m := range rest.marks() {
+			if strings.HasPrefix(m, "failed room-1:") && strings.Contains(m, "prefactor:") {
+				return true
+			}
+		}
+		return false
+	})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil on graceful shutdown", err)
 	}
 }
 

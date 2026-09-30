@@ -26,6 +26,7 @@ type pfFake struct {
 	paths          []string
 	terminateAfter int
 	spanCount      int
+	registerFail   int
 }
 
 func newPFFake(t *testing.T) *pfFake {
@@ -44,6 +45,13 @@ func (f *pfFake) setTerminateAfter(n int) {
 	f.terminateAfter = n
 }
 
+// setRegisterFail makes instance registration answer with status.
+func (f *pfFake) setRegisterFail(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.registerFail = status
+}
+
 func (f *pfFake) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.paths = append(f.paths, r.URL.Path)
@@ -52,7 +60,15 @@ func (f *pfFake) serve(w http.ResponseWriter, r *http.Request) {
 		f.spanCount++
 		terminate = f.terminateAfter >= 0 && f.spanCount > f.terminateAfter
 	}
+	registerFail := f.registerFail
 	f.mu.Unlock()
+
+	if registerFail != 0 && r.URL.Path == "/agent_instance/register" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(registerFail)
+		_, _ = w.Write([]byte(`{"error":{"code":"boom","message":"register refused"}}`))
+		return
+	}
 
 	switch {
 	case terminate:

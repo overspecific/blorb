@@ -281,12 +281,12 @@ func (r *Room) Handle(ctx context.Context, msg ChatMessage) error {
 	var turn *prefactor.Turn
 	if r.tracer != nil {
 		if err := r.trace.start(ctx, r.agent.Name, r.registry); err != nil {
-			return r.traceErr(err)
+			return r.failTracing(ctx, msg, err)
 		}
 		var startErr error
 		turn, startErr = r.tracer.StartTurn(ctx, prompt)
 		if startErr != nil {
-			return r.traceErr(startErr)
+			return r.failTracing(ctx, msg, startErr)
 		}
 		r.holder.inner = chat.NewTracingClient(r.baseClient, turn, r.modelName)
 		events = chat.TraceEvent(turn, events)
@@ -350,14 +350,20 @@ func (r *Room) Handle(ctx context.Context, msg ChatMessage) error {
 	return nil
 }
 
-// traceErr maps a tracing failure to the room's outcome: a platform
-// terminate signals the runner to stop, anything else is a turn failure.
-func (r *Room) traceErr(err error) error {
+// failTracing maps a tracing failure before the turn starts to the
+// message's outcome: a platform terminate stops the process without
+// failing the message; anything else marks the message failed so the
+// platform is told.
+func (r *Room) failTracing(ctx context.Context, msg ChatMessage, err error) error {
 	if errors.Is(err, prefactor.ErrTerminated) {
 		r.signalTerminate()
 		return err
 	}
-	return fmt.Errorf("prefactor: %w", err)
+	wrapped := fmt.Errorf("prefactor: %w", err)
+	if markErr := r.client.MarkFailed(ctx, r.roomID, msg.ID, wrapped.Error()); markErr != nil {
+		r.diagf("mark failed %s: %v", msg.ID, markErr)
+	}
+	return wrapped
 }
 
 // signalTerminate tells the runner the platform asked the process to
