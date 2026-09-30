@@ -197,10 +197,11 @@ func (s *Socket) roundTrip(ctx context.Context, topic, event string, payload any
 	}
 }
 
-// send encodes and writes one envelope. Callers hold whatever
-// serialization they need; the ws.Conn already serializes writers, so
-// this is lock-free here.
-func (s *Socket) send(joinRef, ref, topic, event string, payload any) error {
+// send encodes and writes one envelope. joinRef is any JSON value: a
+// string for channel messages, nil for heartbeats (the phoenix topic
+// takes a null join_ref). Callers hold whatever serialization they need;
+// the ws.Conn already serializes writers, so this is lock-free here.
+func (s *Socket) send(joinRef any, ref, topic, event string, payload any) error {
 	body, err := json.Marshal([]any{joinRef, ref, topic, event, payload})
 	if err != nil {
 		return fmt.Errorf("encode %s envelope: %w", event, err)
@@ -348,7 +349,7 @@ func (s *Socket) heartbeatLoop() {
 			s.writeMu.Lock()
 			s.nextRef++
 			ref := strconv.Itoa(s.nextRef)
-			err := s.send("", ref, "phoenix", "heartbeat", map[string]any{})
+			err := s.send(nil, ref, "phoenix", "heartbeat", map[string]any{})
 			s.writeMu.Unlock()
 			if err != nil {
 				s.shutdown(fmt.Errorf("heartbeat: %w", err))

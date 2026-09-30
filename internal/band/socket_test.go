@@ -77,11 +77,15 @@ func TestHeartbeatsArrive(t *testing.T) {
 
 	srv.awaitSeen(t, 2)
 
-	// Heartbeats go to the phoenix topic with the heartbeat event.
+	// Heartbeats go to the phoenix topic with the heartbeat event and a
+	// null join_ref, per the Phoenix protocol.
 	found := false
 	for _, env := range srv.seenEnvelopes() {
 		if bandUnquote(env[2]) == "phoenix" && bandUnquote(env[3]) == "heartbeat" {
 			found = true
+			if got := string(env[0]); got != "null" {
+				t.Errorf("heartbeat join_ref = %s, want null", got)
+			}
 		}
 	}
 	if !found {
