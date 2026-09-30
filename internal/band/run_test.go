@@ -320,6 +320,63 @@ func TestRunnerTracedSessionFailureMarksFailed(t *testing.T) {
 	}
 }
 
+func TestRunnerStopsDrainingARepeatedMessage(t *testing.T) {
+	// The platform re-serves failed messages from /next. A message this
+	// process already handled must stop the drain, not loop on it.
+	ws := newRunnerWSFake(t)
+	rest := newRunnerRestFake(t, roomListJSON("room-1"), nil)
+	rest.repeat = map[string]string{"room-1": drainBodies("boom")[0]}
+	cfg, agent := roomTestConfig()
+
+	opts := band.Options{
+		Config:            cfg,
+		Agent:             agent,
+		Stderr:            io.Discard,
+		BandAgentID:       runnerAgentID,
+		APIKey:            "k",
+		RESTURL:           rest.srv.URL,
+		WSURL:             "ws://" + ws.addr,
+		NewClient:         func(config.Config, config.Agent) (llm.Client, error) { return failingLLMClient{}, nil },
+		ReconnectBase:     5 * time.Millisecond,
+		ReconnectMax:      50 * time.Millisecond,
+		HeartbeatInterval: 30 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := band.Run(ctx, opts)
+		done <- err
+	}()
+
+	waitFor(t, 5*time.Second, func() bool {
+		marks := rest.marks()
+		return len(marks) >= 2 && strings.HasPrefix(marks[1], "failed room-1:")
+	})
+
+	// Give a runaway drain time to hammer /next, then assert it stopped.
+	time.Sleep(200 * time.Millisecond)
+	if got := rest.nextCalls(); got > 10 {
+		t.Errorf("/messages/next calls = %d, want the drain to stop on a repeated message", got)
+	}
+	// The repeated id was deduplicated: one processing attempt only.
+	proc := 0
+	for _, m := range rest.marks() {
+		if m == "processing room-1" {
+			proc++
+		}
+	}
+	if proc != 1 {
+		t.Errorf("processing marks = %d, want 1 across the repeated delivery", proc)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil on graceful shutdown", err)
+	}
+}
+
 func TestRunnerFailedMessageDoesNotReconnect(t *testing.T) {
 	// A turn failure marks the message failed and keeps the connection:
 	// the runner must not treat one bad message as a socket death.

@@ -190,6 +190,11 @@ type runnerRestFake struct {
 
 	// next scripts per-room /messages/next drain queues.
 	next map[string][]string
+
+	// repeat, when set for a room, makes /messages/next return the same
+	// body every time (never 204), modelling the platform re-serving a
+	// failed message.
+	repeat map[string]string
 }
 
 // contextJSON renders one room's scripted /context body: the send
@@ -327,6 +332,10 @@ func (f *runnerRestFake) noteMark(kind string) {
 func (f *runnerRestFake) serveNext(w http.ResponseWriter, roomID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if body, ok := f.repeat[roomID]; ok {
+		writeData(w, http.StatusOK, body)
+		return
+	}
 	queue := f.next[roomID]
 	if len(queue) == 0 {
 		w.WriteHeader(http.StatusNoContent)
@@ -334,6 +343,19 @@ func (f *runnerRestFake) serveNext(w http.ResponseWriter, roomID string) {
 	}
 	f.next[roomID] = queue[1:]
 	writeData(w, http.StatusOK, queue[0])
+}
+
+// nextCalls returns how many /messages/next calls the fake has served.
+func (f *runnerRestFake) nextCalls() int {
+	f.allMu.Lock()
+	defer f.allMu.Unlock()
+	n := 0
+	for _, p := range f.all {
+		if strings.HasSuffix(p, "/messages/next") {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *runnerRestFake) sentMessages() []bandSent {

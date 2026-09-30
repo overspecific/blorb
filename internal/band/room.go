@@ -410,6 +410,15 @@ func (r *Room) seenMessage(id string) bool {
 	return false
 }
 
+// hasSeen reports whether a message id was recorded already, without
+// recording it.
+func (r *Room) hasSeen(id string) bool {
+	r.seenMu.Lock()
+	defer r.seenMu.Unlock()
+	_, ok := r.seen[id]
+	return ok
+}
+
 // seedHistory converts Band's room context into engine history: other
 // participants' text messages become user messages prefixed with the
 // sender's name (falling back to the sender id), the agent's own text

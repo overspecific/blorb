@@ -394,9 +394,13 @@ func (st *Runner) shutdownRooms() {
 
 // drainRoom claims every queued message until the queue is empty (204)
 // and hands each to the room's worker. Messages the platform stuck in
-// processing (a crash mid-handle) are re-served here too.
+// processing (a crash mid-handle) are re-served here too. A message this
+// process already handled stops the pass: the platform also re-serves
+// failed messages, and re-claiming one would loop forever. Newer backlog
+// is served on the next reconnect or live push.
 func (st *Runner) drainRoom(ctx context.Context, roomID string) error {
-	if st.room(roomID) == nil {
+	room := st.room(roomID)
+	if room == nil {
 		return fmt.Errorf("room %s has no state", roomID)
 	}
 	for {
@@ -408,6 +412,9 @@ func (st *Runner) drainRoom(ctx context.Context, roomID string) error {
 			return nil
 		}
 		if ctx.Err() != nil {
+			return nil
+		}
+		if room.hasSeen(msg.ID) {
 			return nil
 		}
 		st.enqueue(roomID, *msg)
