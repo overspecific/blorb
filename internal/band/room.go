@@ -99,6 +99,7 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 		roomID:  opts.RoomID,
 		agentID: opts.AgentID,
 		onEvent: opts.OnEvent,
+		diag:    opts.Diagnostics,
 		seen:    make(map[string]struct{}),
 	}
 

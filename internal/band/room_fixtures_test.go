@@ -90,6 +90,10 @@ type bandRestFake struct {
 	markLog []string
 	sent    []bandSent
 	events  []bandPostedEvent
+
+	// eventsStatus, when non-zero, is the HTTP status the events
+	// endpoint answers, to exercise the best-effort diagnostic path.
+	eventsStatus int
 }
 
 type bandSent struct {
@@ -147,7 +151,12 @@ func bandHandler(t *testing.T, f *bandRestFake, contextPage string) http.Handler
 				MessageType: wire.Event.MessageType,
 				Metadata:    string(wire.Event.Metadata),
 			})
+			status := f.eventsStatus
 			f.mu.Unlock()
+			if status != 0 {
+				writeError(w, status, "EVENT_REJECTED", "no events now", "req-1")
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(r.URL.Path, "/context"):
 			writeData(w, http.StatusOK, contextPage)
@@ -198,15 +207,23 @@ func (f *bandRestFake) marks() []string {
 // responses.
 func newRoom(t *testing.T, f *bandRestFake, llmResp []llm.Response) (*band.Room, *roomLLM) {
 	t.Helper()
+	return newRoomWithDiag(t, f, llmResp, nil)
+}
+
+// newRoomWithDiag builds a Room like newRoom, sending best-effort
+// diagnostics to diag.
+func newRoomWithDiag(t *testing.T, f *bandRestFake, llmResp []llm.Response, diag io.Writer) (*band.Room, *roomLLM) {
+	t.Helper()
 	cfg, agent := roomTestConfig()
 	client := band.NewClient(f.srv.URL, "k", logging.NewNop())
 	llmFake := &roomLLM{responses: llmResp}
 	room, err := band.NewRoom(band.RoomOptions{
-		Config:  cfg,
-		Agent:   agent,
-		Client:  client,
-		RoomID:  "room-1",
-		AgentID: "agent-1",
+		Config:      cfg,
+		Agent:       agent,
+		Client:      client,
+		RoomID:      "room-1",
+		AgentID:     "agent-1",
+		Diagnostics: diag,
 		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
 			return llmFake, nil
 		},

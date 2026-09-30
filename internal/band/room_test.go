@@ -1,6 +1,7 @@
 package band_test
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -210,6 +211,28 @@ func TestRoomSeedHappensOnce(t *testing.T) {
 
 	if err := handleMsg(t, room, mentionMsg("u-1", "User One", "first")); err != nil {
 		t.Fatalf("first Handle error = %v, want nil", err)
+	}
+}
+
+func TestRoomDiagnosticsWritten(t *testing.T) {
+	// A rejected event post is best-effort: the turn still succeeds and
+	// the failure lands in the diagnostics writer.
+	f := newBandRestFake(t, "[]")
+	f.mu.Lock()
+	f.eventsStatus = http.StatusInternalServerError
+	f.mu.Unlock()
+
+	var diag strings.Builder
+	room, _ := newRoomWithDiag(t, f, []llm.Response{
+		roomToolCallResp("band_send_message", `{"content":"the reply","mentions":[{"id":"u-1"}]}`),
+		roomTextResp(""),
+	}, &diag)
+
+	if err := handleMsg(t, room, mentionMsg("u-1", "User One", "question")); err != nil {
+		t.Fatalf("Handle error = %v, want nil (event posting is best-effort)", err)
+	}
+	if got := diag.String(); !strings.Contains(got, "post tool_call event") {
+		t.Errorf("diagnostics = %q, want a failed event-post line", got)
 	}
 }
 
