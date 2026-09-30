@@ -21,6 +21,7 @@ import (
 
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/ws"
+	"github.com/urfave/cli/v3"
 )
 
 // bandAgentID is the agent UUID the band e2e fakes serve.
@@ -106,15 +107,40 @@ func newBandE2E(t *testing.T) *bandE2E {
 	e.rest = httptest.NewServer(mux)
 	t.Cleanup(e.rest.Close)
 
-	// LLM fake.
+	// LLM fake: streams when the request asks for it (the band command
+	// streams by default), else answers plain JSON. The first request is
+	// a band_send_message tool call, the second a stop.
 	llmMux := http.NewServeMux()
-	llmMux.HandleFunc("/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+	llmMux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.Unmarshal(body, &req)
 		e.mu.Lock()
 		e.llmReqs++
 		n := e.llmReqs
 		e.mu.Unlock()
 		if n%2 == 1 {
+			if req.Stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				sseData(w,
+					`{"id":"r1","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
+					`{"id":"r1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"band_send_message","arguments":"{\"content\":\"the reply\","}}]},"finish_reason":null}]}`,
+					`{"id":"r1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"mentions\":[{\"id\":\"u-1\",\"name\":\"User One\"}]}"}}]},"finish_reason":null}]}`,
+					`{"id":"r1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+				)
+				return
+			}
 			io.WriteString(w, `{"id":"r1","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"band_send_message","arguments":"{\"content\":\"the reply\",\"mentions\":[{\"id\":\"u-1\",\"name\":\"User One\"}]}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		if req.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			sseData(w,
+				`{"id":"r2","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
+				`{"id":"r2","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			)
 			return
 		}
 		io.WriteString(w, `{"id":"r2","choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`)
@@ -446,6 +472,24 @@ func TestBandCommandEndToEnd(t *testing.T) {
 func TestBandExampleConfigValidates(t *testing.T) {
 	if _, err := config.Load("examples/band/blorb.json"); err != nil {
 		t.Fatalf("Load(examples/band/blorb.json) error = %v, want nil", err)
+	}
+}
+
+func TestBandNoStreamFlag(t *testing.T) {
+	cmd := bandCommand()
+
+	var noStream *cli.BoolFlag
+	for _, f := range cmd.Flags {
+		if bf, ok := f.(*cli.BoolFlag); ok && f.Names()[0] == "no-stream" {
+			noStream = bf
+			break
+		}
+	}
+	if noStream == nil {
+		t.Fatalf("band has no no-stream flag; flags = %+v", cmd.Flags)
+	}
+	if noStream.Value {
+		t.Errorf("no-stream default = true, want false (streaming on by default)")
 	}
 }
 

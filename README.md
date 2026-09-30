@@ -148,7 +148,7 @@ The command needs a `band` section in the config and the agent API key in the en
 }
 ```
 
-`agent_id` is required when the block is present; `api_key_env` defaults to `BAND_API_KEY`, and `rest_url` and `ws_url` default to the values shown. The command takes `-c | --config <path>`, `--agent <name>`, and `--tool-output` like `chat` and `run`. While it runs it prints each room's agent activity - assistant text, tool calls and results, and subagent activity - to standard output, so you can watch it work; pass `--tool-output` to show full tool result bodies. It runs until interrupted: the first Ctrl-C stops gracefully after the in-flight message, a second exits immediately. On shutdown it prints the session usage footer to stderr. One `blorb band` process serves one Band agent.
+`agent_id` is required when the block is present; `api_key_env` defaults to `BAND_API_KEY`, and `rest_url` and `ws_url` default to the values shown. The command takes `-c | --config <path>`, `--agent <name>`, `--no-stream`, and `--tool-output` like `chat` and `run`. While it runs it prints each room's agent activity - assistant text, tool calls and results, and subagent activity - to standard output, so you can watch it work; assistant responses stream as they arrive, so pass `--no-stream` to wait for each whole response, and pass `--tool-output` to show full tool result bodies. It runs until interrupted: the first Ctrl-C stops gracefully after the in-flight message, a second exits immediately. On shutdown it prints the session usage footer to stderr. One `blorb band` process serves one Band agent.
 
 See [examples/band](examples/band) for a minimal working setup.
 

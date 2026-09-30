@@ -848,6 +848,26 @@ func TestRunToolEventsOnStdout(t *testing.T) {
 	}
 }
 
+func TestPrintUserMessage(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with sender", func(t *testing.T) {
+		var out strings.Builder
+		chat.PrintUserMessage(&out, "User One", "hi there")
+		if got := out.String(); got != "\n>>> User: User One\nhi there\n" {
+			t.Errorf("output = %q, want the sender-labelled block", got)
+		}
+	})
+
+	t.Run("without sender", func(t *testing.T) {
+		var out strings.Builder
+		chat.PrintUserMessage(&out, "", "hi there")
+		if got := out.String(); got != "\n>>> User:\nhi there\n" {
+			t.Errorf("output = %q, want the plain heading", got)
+		}
+	})
+}
+
 // TestRunToolOutputSuppressedByDefault pins the --tool-output off state:
 // the tool call heading and arguments still render, but the result block
 // shows a char/line count instead of the output body.

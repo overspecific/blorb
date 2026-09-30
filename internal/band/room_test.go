@@ -65,8 +65,15 @@ func TestRoomMentionRunsTurnAndMarksProcessed(t *testing.T) {
 	if len(llm.requests) != 1 {
 		t.Fatalf("llm calls = %d, want 1", len(llm.requests))
 	}
-	if got := llm.requests[0].Messages[len(llm.requests[0].Messages)-1].Content; got != "User One: hi" {
-		t.Errorf("user message = %q, want the sender-prefixed form", got)
+	if got := llm.requests[0].Messages[len(llm.requests[0].Messages)-1].Content; got != "User One (id: u-1): hi" {
+		t.Errorf("user message = %q, want the sender-prefixed form with the sender id", got)
+	}
+	// The system prompt tells the agent its own id and that it cannot
+	// mention itself: without both, the model guesses an id and loops.
+	sys := llm.requests[0].Messages[0]
+	if sys.Role != "system" || !strings.Contains(sys.Content, "agent-1") ||
+		!strings.Contains(sys.Content, "never mention yourself") {
+		t.Errorf("system prompt = %q, want the band identity guidance naming agent-1", sys.Content)
 	}
 }
 
@@ -187,15 +194,15 @@ func TestRoomSeedsHistoryFromContext(t *testing.T) {
 	if len(userTexts) != 3 {
 		t.Fatalf("user messages = %v, want two seeded and the mention", userTexts)
 	}
-	if userTexts[0] != "Other User: before the mention" {
-		t.Errorf("seeded user message = %q, want the sender-prefixed context text", userTexts[0])
+	if userTexts[0] != "Other User (id: u-9): before the mention" {
+		t.Errorf("seeded user message = %q, want the sender-prefixed context text with the sender id", userTexts[0])
 	}
 	// The another-agent text seeds as a user message too: only the
 	// agent's own messages become assistant history.
-	if userTexts[1] != "Another Agent: another agent's text" {
+	if userTexts[1] != "Another Agent (id: u-7): another agent's text" {
 		t.Errorf("seeded other-agent message = %q, want it as a user message", userTexts[1])
 	}
-	if userTexts[2] != "User One: hi" {
+	if userTexts[2] != "User One (id: u-1): hi" {
 		t.Errorf("mention user message = %q, want the sender prefix", userTexts[2])
 	}
 	// The seeded history is converted exactly once: the second
@@ -251,11 +258,35 @@ func TestRoomPrintsTurnOutput(t *testing.T) {
 	}
 
 	got := out.String()
+	if !strings.Contains(got, ">>> User: User One") || !strings.Contains(got, "question") {
+		t.Errorf("output = %q, want the incoming mention printed", got)
+	}
 	if !strings.Contains(got, ">>> Tool: band_send_message") {
 		t.Errorf("output = %q, want a tool heading", got)
 	}
 	if !strings.Contains(got, "the reply") {
 		t.Errorf("output = %q, want the tool call arguments", got)
+	}
+}
+
+func TestRoomStreamsAssistantOutput(t *testing.T) {
+	// With Stream on and a streaming-capable client, the assistant text
+	// renders as deltas; the reply still reaches Band as one message.
+	f := newBandRestFake(t, "[]")
+	var out strings.Builder
+	room, _ := newRoomStreaming(t, f, []llm.Response{roomTextResp("streamed hello")}, nil, &out, false, true)
+
+	if err := handleMsg(t, room, mentionMsg("u-1", "User One", "hi")); err != nil {
+		t.Fatalf("Handle error = %v, want nil", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, ">>> Assistant:") || !strings.Contains(got, "streamed hello") {
+		t.Errorf("output = %q, want the streamed assistant text", got)
+	}
+	sent := f.sentMessages()
+	if len(sent) != 1 || sent[0].Content != "streamed hello" {
+		t.Errorf("sent = %+v, want the reply reaching Band whole", sent)
 	}
 }
 

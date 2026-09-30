@@ -51,6 +51,11 @@ type RoomOptions struct {
 	// ToolOutput shows full parent tool result bodies on Stdout; when
 	// false a successful result shows a size summary instead.
 	ToolOutput bool
+	// Stream enables incremental rendering of assistant responses on
+	// Stdout: when true and the client supports it, text, reasoning, and
+	// tool call fragments print as they arrive. The Band reply is still
+	// sent whole at the end of the turn.
+	Stream bool
 	// OnEvent receives the turn's engine events (usage accounting).
 	// Nil discards them; its errors fail the turn like any onEvent.
 	OnEvent func(engine.Event) error
@@ -153,6 +158,15 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 		return nil, fmt.Errorf("build llm client: %w", err)
 	}
 
+	// The engine suppresses whole-message events when it streams; only
+	// claim streaming when the real (inner) client can stream. The holder
+	// implements ChatStream unconditionally, so asserting on it would
+	// always succeed.
+	stream := opts.Stream
+	if _, ok := llmClient.(llm.StreamingClient); !ok {
+		stream = false
+	}
+
 	executor := NewToolExecutor(opts.Client, opts.RoomID, opts.AgentID, func() {
 		r.sentThisTurn = true
 	})
@@ -165,7 +179,7 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 		tools.WithSubagentRunner(engine.NewSubagentRunner(engine.SubagentRunnerConfig{
 			Config:    opts.Config,
 			NewClient: newClient,
-			Stream:    false,
+			Stream:    stream,
 			Sink:      sink,
 		})),
 		tools.WithSubagentEvents(r.subagentEvent),
@@ -189,7 +203,7 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 	r.judgeRunner = engine.NewJudgeRunner(engine.JudgeRunnerConfig{
 		Config:    opts.Config,
 		NewClient: clientFactory(opts, sink),
-		Stream:    false,
+		Stream:    stream,
 		Sink:      sink,
 	})
 
@@ -203,10 +217,11 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 		Client: r.holder,
 		Tools:  registry,
 		// The system prompt is the agent's own plus the band preamble:
-		// how to behave as one participant of a multi-agent room.
-		SystemPrompt: opts.Agent.SystemPrompt + "\n\n" + bandPreamble(),
+		// how to behave as one participant of a multi-agent room, and
+		// the identity facts needed to mention people correctly.
+		SystemPrompt: opts.Agent.SystemPrompt + "\n\n" + bandPreamble(opts.AgentID),
 		MaxTurns:     opts.Agent.MaxTurnsOrDefault(),
-		Stream:       false,
+		Stream:       stream,
 		AgentName:    opts.Agent.Name,
 		Model:        model.ModelName,
 		Sampling:     provider.SamplingParams(),
@@ -242,12 +257,16 @@ func clientFactory(opts RoomOptions, sink logging.Sink) func(config.Config, conf
 }
 
 // bandPreamble is appended to the agent's system prompt: how to behave
-// as one participant of a multi-agent chat room.
-func bandPreamble() string {
+// as one participant of a multi-agent chat room, plus the identity facts
+// the model needs to mention people correctly. agentID is this Band
+// agent's own participant id, which it must never mention.
+func bandPreamble(agentID string) string {
 	return strings.Join([]string{
 		"You are one participant in a multi-agent chat room on the Band platform.",
-		"You reply by calling the band_send_message tool, mentioning the participants you are addressing.",
-		"Find room participants with band_get_participants and learn who else exists with band_lookup_peers.",
+		fmt.Sprintf("Your own Band participant id is %s; never mention yourself.", agentID),
+		`An incoming message names its sender as "<name> (id: <participant id>): <content>".`,
+		"Reply by calling the band_send_message tool with at least one mention; mention a participant by their id, not their display name.",
+		"Find room participants with band_get_participants, where your own entry carries is_self true, and learn who else exists with band_lookup_peers.",
 		"A plain text answer is delivered only as a fallback; prefer the tool.",
 	}, " ")
 }
@@ -293,8 +312,11 @@ func (r *Room) Handle(ctx context.Context, msg ChatMessage) error {
 	}
 
 	prompt := senderMessage(msg)
-	// Print the turn to the console like chat and run do, and route
-	// subagent activity to the same printer for this turn.
+	// Print the incoming mention, then the turn, to the console like chat
+	// and run do. Band messages arrive over the socket, so unlike chat's
+	// typed input the terminal never echoes them; without this the
+	// transcript shows only what the agent sends.
+	chat.PrintUserMessage(r.stdout, msg.SenderName, msg.Content)
 	printEvent, onSubagent, flush := chat.Events(r.stdout, r.toolOutput)
 	r.setSubagentPrinter(onSubagent)
 	defer r.setSubagentPrinter(nil)
@@ -472,12 +494,17 @@ func (r *Room) seedHistory(ctx context.Context) error {
 	return nil
 }
 
-// senderPrefix renders "<sender name>: " (the name falling back to the
-// sender id) for a message from another participant.
+// senderPrefix renders the sender label for a message from another
+// participant: "<name> (id: <sender id>): " so the model can mention the
+// sender by id. The name falls back to the id when absent, and the id is
+// omitted when the platform did not supply one.
 func senderPrefix(m ChatMessage) string {
 	name := m.SenderName
 	if name == "" {
 		name = m.SenderID
+	}
+	if m.SenderID != "" && m.SenderName != "" {
+		return fmt.Sprintf("%s (id: %s): ", name, m.SenderID)
 	}
 	return name + ": "
 }

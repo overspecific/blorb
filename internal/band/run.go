@@ -49,6 +49,11 @@ type Options struct {
 	// ToolOutput shows full parent tool result bodies on Stdout; when
 	// false a successful result shows a size summary instead.
 	ToolOutput bool
+	// Stream enables incremental rendering of assistant responses on
+	// Stdout: when true and the client supports it, text, reasoning, and
+	// tool call fragments print as they arrive. The Band reply is still
+	// sent whole at the end of the turn.
+	Stream bool
 	// NewClient overrides LLM client construction. Tests only; nil
 	// builds the real client from the config.
 	NewClient func(cfg config.Config, agent config.Agent) (llm.Client, error)
@@ -325,6 +330,7 @@ func (st *Runner) connectRoom(ctx context.Context, socket *Socket, roomsTopic, r
 		Diagnostics: st.diag,
 		Stdout:      st.out,
 		ToolOutput:  st.opts.ToolOutput,
+		Stream:      st.opts.Stream,
 		NewClient:   st.opts.NewClient,
 		OnEvent: func(ev engine.Event) error {
 			// Usage accounting flows to the session account; anything

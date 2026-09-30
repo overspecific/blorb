@@ -228,9 +228,21 @@ func newRoomWithOutput(t *testing.T, f *bandRestFake, llmResp []llm.Response, st
 // sinks and canned LLM responses.
 func newRoomFull(t *testing.T, f *bandRestFake, llmResp []llm.Response, diag, stdout io.Writer, toolOutput bool) (*band.Room, *roomLLM) {
 	t.Helper()
+	return newRoomStreaming(t, f, llmResp, diag, stdout, toolOutput, false)
+}
+
+// newRoomStreaming builds a Room like newRoomFull with streaming
+// optionally enabled; the client is streaming-capable only when stream
+// is true, so the capability check is exercised rather than bypassed.
+func newRoomStreaming(t *testing.T, f *bandRestFake, llmResp []llm.Response, diag, stdout io.Writer, toolOutput, stream bool) (*band.Room, *roomLLM) {
+	t.Helper()
 	cfg, agent := roomTestConfig()
 	client := band.NewClient(f.srv.URL, "k", logging.NewNop())
 	llmFake := &roomLLM{responses: llmResp}
+	var llmClient llm.Client = llmFake
+	if stream {
+		llmClient = &roomStreamLLM{inner: llmFake}
+	}
 	room, err := band.NewRoom(band.RoomOptions{
 		Config:      cfg,
 		Agent:       agent,
@@ -240,8 +252,9 @@ func newRoomFull(t *testing.T, f *bandRestFake, llmResp []llm.Response, diag, st
 		Diagnostics: diag,
 		Stdout:      stdout,
 		ToolOutput:  toolOutput,
+		Stream:      stream,
 		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
-			return llmFake, nil
+			return llmClient, nil
 		},
 	})
 	if err != nil {
@@ -249,6 +262,29 @@ func newRoomFull(t *testing.T, f *bandRestFake, llmResp []llm.Response, diag, st
 	}
 	t.Cleanup(room.Close)
 	return room, llmFake
+}
+
+// roomStreamLLM makes the canned roomLLM streaming-capable: it emits the
+// response's text as one delta before returning the whole response.
+type roomStreamLLM struct {
+	inner *roomLLM
+}
+
+func (f *roomStreamLLM) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	return f.inner.Chat(ctx, req)
+}
+
+func (f *roomStreamLLM) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	resp, err := f.inner.Chat(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Message.Content != "" {
+		if err := onDelta(llm.Delta{Content: resp.Message.Content}); err != nil {
+			return nil, err
+		}
+	}
+	return resp, nil
 }
 
 // mentionMsg builds one incoming mention from the named sender.

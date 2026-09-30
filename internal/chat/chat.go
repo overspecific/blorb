@@ -531,6 +531,18 @@ func readLines(r io.Reader, out chan<- inputResult, done <-chan struct{}) {
 	close(out)
 }
 
+// PrintUserMessage renders one incoming user message as a block, matching
+// the ">>> User:" heading chat shows for typed input. Frontends that
+// receive messages rather than read them from a terminal (band) call it
+// so the transcript shows both directions.
+func PrintUserMessage(out io.Writer, sender, content string) {
+	heading := ">>> User:"
+	if sender != "" {
+		heading = ">>> User: " + sender
+	}
+	fmt.Fprintf(out, "\n%s\n%s\n", heading, content)
+}
+
 // Events returns the parent event callback, the subagent event
 // callback, and a flush function. All output goes to stdout: assistant
 // text under a ">>> Assistant:" heading, tool activity as heading blocks,

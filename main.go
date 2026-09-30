@@ -337,6 +337,10 @@ func bandCommand() *cli.Command {
 				Usage: "Name of the agent to run; defaults to the config's default_agent",
 			},
 			&cli.BoolFlag{
+				Name:  "no-stream",
+				Usage: "Disable streaming of assistant responses",
+			},
+			&cli.BoolFlag{
 				Name:  "tool-output",
 				Usage: "Show the full output of tool results (subagent output is always shown)",
 			},
@@ -392,6 +396,7 @@ func bandCommand() *cli.Command {
 				Agent:       agent,
 				Stdout:      os.Stdout,
 				Stderr:      os.Stderr,
+				Stream:      !cmd.Bool("no-stream"),
 				ToolOutput:  cmd.Bool("tool-output"),
 				ConfigPath:  cmd.String("config"),
 				Sink:        sink,

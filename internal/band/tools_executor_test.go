@@ -153,6 +153,26 @@ func TestExecutorSendMessageValidation(t *testing.T) {
 			t.Errorf("result = %+v, want Err", res)
 		}
 	})
+
+	t.Run("name-only mention", func(t *testing.T) {
+		res, err := runTool(t, exec, band.ToolSendMessage, `{"content":"hi","mentions":[{"name":"Simon Russell"}]}`)
+		if err != nil {
+			t.Fatalf("RunBandTool error = %v, want nil", err)
+		}
+		if !res.Err || !strings.Contains(res.Output, `"id" or "handle"`) {
+			t.Errorf("result = %+v, want Err telling the model a name alone does not identify anyone", res)
+		}
+	})
+
+	t.Run("self mention", func(t *testing.T) {
+		res, err := runTool(t, exec, band.ToolSendMessage, `{"content":"hi","mentions":[{"id":"agent-1"}]}`)
+		if err != nil {
+			t.Fatalf("RunBandTool error = %v, want nil", err)
+		}
+		if !res.Err || !strings.Contains(res.Output, "yourself") {
+			t.Errorf("result = %+v, want Err saying the agent cannot mention itself", res)
+		}
+	})
 }
 
 func TestExecutorSendEvent(t *testing.T) {
@@ -204,17 +224,28 @@ func TestExecutorGetParticipants(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		writeData(w, http.StatusOK, `[{"id":"u-1","role":"owner","status":"active","type":"User","name":"U"}]`)
+		writeData(w, http.StatusOK, `[`+
+			`{"id":"agent-1","role":"member","status":"active","type":"Agent","name":"Helper"},`+
+			`{"id":"u-1","role":"owner","status":"active","type":"User","name":"U"}]`)
 	})
 	exec := f.executor(t, "agent-1", nil)
 	res, err := runTool(t, exec, band.ToolGetParticipants, `{}`)
 	if err != nil {
 		t.Fatalf("RunBandTool error = %v, want nil", err)
 	}
-	var participants []band.ChatParticipant
+	var participants []struct {
+		ID     string `json:"id"`
+		IsSelf bool   `json:"is_self"`
+	}
 	decode(t, res, &participants)
-	if len(participants) != 1 || participants[0].ID != "u-1" {
-		t.Errorf("participants = %+v, want one u-1", participants)
+	if len(participants) != 2 {
+		t.Fatalf("participants = %+v, want two entries", participants)
+	}
+	if participants[0].ID != "agent-1" || !participants[0].IsSelf {
+		t.Errorf("participants[0] = %+v, want agent-1 marked is_self", participants[0])
+	}
+	if participants[1].ID != "u-1" || participants[1].IsSelf {
+		t.Errorf("participants[1] = %+v, want u-1 not marked is_self", participants[1])
 	}
 }
 
@@ -406,4 +437,45 @@ func bandNameKnown(name string) bool {
 		return true
 	}
 	return false
+}
+
+func TestSendMessageSchemaRequiresMentionIdentifier(t *testing.T) {
+	var entry config.ToolEntry
+	for _, e := range band.ToolEntries() {
+		if e.Name == band.ToolSendMessage {
+			entry = e
+		}
+	}
+	var schema struct {
+		Properties struct {
+			Mentions struct {
+				MinItems int `json:"minItems"`
+				Items    struct {
+					AnyOf []struct {
+						Required []string `json:"required"`
+					} `json:"anyOf"`
+				} `json:"items"`
+			} `json:"mentions"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(entry.ArgsSchema, &schema); err != nil {
+		t.Fatalf("decode send_message schema: %v", err)
+	}
+	if schema.Properties.Mentions.MinItems != 1 {
+		t.Errorf("mentions minItems = %d, want 1", schema.Properties.Mentions.MinItems)
+	}
+	var sawID, sawHandle bool
+	for _, alt := range schema.Properties.Mentions.Items.AnyOf {
+		for _, required := range alt.Required {
+			switch required {
+			case "id":
+				sawID = true
+			case "handle":
+				sawHandle = true
+			}
+		}
+	}
+	if !sawID || !sawHandle {
+		t.Errorf("mentions anyOf = %+v, want id and handle alternatives", schema.Properties.Mentions.Items.AnyOf)
+	}
 }

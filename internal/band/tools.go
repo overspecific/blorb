@@ -32,14 +32,15 @@ func ToolEntries() []config.ToolEntry {
 		{
 			Type:        config.ToolTypeBand,
 			Name:        ToolSendMessage,
-			Description: "Send a chat message to the Band room. Reply by calling this tool, mentioning the participants you address.",
+			Description: "Send a chat message to the Band room. Reply by calling this tool with at least one mention. Mention a participant by their id (or handle), never by display name alone, and never mention yourself.",
 			Band:        ToolSendMessage,
 			ArgsSchema: json.RawMessage(`{"type":"object","properties":{` +
 				`"content":{"type":"string","description":"The message text."},` +
 				`"mentions":{"type":"array","minItems":1,"items":{"type":"object","properties":{` +
-				`"id":{"type":"string","description":"The mentioned participant's id."},` +
-				`"handle":{"type":"string","description":"The mentioned participant's handle, without the @ prefix."},` +
-				`"name":{"type":"string","description":"The mentioned participant's display name."}},` +
+				`"id":{"type":"string","description":"The mentioned participant's id; provide this or handle."},` +
+				`"handle":{"type":"string","description":"The mentioned participant's handle, without the @ prefix; use when the id is unknown."},` +
+				`"name":{"type":"string","description":"The mentioned participant's display name, for the message text only; it does not identify anyone."}},` +
+				`"anyOf":[{"required":["id"]},{"required":["handle"]}],` +
 				`"additionalProperties":false}}},"required":["content","mentions"],"additionalProperties":false}`),
 		},
 		{
@@ -57,7 +58,7 @@ func ToolEntries() []config.ToolEntry {
 		{
 			Type:        config.ToolTypeBand,
 			Name:        ToolGetParticipants,
-			Description: "List the participants of the Band room you are in.",
+			Description: "List the participants of the Band room you are in; your own entry carries is_self true.",
 			Band:        ToolGetParticipants,
 			ArgsSchema:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 		},
@@ -183,6 +184,15 @@ func (e *toolExecutor) sendMessage(ctx context.Context, args json.RawMessage) (t
 	if len(parsed.Mentions) == 0 {
 		return argsError(ToolSendMessage, `arguments must include at least one mention`)
 	}
+	for i, mention := range parsed.Mentions {
+		if strings.TrimSpace(mention.ID) == "" && strings.TrimSpace(mention.Handle) == "" {
+			return argsError(ToolSendMessage, fmt.Sprintf(
+				`mention %d must include an "id" or "handle"; a display "name" alone does not identify a participant`, i+1))
+		}
+		if mention.ID != "" && mention.ID == e.agentID {
+			return argsError(ToolSendMessage, "you cannot mention yourself; mention another participant")
+		}
+	}
 
 	_, err := e.client.SendMessage(ctx, e.roomID, parsed.Content, parsed.Mentions)
 	if err != nil {
@@ -218,12 +228,24 @@ func (e *toolExecutor) sendEvent(ctx context.Context, args json.RawMessage) (too
 	return resultJSON(map[string]any{"sent": true})
 }
 
+// participantView is one room participant as band_get_participants
+// reports it: the platform's fields plus is_self, so the agent can tell
+// itself apart and avoid mentioning itself.
+type participantView struct {
+	ChatParticipant
+	IsSelf bool `json:"is_self"`
+}
+
 func (e *toolExecutor) getParticipants(ctx context.Context) (tools.ToolResult, error) {
 	participants, err := e.client.ListParticipants(ctx, e.roomID)
 	if err != nil {
 		return platformFailure(err)
 	}
-	return resultJSON(participants)
+	views := make([]participantView, len(participants))
+	for i, p := range participants {
+		views[i] = participantView{ChatParticipant: p, IsSelf: p.ID == e.agentID}
+	}
+	return resultJSON(views)
 }
 
 func (e *toolExecutor) addParticipant(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {

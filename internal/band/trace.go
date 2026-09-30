@@ -52,3 +52,13 @@ type clientHolder struct {
 func (h *clientHolder) Chat(ctx context.Context, req llm.Request) (*llm.Response, error) {
 	return h.inner.Chat(ctx, req)
 }
+
+// ChatStream implements llm.StreamingClient when the inner client does, so
+// the engine's streaming detection through the holder stays correct. A
+// non-streaming inner client falls back to the whole-message path.
+func (h *clientHolder) ChatStream(ctx context.Context, req llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	if sc, ok := h.inner.(llm.StreamingClient); ok {
+		return sc.ChatStream(ctx, req, onDelta)
+	}
+	return h.inner.Chat(ctx, req)
+}
