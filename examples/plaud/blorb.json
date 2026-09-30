@@ -1,0 +1,115 @@
+{
+  "default_agent": "plaud",
+  "models": [
+    {
+      "name": "flash",
+      "model_name": "zai-org/GLM-5.3-Flash",
+      "provider": "crusoe"
+    }
+  ],
+  "agents": [
+    {
+      "name": "plaud",
+      "system_prompt": "You are an assistant for the user's Plaud recordings. You have three tools: `files`, which lists the user's Plaud recordings with their IDs, names, dates, and durations; `transcript`, which fetches a recording's transcript by file ID; and `summarize`, which delegates to a summarizer subagent that fetches a recording's transcript itself and returns a JSON object with the recording's name, a summary, and action items. To answer a question about a recording, list the files first to find its ID, then fetch its transcript. Use the `block` argument to choose a transcript variant: `transaction` (the raw transcript, the default), `transaction_polish` (the AI-cleaned transcript), `outline`, or `mark_memo` (moments flagged with the highlight button). When the user wants a summary with action items, list the files first to find its ID, then call `summarize` with that file ID; the subagent fetches the transcript itself. Answer from the transcript, and say which recording you used.",
+      "max_turns": 10,
+      "tools": [
+        "files",
+        "transcript",
+        "summarize"
+      ],
+      "model": "flash"
+    },
+    {
+      "name": "summarizer",
+      "system_prompt": "You summarize Plaud recordings. The user message is a JSON object whose `file_id` field names the recording to summarize (the ID format from the `files` tool, e.g. of_28946b31bb1f863c94efade3844e303b). Fetch that recording's transcript with your `transcript` tool, preferring the `transaction_polish` block; if the error message says it is unavailable, fetch `transaction` instead. Then return exactly one JSON object and nothing else - no markdown, no code fences, no text before or after it - with these fields: `recording` (the recording's name, as `files` would show it), `summary` (a few short paragraphs capturing what the recording is about and what was discussed, written in first person from the perspective of the person who made the recording - `I` and `we`, not `the user`), and `action_items` (an array with one object per concrete task the recording's maker agreed to do or noted for themselves, each with `task`, `due`, `category`, and `estimated_duration` fields). Every date and time is ISO 8601, zero-padded, in exactly these forms: a date alone is `YYYY-MM-DD` (e.g. `2026-10-02`); a date with a time of day is `YYYY-MM-DDTHH:MM:SS` followed by the timezone exactly as the transcript states it, `Z` for UTC or `+HH:MM` or `-HH:MM` (e.g. `2026-10-02T14:30:00+02:00`), with no offset when the transcript states none. Never write month names, `10/02/2026`, or any other form. Resolve relative dates like `by Friday` against the recording's date when the transcript shows it. `category` classifies the task by its nature: exactly `personal` or `professional`, nothing else. `estimated_duration` is the estimated time the task will take, as an ISO 8601 duration in exactly this form: `PT` then hours `H` and minutes `M`, zero components omitted, rounded to whole minutes, never below `PT1M` and never more than `PT8H` in one sitting (e.g. `PT30M` for 30 minutes, `PT2H` for 2 hours, `PT1H15M` for 75 minutes). Stay factual to the transcript: set `due` to null when the transcript states no date you can pin to a calendar date (a time of day alone is not a date), use an empty `action_items` array when no tasks were agreed, and do not invent details.",
+      "max_turns": 6,
+      "tools": [
+        "transcript"
+      ],
+      "model": "flash"
+    }
+  ],
+  "tools": [
+    {
+      "type": "command",
+      "name": "files",
+      "description": "Lists the user's Plaud recordings with their IDs, names, dates, and durations, one page at a time. Use it to find a recording's file ID before fetching its transcript.",
+      "command": [
+        "sh",
+        "-c",
+        "set -- $(jq -r '(.page // 1), (.page_size // 20)'); plaud files --page \"$1\" --page-size \"$2\""
+      ],
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "The page number to list, starting at 1"
+          },
+          "page_size": {
+            "type": "integer",
+            "description": "How many recordings to list per page, between 10 and 100"
+          }
+        }
+      }
+    },
+    {
+      "type": "command",
+      "name": "transcript",
+      "description": "Fetches the transcript of a Plaud recording by its file ID, as timestamped blocks of text. The file ID comes from the `files` tool. Use `block` to pick a variant: `transaction` (the raw transcript, the default), `transaction_polish` (the AI-cleaned transcript), `outline`, or `mark_memo` (moments flagged with the highlight button). Not every recording has every variant; the error message lists what is available.",
+      "command": [
+        "sh",
+        "-c",
+        "set -- $(jq -r '.file_id, (.block // \"transaction\")'); plaud transcript --block \"$2\" \"$1\""
+      ],
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "description": "The file ID of the recording, e.g. of_28946b31bb1f863c94efade3844e303b"
+          },
+          "block": {
+            "type": "string",
+            "description": "Which transcript variant to fetch: transaction, transaction_polish, outline, or mark_memo. Defaults to transaction.",
+            "enum": [
+              "transaction",
+              "transaction_polish",
+              "outline",
+              "mark_memo"
+            ]
+          }
+        },
+        "required": [
+          "file_id"
+        ]
+      }
+    },
+    {
+      "type": "subagent",
+      "name": "summarize",
+      "description": "Delegates to the summarizer subagent, which fetches the recording's transcript itself and returns a JSON object with a recording name, a first-person summary, and an action items list (each with task, due, a personal/professional category, and an estimated duration). Takes the recording's file ID; list the files first to find it, then hand it over - no transcript fetch is needed.",
+      "agent": "summarizer",
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "description": "The file ID of the recording to summarize, e.g. of_28946b31bb1f863c94efade3844e303b"
+          }
+        },
+        "required": [
+          "file_id"
+        ]
+      }
+    }
+  ],
+  "providers": [
+    {
+      "name": "crusoe",
+      "type": "openai-compatible",
+      "base_url": "https://api.inference.crusoecloud.com/v1",
+      "api_key_env": "CRUSOE_API_KEY"
+    }
+  ]
+}

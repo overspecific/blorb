@@ -1,10 +1,12 @@
 package prefactor
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/overspecific/blorb/internal/config"
@@ -112,6 +114,80 @@ func TestSimpleExampleTracingDisabled(t *testing.T) {
 	}
 	if cfg.PrefactorEnabled() {
 		t.Error("PrefactorEnabled() = true, want false — the simple example should not require a tracing token")
+	}
+}
+
+// TestPlaudExampleConfigValid ensures the shipped Plaud example blorb.json
+// loads, validates, and grants the plaud agent exactly the two Plaud CLI
+// command tools it documents plus the summarize subagent tool delegating to
+// the summarizer agent.
+func TestPlaudExampleConfigValid(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "plaud", "blorb.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("example not present: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load(examples/plaud/blorb.json) error = %v, want nil", err)
+	}
+	plaud, ok := cfg.Agent("plaud")
+	if !ok {
+		t.Fatalf("Agent(plaud) missing; agents = %v", cfg.Agents)
+	}
+	if cfg.DefaultAgent != "plaud" {
+		t.Errorf("DefaultAgent = %q, want plaud", cfg.DefaultAgent)
+	}
+	if got, want := plaud.Tools, []string{"files", "transcript", "summarize"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("plaud.Tools = %v, want %v (the agent owns both Plaud CLI tools and the summarize subagent)", got, want)
+	}
+	// Both CLI entries are command tools wrapping the plaud CLI; the third
+	// delegates to the summarizer agent.
+	for _, entry := range cfg.AgentTools(plaud) {
+		switch entry.Name {
+		case "files", "transcript":
+			if entry.Type != config.ToolTypeCommand {
+				t.Errorf("tool %q type = %q, want %q", entry.Name, entry.Type, config.ToolTypeCommand)
+			}
+		case "summarize":
+			if entry.Type != config.ToolTypeSubagent {
+				t.Errorf("tool %q type = %q, want %q", entry.Name, entry.Type, config.ToolTypeSubagent)
+			}
+			if entry.Agent != "summarizer" {
+				t.Errorf("tool summarize agent = %q, want summarizer", entry.Agent)
+			}
+			// The custom schema hands the subagent a file_id instead of
+			// the default prompt string.
+			var schema struct {
+				Required []string `json:"required"`
+			}
+			if err := json.Unmarshal(entry.ArgsSchema, &schema); err != nil {
+				t.Fatalf("summarize args_schema unmarshal error = %v, want nil", err)
+			}
+			if fmt.Sprint(schema.Required) != fmt.Sprint([]string{"file_id"}) {
+				t.Errorf("summarize args_schema required = %v, want [file_id]", schema.Required)
+			}
+		}
+	}
+	// The summarizer is granted just the transcript tool: it receives the
+	// file ID in its user message, so it never lists files itself.
+	summarizer, ok := cfg.Agent("summarizer")
+	if !ok {
+		t.Fatal("Agent(summarizer) missing; the summarize subagent tool targets it")
+	}
+	if got, want := summarizer.Tools, []string{"transcript"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("summarizer.Tools = %v, want %v", got, want)
+	}
+	// Its documented output is a bare JSON object, not markdown.
+	if !strings.Contains(summarizer.SystemPrompt, "JSON object") {
+		t.Error("summarizer system prompt does not instruct JSON object output")
+	}
+	// Its dates and times are pinned to fixed ISO 8601 forms.
+	if !strings.Contains(summarizer.SystemPrompt, "YYYY-MM-DD") {
+		t.Error("summarizer system prompt does not pin ISO 8601 date format YYYY-MM-DD")
+	}
+	if cfg.PrefactorEnabled() {
+		t.Error("PrefactorEnabled() = true, want false — the plaud example should not require a tracing token")
 	}
 }
 
