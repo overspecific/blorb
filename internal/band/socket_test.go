@@ -93,6 +93,26 @@ func TestHeartbeatsArrive(t *testing.T) {
 	}
 }
 
+func TestServerEventWithJoinRefDelivered(t *testing.T) {
+	// Band sends a push with the channel's join_ref and a null ref (the
+	// docs say both are null). Keying delivery on join_ref would drop
+	// every mention; the push must arrive.
+	srv := newFakeBandWSServer(t)
+	s := connect(t, srv)
+	srv.waitHandshake(t)
+
+	srv.push(`["2",null,"chat_room:room-1","message_created",{"id":"m-1"}]`)
+
+	select {
+	case ev := <-s.Events():
+		if ev.Topic != "chat_room:room-1" || ev.Event != "message_created" {
+			t.Errorf("Event = (%q, %q), want (chat_room:room-1, message_created)", ev.Topic, ev.Event)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for a push carrying a join_ref")
+	}
+}
+
 func TestServerEventDelivered(t *testing.T) {
 	srv := newFakeBandWSServer(t)
 	s := connect(t, srv)

@@ -135,9 +135,9 @@ func (s *Socket) Leave(ctx context.Context, topic string) error {
 	return err
 }
 
-// Events delivers server-initiated pushes (null join_ref and ref).
-// Replies to our own messages and unrelated traffic are dropped. The
-// channel closes when the socket dies.
+// Events delivers server-initiated pushes (a null ref; join_ref is
+// ignored). Replies to our own messages and unrelated traffic are
+// dropped. The channel closes when the socket dies.
 func (s *Socket) Events() <-chan Event {
 	return s.events
 }
@@ -243,9 +243,12 @@ func (s *Socket) readLoop() {
 		case "heartbeat":
 			// Liveness: the inbound frame itself refreshed the read.
 		default:
-			// Server-initiated pushes carry null refs; anything
-			// ref'd that is not a reply to us is dropped.
-			if env.joinRef == nil && env.ref == nil {
+			// Server-initiated pushes carry a null ref; the join_ref
+			// names the channel and is usually present (the docs say
+			// null, but Band sends the channel's join ref). Messages
+			// ref'd by us are replies and were routed above; anything
+			// else ref'd is dropped.
+			if env.ref == nil {
 				select {
 				case s.events <- Event{Topic: env.topic, Event: env.event, Payload: env.payload}:
 				default:
@@ -258,9 +261,10 @@ func (s *Socket) readLoop() {
 	}
 }
 
-// rawEnvelope is one decoded five-element Phoenix array.
+// rawEnvelope is one decoded five-element Phoenix array. join_ref is not
+// retained: a push is identified by a null ref, and replies are routed
+// by ref.
 type rawEnvelope struct {
-	joinRef *string
 	ref     *string
 	topic   string
 	event   string
@@ -281,9 +285,6 @@ func decodeEnvelope(data []byte) (rawEnvelope, error) {
 		topic:   unquote(parts[2]),
 		event:   unquote(parts[3]),
 		payload: parts[4],
-	}
-	if v, ok := nullableString(parts[0]); ok {
-		env.joinRef = &v
 	}
 	if v, ok := nullableString(parts[1]); ok {
 		env.ref = &v
