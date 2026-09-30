@@ -115,10 +115,11 @@ type roomState struct {
 
 // Run is the long-running frontend loop: validate the key, connect the
 // subscriptions socket, sync the rooms, and dispatch live events until
-// ctx is cancelled. A socket death reconnects with exponential backoff
-// (re-joining and re-draining everything); a startup error returns
-// immediately with it. The returned account carries the session's LLM
-// usage for the caller's footer; it is non-nil even on a startup error.
+// ctx is cancelled or the Prefactor platform terminates the session. A
+// socket death reconnects with exponential backoff (re-joining and
+// re-draining everything); a startup error returns immediately with it.
+// The returned account carries the session's LLM usage for the caller's
+// footer; it is non-nil even on a startup error.
 func Run(ctx context.Context, opts Options) (*usage.Account, error) {
 	opts.applyDefaults()
 
