@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +68,13 @@ func (e *APIError) Error() string {
 // "data" value (nil to skip decoding). Non-2xx decodes an error envelope
 // and returns *APIError.
 func (c *Client) do(ctx context.Context, method, path string, reqBody, respBody any) error {
+	return c.doMeta(ctx, method, path, reqBody, respBody, nil)
+}
+
+// doMeta is do with the response envelope's "metadata" object also
+// decoded into metaOut when non-nil, for the cursor-paginated endpoints
+// that carry next_cursor and has_more there.
+func (c *Client) doMeta(ctx context.Context, method, path string, reqBody, respBody, metaOut any) error {
 	fullURL := c.restURL + apiPrefix + path
 
 	var reqReader io.Reader
@@ -107,16 +116,22 @@ func (c *Client) do(ctx context.Context, method, path string, reqBody, respBody 
 		return decodeAPIError(resp.StatusCode, respBytes)
 	}
 
-	if respBody != nil && len(respBytes) > 0 {
+	if len(respBytes) > 0 && (respBody != nil || metaOut != nil) {
 		var envelope struct {
-			Data json.RawMessage `json:"data"`
+			Data     json.RawMessage `json:"data"`
+			Metadata json.RawMessage `json:"metadata"`
 		}
 		if err := json.Unmarshal(respBytes, &envelope); err != nil {
 			return fmt.Errorf("decode %s %s: %w", method, path, err)
 		}
-		if len(envelope.Data) > 0 && respBody != nil {
+		if respBody != nil && len(envelope.Data) > 0 {
 			if err := json.Unmarshal(envelope.Data, respBody); err != nil {
 				return fmt.Errorf("decode %s %s data: %w", method, path, err)
+			}
+		}
+		if metaOut != nil && len(envelope.Metadata) > 0 {
+			if err := json.Unmarshal(envelope.Metadata, metaOut); err != nil {
+				return fmt.Errorf("decode %s %s metadata: %w", method, path, err)
 			}
 		}
 	}
@@ -347,29 +362,35 @@ func (c *Client) SendEvent(ctx context.Context, chatID, content, messageType str
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/chats/%s/events", chatID), map[string]any{"event": event}, nil)
 }
 
-// Context fetches a room's recent messages, following the cursor
-// pagination until exhausted; results are concatenated in the pages'
-// arrival order (the API returns them oldest-first).
+// Context fetches a room's recent messages, following the endpoint's
+// cursor pagination (limit 100) until has_more is false, concatenating
+// the pages oldest-first. The cursor is the opaque next_cursor from the
+// response metadata, not a message id.
 func (c *Client) Context(ctx context.Context, chatID string) ([]ChatMessage, error) {
 	var out []ChatMessage
 	cursor := ""
 	for {
-		u := fmt.Sprintf("/chats/%s/context?limit=%d", chatID, contextPageSize)
+		params := url.Values{}
+		params.Set("limit", strconv.Itoa(contextPageSize))
 		if cursor != "" {
-			u += "&cursor=" + cursor
+			params.Set("cursor", cursor)
 		}
-		var messages []ChatMessage
-		if err := c.do(ctx, http.MethodGet, u, nil, &messages); err != nil {
+		var (
+			messages []ChatMessage
+			meta     struct {
+				NextCursor string `json:"next_cursor"`
+				HasMore    bool   `json:"has_more"`
+			}
+		)
+		path := fmt.Sprintf("/chats/%s/context?%s", chatID, params.Encode())
+		if err := c.doMeta(ctx, http.MethodGet, path, nil, &messages, &meta); err != nil {
 			return nil, err
 		}
 		out = append(out, messages...)
-		if len(messages) < contextPageSize {
+		if !meta.HasMore || meta.NextCursor == "" {
 			return out, nil
 		}
-		// The endpoint documents no cursor on this shape; a full page
-		// means another could exist. Paging with the last id as the
-		// cursor matches the API's cursor form.
-		cursor = messages[len(messages)-1].ID
+		cursor = meta.NextCursor
 	}
 }
 

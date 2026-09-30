@@ -79,6 +79,16 @@ func writeError(w http.ResponseWriter, status int, code, message, requestID stri
 	_, _ = w.Write([]byte(`{"error":{"code":"` + code + `","message":"` + message + `","request_id":"` + requestID + `"}}`))
 }
 
+// writeDataMeta answers with the {"data": ...} envelope plus the cursor
+// pagination metadata.
+func writeDataMeta(w http.ResponseWriter, status int, data, nextCursor string, hasMore bool) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	body := `{"data":` + data + `,"metadata":{"has_more":` + strconv.FormatBool(hasMore) +
+		`,"next_cursor":` + strconv.Quote(nextCursor) + `}}`
+	_, _ = w.Write([]byte(body))
+}
+
 func TestMe(t *testing.T) {
 	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/agent/me" {
@@ -265,14 +275,14 @@ func TestSendEventBody(t *testing.T) {
 }
 
 func TestContextCursorPagination(t *testing.T) {
-	calls := 0
 	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
-		calls++
 		if r.URL.Query().Get("cursor") == "" {
-			writeData(w, http.StatusOK, "["+strings.Repeat(`{"id":"m-1"},`, contextPageSizeForTest-1)+`{"id":"c1"}]`)
+			writeDataMeta(w, http.StatusOK,
+				"["+strings.Repeat(`{"id":"m-1"},`, contextPageSizeForTest-1)+`{"id":"c1"}]`,
+				"cur-opaque", true)
 			return
 		}
-		writeData(w, http.StatusOK, `[{"id":"m-2"}]`)
+		writeDataMeta(w, http.StatusOK, `[{"id":"m-2"}]`, "", false)
 	})
 	c := f.client(t, logging.NewNop())
 	messages, err := c.Context(context.Background(), "room-1")
@@ -283,6 +293,12 @@ func TestContextCursorPagination(t *testing.T) {
 	// second.
 	if len(messages) != contextPageSizeForTest+1 || messages[0].ID != "m-1" || messages[len(messages)-1].ID != "m-2" {
 		t.Errorf("messages = %d items, want %d+1 stitched in order", len(messages), contextPageSizeForTest)
+	}
+	// The second request carries the opaque cursor the first page
+	// returned, not a message id.
+	reqs := f.seen()
+	if len(reqs) != 2 || !strings.Contains(reqs[1].Path, "cursor=cur-opaque") {
+		t.Errorf("requests = %+v, want the second to carry cursor=cur-opaque", reqs)
 	}
 }
 
