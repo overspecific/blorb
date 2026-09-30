@@ -263,7 +263,16 @@ func (e *toolExecutor) removeParticipant(ctx context.Context, args json.RawMessa
 }
 
 func (e *toolExecutor) lookupPeers(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-	peers, err := e.client.LookupPeers(ctx)
+	var parsed struct {
+		Page     int `json:"page"`
+		PageSize int `json:"page_size"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &parsed); err != nil {
+			return argsError(ToolLookupPeers, "arguments are not valid JSON: "+err.Error())
+		}
+	}
+	peers, err := e.client.LookupPeersPage(ctx, parsed.Page, parsed.PageSize)
 	if err != nil {
 		return platformFailure(err)
 	}

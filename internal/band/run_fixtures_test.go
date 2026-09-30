@@ -137,7 +137,6 @@ func newRunnerRestFake(t *testing.T, roomsJSON string, nextBodies map[string][]s
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
-	t.Logf("runnerRestFake: registering /chats/ subroutes")
 	mux.HandleFunc("/api/v1/agent/chats/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {

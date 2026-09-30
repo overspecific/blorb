@@ -190,7 +190,7 @@ func (s *Socket) roundTrip(ctx context.Context, topic, event string, payload any
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-s.done:
+	case <-s.closed:
 		return nil, errors.New("band socket closed")
 	case r := <-wait:
 		return r.payload, r.err
@@ -372,12 +372,12 @@ func (s *Socket) logWire(kind, topic string, body []byte) {
 	})
 }
 
-// shutdown records the terminal error once and closes the event channel.
-// A nil err means a deliberate close, not a failure.
 // shutdown records the terminal error once and signals the loops. The
 // events channel is closed by readLoop (the only sender), so a
-// concurrent shutdown can never close it under a send. A nil err means
-// a deliberate close, not a failure.
+// concurrent shutdown can never close it under a send. done keeps the
+// terminal error for Done's single reader; closed is the signal every
+// other waiter watches. A nil err means a deliberate close, not a
+// failure.
 func (s *Socket) shutdown(err error) {
 	s.once.Do(func() {
 		if err == nil {

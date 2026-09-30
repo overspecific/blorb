@@ -436,6 +436,20 @@ func TestLookupPeersFollowsPagination(t *testing.T) {
 // pagination test can force a full first page.
 const peersPageSizeForTest = 100
 
+func TestLookupPeersPageHonorsArgs(t *testing.T) {
+	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		writeData(w, http.StatusOK, `[]`)
+	})
+	c := f.client(t, logging.NewNop())
+	if _, err := c.LookupPeersPage(context.Background(), 3, 7); err != nil {
+		t.Fatalf("LookupPeersPage error = %v, want nil", err)
+	}
+	reqs := f.seen()
+	if len(reqs) != 1 || !strings.Contains(reqs[0].Path, "page=3") || !strings.Contains(reqs[0].Path, "page_size=7") {
+		t.Errorf("requests = %+v, want a single call with page=3 and page_size=7", reqs)
+	}
+}
+
 func TestSinkRequestResponseRecords(t *testing.T) {
 	f := newRestFake(t, func(w http.ResponseWriter, r *http.Request) {
 		writeData(w, http.StatusOK, `{}`)

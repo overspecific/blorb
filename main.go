@@ -224,8 +224,6 @@ func runCommand() *cli.Command {
 		Usage: "Run one agent turn and exit",
 		// Prompt: a literal string (start it with @@ to begin with a
 		// literal @), @file, or - for stdin.
-		// Prompt: a literal string (start it with @@ to begin with a
-		// literal @), @file, or - for stdin.
 		ArgsUsage:   "[prompt]",
 		Description: "Prompt: a literal string (start it with @@ to begin with a literal @), @file, or - for stdin. Exactly one prompt argument is accepted; stdin is read only when explicitly requested with - or @-.",
 		Flags: []cli.Flag{
@@ -400,7 +398,8 @@ func bandCommand() *cli.Command {
 	}
 }
 
-// resolveAgent picks the agent a chat session runs: the given name when// non-empty, else the config's default_agent. It fails with the available
+// resolveAgent picks the agent a chat session runs: the given name when
+// non-empty, else the config's default_agent. It fails with the available
 // agent names when nothing is chosen and with a not-defined error when the
 // chosen name is not in the config.
 func resolveAgent(cfg config.Config, name string) (config.Agent, error) {

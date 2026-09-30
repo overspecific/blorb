@@ -68,20 +68,23 @@ func (e *APIError) Error() string {
 // "data" value (nil to skip decoding). Non-2xx decodes an error envelope
 // and returns *APIError.
 func (c *Client) do(ctx context.Context, method, path string, reqBody, respBody any) error {
-	return c.doMeta(ctx, method, path, reqBody, respBody, nil)
+	_, err := c.doMeta(ctx, method, path, reqBody, respBody, nil)
+	return err
 }
 
 // doMeta is do with the response envelope's "metadata" object also
-// decoded into metaOut when non-nil, for the cursor-paginated endpoints
-// that carry next_cursor and has_more there.
-func (c *Client) doMeta(ctx context.Context, method, path string, reqBody, respBody, metaOut any) error {
+// decoded into metaOut when non-nil (for the cursor-paginated endpoints
+// that carry next_cursor and has_more there), and the HTTP status
+// returned for endpoints where the status itself is meaningful (the 204
+// on messages/next).
+func (c *Client) doMeta(ctx context.Context, method, path string, reqBody, respBody, metaOut any) (int, error) {
 	fullURL := c.restURL + apiPrefix + path
 
 	var reqReader io.Reader
 	if reqBody != nil {
 		body, err := json.Marshal(reqBody)
 		if err != nil {
-			return fmt.Errorf("encode %s %s: %w", method, path, err)
+			return 0, fmt.Errorf("encode %s %s: %w", method, path, err)
 		}
 		reqReader = bytes.NewReader(body)
 		c.logWire("band-request", method, fullURL, body)
@@ -91,7 +94,7 @@ func (c *Client) doMeta(ctx context.Context, method, path string, reqBody, respB
 
 	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqReader)
 	if err != nil {
-		return fmt.Errorf("build %s %s: %w", method, path, err)
+		return 0, fmt.Errorf("build %s %s: %w", method, path, err)
 	}
 	req.Header.Set("X-API-Key", c.apiKey)
 	if reqBody != nil {
@@ -101,19 +104,19 @@ func (c *Client) doMeta(ctx context.Context, method, path string, reqBody, respB
 	resp, err := c.http.Do(req)
 	if err != nil {
 		c.logWire("band-response", method, fullURL, []byte(err.Error()))
-		return fmt.Errorf("%s %s: %w", method, fullURL, err)
+		return 0, fmt.Errorf("%s %s: %w", method, fullURL, err)
 	}
 	defer resp.Body.Close()
 
 	respBytes, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
 		c.logWire("band-response", method, fullURL, nil)
-		return fmt.Errorf("read %s %s response: %w", method, fullURL, readErr)
+		return 0, fmt.Errorf("read %s %s response: %w", method, fullURL, readErr)
 	}
 	c.logWire("band-response", method, fullURL, respBytes)
 
 	if resp.StatusCode >= 300 {
-		return decodeAPIError(resp.StatusCode, respBytes)
+		return resp.StatusCode, decodeAPIError(resp.StatusCode, respBytes)
 	}
 
 	if len(respBytes) > 0 && (respBody != nil || metaOut != nil) {
@@ -122,20 +125,20 @@ func (c *Client) doMeta(ctx context.Context, method, path string, reqBody, respB
 			Metadata json.RawMessage `json:"metadata"`
 		}
 		if err := json.Unmarshal(respBytes, &envelope); err != nil {
-			return fmt.Errorf("decode %s %s: %w", method, path, err)
+			return resp.StatusCode, fmt.Errorf("decode %s %s: %w", method, path, err)
 		}
 		if respBody != nil && len(envelope.Data) > 0 {
 			if err := json.Unmarshal(envelope.Data, respBody); err != nil {
-				return fmt.Errorf("decode %s %s data: %w", method, path, err)
+				return resp.StatusCode, fmt.Errorf("decode %s %s data: %w", method, path, err)
 			}
 		}
 		if metaOut != nil && len(envelope.Metadata) > 0 {
 			if err := json.Unmarshal(envelope.Metadata, metaOut); err != nil {
-				return fmt.Errorf("decode %s %s metadata: %w", method, path, err)
+				return resp.StatusCode, fmt.Errorf("decode %s %s metadata: %w", method, path, err)
 			}
 		}
 	}
-	return nil
+	return resp.StatusCode, nil
 }
 
 // decodeAPIError parses a non-2xx body into a typed error; the status is
@@ -243,8 +246,8 @@ func (c *Client) LookupPeers(ctx context.Context) ([]Peer, error) {
 	var out []Peer
 	page := 1
 	for {
-		var peers []Peer
-		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/peers?page=%d&page_size=%d", page, peersPageSize), nil, &peers); err != nil {
+		peers, err := c.LookupPeersPage(ctx, page, peersPageSize)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, peers...)
@@ -253,6 +256,22 @@ func (c *Client) LookupPeers(ctx context.Context) ([]Peer, error) {
 		}
 		page++
 	}
+}
+
+// LookupPeersPage returns one page of peers. page and pageSize fall back
+// to 1 and peersPageSize when non-positive.
+func (c *Client) LookupPeersPage(ctx context.Context, page, pageSize int) ([]Peer, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = peersPageSize
+	}
+	var peers []Peer
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/peers?page=%d&page_size=%d", page, pageSize), nil, &peers); err != nil {
+		return nil, err
+	}
+	return peers, nil
 }
 
 // CreateChat creates a room; either field may be empty.
@@ -279,40 +298,15 @@ func (c *Client) CreateChat(ctx context.Context, title, taskID string) (ChatRoom
 // NextMessage claims the next queued message for a room, or nil when the
 // queue is empty (204).
 func (c *Client) NextMessage(ctx context.Context, chatID string) (*ChatMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.restURL+apiPrefix+"/chats/"+chatID+"/messages/next", nil)
+	var msg ChatMessage
+	status, err := c.doMeta(ctx, http.MethodGet, "/chats/"+chatID+"/messages/next", nil, &msg, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build next message request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("X-API-Key", c.apiKey)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("GET next message: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read next message response: %w", err)
-	}
-	c.logWire("band-response", http.MethodGet, c.restURL+apiPrefix+"/chats/"+chatID+"/messages/next", respBytes)
-
-	if resp.StatusCode == http.StatusNoContent {
+	if status == http.StatusNoContent {
 		return nil, nil
 	}
-	if resp.StatusCode >= 300 {
-		return nil, decodeAPIError(resp.StatusCode, respBytes)
-	}
-
-	// The response arrives in the same {"data": ...} envelope as every
-	// other endpoint; unwrap it before decoding the message.
-	var envelope struct {
-		Data ChatMessage `json:"data"`
-	}
-	if err := json.Unmarshal(respBytes, &envelope); err != nil {
-		return nil, fmt.Errorf("decode next message: %w", err)
-	}
-	return &envelope.Data, nil
+	return &msg, nil
 }
 
 // MarkProcessing tells the platform the message is being handled.
@@ -383,7 +377,7 @@ func (c *Client) Context(ctx context.Context, chatID string) ([]ChatMessage, err
 			}
 		)
 		path := fmt.Sprintf("/chats/%s/context?%s", chatID, params.Encode())
-		if err := c.doMeta(ctx, http.MethodGet, path, nil, &messages, &meta); err != nil {
+		if _, err := c.doMeta(ctx, http.MethodGet, path, nil, &messages, &meta); err != nil {
 			return nil, err
 		}
 		out = append(out, messages...)
