@@ -7,7 +7,7 @@ The knowledgebase itself does not move. The decision config references `../simpl
 ## Todo
 
 - [x] Commit 1: config - the knowledgebase-grounded triage example and its test
-- [ ] Commit 2: docs - the top-level README pointer
+- [x] Commit 2: docs - the top-level README pointer
 
 ---
 

@@ -244,7 +244,7 @@ See [examples/ollama-cloud](examples/ollama-cloud) for a single-agent variant po
 
 See [examples/plaud](examples/plaud) for a two-agent config exposing the Plaud CLI (`files` and `transcript`) as command tools the agents can call to list the user's recordings and fetch their transcripts, plus a `summarize` subagent tool that delegates to a summarizer agent returning a JSON summary with action items.
 
-See [examples/decision](examples/decision) for a decision-model config: a `decider` tool an agent can call, and a direct `blorb decide` invocation.
+See [examples/decision](examples/decision) for a decision-model config that puts the model to work narrowing a complaint: a `triage` agent retrieves from the [simple](examples/simple) example's biscuit knowledgebase (through the shared `kb` toolset and a `search` subagent) and calls one `triage_ticket` decider that answers four typed questions at once - which biscuit, which region, whether the excerpt answers it, and the next action - taking a structured state through a custom `args_schema`.
 
 ## Contributing
 
