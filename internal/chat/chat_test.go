@@ -125,7 +125,7 @@ func testAgent() config.Agent {
 func testProvider() config.Provider {
 	return config.Provider{
 		Name:    "local",
-		Type:    config.ModelTypeOpenAI,
+		Type:    config.ProviderTypeOpenAI,
 		BaseURL: "http://localhost:1",
 	}
 }
@@ -1921,7 +1921,7 @@ func TestNewClientPlumbsReasoningEffort(t *testing.T) {
 func ollamaTestProvider() config.Provider {
 	return config.Provider{
 		Name:    "local",
-		Type:    config.ModelTypeOllama,
+		Type:    config.ProviderTypeOllama,
 		BaseURL: "http://localhost:11434",
 	}
 }

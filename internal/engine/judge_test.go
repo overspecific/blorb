@@ -20,7 +20,7 @@ func judgeConfig(t *testing.T, agents map[string]string, judges map[string][]str
 	cfg := config.Config{
 		Providers: []config.Provider{{
 			Name:    "local",
-			Type:    config.ModelTypeOpenAI,
+			Type:    config.ProviderTypeOpenAI,
 			BaseURL: "http://localhost:1",
 		}},
 		Models: []config.Model{{
@@ -302,7 +302,7 @@ func TestJudgeRunnerTwoJudgesInOrder(t *testing.T) {
 
 	cfg := config.Config{
 		Providers: []config.Provider{{
-			Name: "local", Type: config.ModelTypeOpenAI, BaseURL: "http://localhost:1",
+			Name: "local", Type: config.ProviderTypeOpenAI, BaseURL: "http://localhost:1",
 		}},
 		Models: []config.Model{{Name: "m", Provider: "local", ModelName: "m"}},
 		Agents: []config.Agent{

@@ -110,7 +110,7 @@ func (f *fragmentingClient) ChatStream(ctx context.Context, req llm.Request, onD
 func runTestProvider() config.Provider {
 	return config.Provider{
 		Name:    "local",
-		Type:    config.ModelTypeOpenAI,
+		Type:    config.ProviderTypeOpenAI,
 		BaseURL: "http://localhost:1",
 	}
 }

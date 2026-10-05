@@ -29,7 +29,7 @@ func roomTestConfig() (config.Config, config.Agent) {
 	cfg := config.Config{
 		Providers: []config.Provider{{
 			Name:    "local",
-			Type:    config.ModelTypeOpenAI,
+			Type:    config.ProviderTypeOpenAI,
 			BaseURL: "http://localhost:1",
 		}},
 		Models: []config.Model{{Name: "m", Provider: "local", ModelName: "m"}},

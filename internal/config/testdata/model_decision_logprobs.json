@@ -1,0 +1,12 @@
+{
+  "providers": [
+    {"name": "local", "type": "openai-compatible", "base_url": "http://localhost:1"}
+  ],
+  "models": [
+    {"name": "m", "provider": "local", "model_name": "m"},
+    {"name": "decider", "provider": "local", "model_name": "jev", "model_type": "decision", "logprobs": true}
+  ],
+  "agents": [
+    {"name": "helper", "system_prompt": "You are helpful.", "max_turns": 1, "model": "m"}
+  ]
+}

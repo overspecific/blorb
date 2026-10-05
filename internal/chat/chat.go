@@ -908,7 +908,7 @@ type clientFactory func(provider config.Provider, model config.Model, getenv fun
 // provider type. Adding a provider type means adding a config constant, a
 // validation case, and an entry here — nothing else changes.
 var clientFactories = map[string]clientFactory{
-	config.ModelTypeOpenAI: func(provider config.Provider, model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+	config.ProviderTypeOpenAI: func(provider config.Provider, model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
 		apiKey, err := resolveAPIKey(provider, getenv)
 		if err != nil {
 			return nil, err
@@ -923,7 +923,7 @@ var clientFactories = map[string]clientFactory{
 			Sink:            sink,
 		})
 	},
-	config.ModelTypeOllama: func(provider config.Provider, model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
+	config.ProviderTypeOllama: func(provider config.Provider, model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
 		apiKey, err := resolveAPIKey(provider, getenv)
 		if err != nil {
 			return nil, err
@@ -980,7 +980,7 @@ func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(stri
 func newProviderModelClient(provider config.Provider, model config.Model, getenv func(string) string, sink logging.Sink) (llm.Client, error) {
 	factory, ok := clientFactories[provider.Type]
 	if !ok {
-		return nil, fmt.Errorf("provider type %q is not supported (supported: %v)", provider.Type, config.SupportedModelTypes())
+		return nil, fmt.Errorf("provider type %q is not supported (supported: %v)", provider.Type, config.SupportedProviderTypes())
 	}
 	return factory(provider, model, getenv, sink)
 }

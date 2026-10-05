@@ -84,8 +84,8 @@ func TestLoadValid(t *testing.T) {
 		t.Errorf("Models[0].ModelName = %q, want m2", m2.ModelName)
 	}
 	local := cfg.Providers[0]
-	if local.Name != "local" || local.Type != config.ModelTypeOpenAI {
-		t.Errorf("Providers[0].Name/Type = %q/%q, want local/%s", local.Name, local.Type, config.ModelTypeOpenAI)
+	if local.Name != "local" || local.Type != config.ProviderTypeOpenAI {
+		t.Errorf("Providers[0].Name/Type = %q/%q, want local/%s", local.Name, local.Type, config.ProviderTypeOpenAI)
 	}
 	if local.BaseURL != "http://localhost:1" {
 		t.Errorf("Providers[0].BaseURL = %q, want http://localhost:1", local.BaseURL)
@@ -213,14 +213,14 @@ func TestAgentLookup(t *testing.T) {
 func TestProviderLookup(t *testing.T) {
 	cfg := config.Config{
 		Providers: []config.Provider{
-			{Name: "local", Type: config.ModelTypeOllama, BaseURL: "http://localhost:11434"},
-			{Name: "remote", Type: config.ModelTypeOpenAI, BaseURL: "https://api.example.com/v1"},
+			{Name: "local", Type: config.ProviderTypeOllama, BaseURL: "http://localhost:11434"},
+			{Name: "remote", Type: config.ProviderTypeOpenAI, BaseURL: "https://api.example.com/v1"},
 		},
 	}
 
 	t.Run("present", func(t *testing.T) {
 		p, ok := cfg.Provider("local")
-		if !ok || p.Name != "local" || p.Type != config.ModelTypeOllama {
+		if !ok || p.Name != "local" || p.Type != config.ProviderTypeOllama {
 			t.Errorf("Provider(local) = (%+v, %v), want the local provider", p, ok)
 		}
 	})
@@ -351,7 +351,7 @@ func TestLoadReasoningEffort(t *testing.T) {
 func validProvider() config.Provider {
 	return config.Provider{
 		Name:    "local",
-		Type:    config.ModelTypeOpenAI,
+		Type:    config.ProviderTypeOpenAI,
 		BaseURL: "http://localhost:1",
 	}
 }
@@ -638,6 +638,15 @@ func TestLoadRejects(t *testing.T) {
 		{"model_top_logprobs_out_of_range.json", []string{"top_logprobs 21 must be in [0, 20]"}},
 		{"model_top_logprobs_without_logprobs.json", []string{"top_logprobs is settable only when logprobs is true"}},
 		{"model_top_logprobs_zero_without_logprobs.json", []string{"top_logprobs is settable only when logprobs is true"}},
+		{"model_type_unknown.json", []string{`model_type "nope" must be one of`, "decision", "llm"}},
+		{"model_decision_reasoning_effort.json", []string{"reasoning_effort is not valid for decision models"}},
+		{"model_decision_format.json", []string{"format is not valid for decision models"}},
+		{"model_decision_keep_alive.json", []string{"keep_alive is not valid for decision models"}},
+		{"model_decision_tool_choice.json", []string{"tool_choice is not valid for decision models"}},
+		{"model_decision_logprobs.json", []string{"logprobs is not valid for decision models"}},
+		{"model_decision_top_logprobs.json", []string{"top_logprobs is not valid for decision models"}},
+		{"model_decision_ollama_provider.json", []string{`model_type "decision" requires an openai-compatible provider`}},
+		{"agent_decision_model.json", []string{`agent "helper": model "decider" is a decision model; agents require an llm model`}},
 		{"tool_missing_name.json", []string{"name is required"}},
 		{"tool_missing_description.json", []string{"description is required"}},
 		{"tool_missing_type.json", []string{"type is required"}},
@@ -1273,23 +1282,76 @@ func TestLoadOllamaModelValid(t *testing.T) {
 		t.Errorf("ReasoningEffort = %q, want medium", m.ReasoningEffort)
 	}
 	p := cfg.Providers[0]
-	if p.Type != config.ModelTypeOllama {
-		t.Errorf("Type = %q, want %q", p.Type, config.ModelTypeOllama)
+	if p.Type != config.ProviderTypeOllama {
+		t.Errorf("Type = %q, want %q", p.Type, config.ProviderTypeOllama)
 	}
 	if p.BaseURL != "http://localhost:11434" {
 		t.Errorf("BaseURL = %q, want http://localhost:11434", p.BaseURL)
 	}
 }
 
-// TestSupportedModelTypes pins the alphabetically sorted list the unknown
-// type errors name.
+// TestSupportedProviderTypes pins the alphabetically sorted list the
+// unknown provider type errors name.
+func TestSupportedProviderTypes(t *testing.T) {
+	got := config.SupportedProviderTypes()
+	if fmt.Sprint(got) != fmt.Sprint([]string{"ollama", "openai-compatible"}) {
+		t.Errorf("SupportedProviderTypes() = %v, want [ollama openai-compatible]", got)
+	}
+	if !slices.Contains(got, config.ProviderTypeOllama) || !slices.Contains(got, config.ProviderTypeOpenAI) {
+		t.Errorf("SupportedProviderTypes() = %v, want both ollama and openai-compatible", got)
+	}
+}
+
+// TestSupportedModelTypes pins the alphabetically sorted model_type list
+// the unknown model_type error names.
 func TestSupportedModelTypes(t *testing.T) {
 	got := config.SupportedModelTypes()
-	if fmt.Sprint(got) != fmt.Sprint([]string{"ollama", "openai-compatible"}) {
-		t.Errorf("SupportedModelTypes() = %v, want [ollama openai-compatible]", got)
+	if fmt.Sprint(got) != fmt.Sprint([]string{"decision", "llm"}) {
+		t.Errorf("SupportedModelTypes() = %v, want [decision llm]", got)
 	}
-	if !slices.Contains(got, config.ModelTypeOllama) || !slices.Contains(got, config.ModelTypeOpenAI) {
-		t.Errorf("SupportedModelTypes() = %v, want both ollama and openai-compatible", got)
+}
+
+// TestLoadDecisionModelValid pins the parsed shape of a decision model and
+// that model_name is optional for one.
+func TestLoadDecisionModelValid(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadTestdata(t, "model_decision_valid.json")
+	if err != nil {
+		t.Fatalf("Load(model_decision_valid.json) error = %v, want nil", err)
+	}
+	m, ok := cfg.Model("decider")
+	if !ok {
+		t.Fatal("Model(\"decider\") missing")
+	}
+	if m.ResolvedModelType() != config.ModelTypeDecision {
+		t.Errorf("ResolvedModelType() = %q, want decision", m.ResolvedModelType())
+	}
+	if m.ModelName != "jev" {
+		t.Errorf("ModelName = %q, want jev", m.ModelName)
+	}
+
+	cfg, err = loadTestdata(t, "model_decision_no_model_name.json")
+	if err != nil {
+		t.Fatalf("Load(model_decision_no_model_name.json) error = %v, want nil", err)
+	}
+	m, ok = cfg.Model("decider")
+	if !ok {
+		t.Fatal("Model(\"decider\") missing")
+	}
+	if m.ModelName != "" {
+		t.Errorf("ModelName = %q, want empty", m.ModelName)
+	}
+}
+
+// TestResolvedModelTypeDefault pins that an unset model_type resolves to
+// llm.
+func TestResolvedModelTypeDefault(t *testing.T) {
+	t.Parallel()
+
+	m := config.Model{}
+	if got := m.ResolvedModelType(); got != config.ModelTypeLLM {
+		t.Errorf("ResolvedModelType() = %q, want llm", got)
 	}
 }
 

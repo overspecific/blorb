@@ -80,12 +80,22 @@ const (
 	// .logs directory next to the config file.
 	DefaultLogDir = ".logs"
 
-	// ModelTypeOpenAI selects an OpenAI-compatible chat completions API.
-	ModelTypeOpenAI = "openai-compatible"
+	// ProviderTypeOpenAI selects an OpenAI-compatible chat completions API.
+	ProviderTypeOpenAI = "openai-compatible"
 
-	// ModelTypeOllama selects Ollama's native /api/chat API: a local
+	// ProviderTypeOllama selects Ollama's native /api/chat API: a local
 	// Ollama server or Ollama cloud.
-	ModelTypeOllama = "ollama"
+	ProviderTypeOllama = "ollama"
+
+	// ModelTypeLLM is the default model_type: a chat completions model
+	// the agent engine drives in a message loop.
+	ModelTypeLLM = "llm"
+
+	// ModelTypeDecision selects a decision model: a System One model
+	// (Jev is the first example) that evaluates a state against typed
+	// questions and returns typed answers with probabilities. Only
+	// deciders may reference a decision model.
+	ModelTypeDecision = "decision"
 
 	// DefaultPrefactorAPIURL is the Prefactor API base URL used when
 	// api_url is unset in the prefactor config block.
@@ -462,8 +472,17 @@ type Model struct {
 	// defined provider in the same config (see Config.Provider).
 	Provider string `json:"provider"`
 	// ModelName is the model identifier sent to the server: for ollama
-	// the Ollama tag, for openai-compatible the server's model id.
+	// the Ollama tag, for openai-compatible the server's model id. It is
+	// required for llm models; a decision model may leave it empty, in
+	// which case the wire request omits the model field and the server
+	// applies its default.
 	ModelName string `json:"model_name,omitempty"`
+	// ModelType selects what the model is: ModelTypeLLM (an absent field's
+	// meaning) for a chat completions model the agent engine drives in a
+	// message loop, or ModelTypeDecision for a decision model that
+	// evaluates a state against typed questions and returns typed
+	// answers. Only deciders may reference a decision model.
+	ModelType string `json:"model_type,omitempty"`
 	// Format is Ollama's structured-output setting, valid only on models
 	// whose provider's type is ollama: either the JSON string "json" or a
 	// JSON schema object. Empty means free-form output.
@@ -617,10 +636,16 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// SupportedModelTypes lists the model types this build recognizes, sorted
-// alphabetically.
+// SupportedProviderTypes lists the provider types this build recognizes,
+// sorted alphabetically.
+func SupportedProviderTypes() []string {
+	return []string{ProviderTypeOllama, ProviderTypeOpenAI}
+}
+
+// SupportedModelTypes lists the model_type values this build recognizes,
+// sorted alphabetically.
 func SupportedModelTypes() []string {
-	return []string{ModelTypeOllama, ModelTypeOpenAI}
+	return []string{ModelTypeDecision, ModelTypeLLM}
 }
 
 // MaxTurnsOrDefault returns MaxTurns, or DefaultMaxTurns when unset (zero).
@@ -1166,6 +1191,9 @@ func (a *Agent) validate(models []Model, index map[string][]ToolEntry) error {
 	if !slices.ContainsFunc(models, func(m Model) bool { return m.Name == a.Model }) {
 		return fmt.Errorf("agent %q: model %q is not a defined model", a.Name, a.Model)
 	}
+	if idx := slices.IndexFunc(models, func(m Model) bool { return m.Name == a.Model }); models[idx].ResolvedModelType() != ModelTypeLLM {
+		return fmt.Errorf("agent %q: model %q is a decision model; agents require an llm model", a.Name, a.Model)
+	}
 	if a.MaxTurns < 1 {
 		return fmt.Errorf("agent %q: max_turns must be at least 1 (got %d)", a.Name, a.MaxTurns)
 	}
@@ -1219,13 +1247,13 @@ func (p *Provider) validate() error {
 		return fmt.Errorf("provider name %q must match %s", p.Name, NamePattern)
 	}
 	switch p.Type {
-	case ModelTypeOpenAI, ModelTypeOllama:
+	case ProviderTypeOpenAI, ProviderTypeOllama:
 		if err := validateEndpointProvider(p); err != nil {
 			return err
 		}
 		return validateSampling(p)
 	default:
-		return fmt.Errorf("unknown type %q (supported: %v)", p.Type, SupportedModelTypes())
+		return fmt.Errorf("unknown type %q (supported: %v)", p.Type, SupportedProviderTypes())
 	}
 }
 
@@ -1294,6 +1322,12 @@ func (m *Model) validate(providers []Provider) error {
 	if idx < 0 {
 		return fmt.Errorf("provider %q is not a defined provider", m.Provider)
 	}
+	if !slices.Contains(SupportedModelTypes(), m.ResolvedModelType()) {
+		return fmt.Errorf("model_type %q must be one of: %s", m.ModelType, strings.Join(SupportedModelTypes(), ", "))
+	}
+	if m.ResolvedModelType() == ModelTypeDecision {
+		return m.validateDecision(providers[idx])
+	}
 	if m.ModelName == "" {
 		return fmt.Errorf("model_name is required")
 	}
@@ -1310,6 +1344,35 @@ func (m *Model) validate(providers []Provider) error {
 		return err
 	}
 	return validateLogprobs(m)
+}
+
+// validateDecision checks a decision model's fields: the llm-only knobs
+// are rejected outright, model_name is optional, and the provider must be
+// openai-compatible (a decision model needs a plain base_url plus bearer
+// key; the ollama provider type has no decision surface).
+func (m *Model) validateDecision(provider Provider) error {
+	if provider.Type != ProviderTypeOpenAI {
+		return fmt.Errorf("model_type %q requires an openai-compatible provider", ModelTypeDecision)
+	}
+	if m.ReasoningEffort != "" {
+		return fmt.Errorf("reasoning_effort is not valid for decision models")
+	}
+	if len(m.Format) > 0 {
+		return fmt.Errorf("format is not valid for decision models")
+	}
+	if m.KeepAlive != "" {
+		return fmt.Errorf("keep_alive is not valid for decision models")
+	}
+	if m.ToolChoice != "" || m.ForcedTool != "" {
+		return fmt.Errorf("tool_choice is not valid for decision models")
+	}
+	if m.Logprobs {
+		return fmt.Errorf("logprobs is not valid for decision models")
+	}
+	if m.TopLogprobs != nil {
+		return fmt.Errorf("top_logprobs is not valid for decision models")
+	}
+	return nil
 }
 
 // validateLogprobs checks the logprobs/top_logprobs pair: top_logprobs in
@@ -1375,6 +1438,15 @@ func (m *Model) TopLogprobsOrDefault() int {
 	return *m.TopLogprobs
 }
 
+// ResolvedModelType returns the model's model_type, or ModelTypeLLM when
+// unset.
+func (m *Model) ResolvedModelType() string {
+	if m.ModelType == "" {
+		return ModelTypeLLM
+	}
+	return m.ModelType
+}
+
 // SupportedToolChoiceModes lists the tool_choice modes, sorted
 // alphabetically.
 func SupportedToolChoiceModes() []string {
@@ -1388,7 +1460,7 @@ func validateKeepAlive(keepAlive, providerType string) error {
 	if keepAlive == "" {
 		return nil
 	}
-	if providerType != ModelTypeOllama {
+	if providerType != ProviderTypeOllama {
 		return fmt.Errorf("keep_alive is not valid for models on %s providers", providerType)
 	}
 	return nil
@@ -1402,7 +1474,7 @@ func validateFormat(format json.RawMessage, providerType string) error {
 	if len(format) == 0 {
 		return nil
 	}
-	if providerType != ModelTypeOllama {
+	if providerType != ProviderTypeOllama {
 		return fmt.Errorf("format is not valid for models on %s providers", providerType)
 	}
 	var asAny any
