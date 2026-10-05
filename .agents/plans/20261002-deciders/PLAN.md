@@ -24,7 +24,7 @@ Out of scope: Prefactor tracing of decision calls (they are not wrapped in the t
 
 - [x] Commit 1: config - the model_type field and the provider-type rename
 - [x] Commit 2: config - deciders and the decider tool type
-- [ ] Commit 3: llm - decision types and the System One client
+- [x] Commit 3: llm - decision types and the System One client
 - [ ] Commit 4: tools - deciderTool, SubagentDecision event, registry wiring
 - [ ] Commit 5: engine - the real DeciderRunner, wired into subagent and judge registries
 - [ ] Commit 6: chat, run and band wiring, decision display
