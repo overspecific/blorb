@@ -26,7 +26,12 @@ Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
 
 It takes `-c | --config <path>` and a required `--decider <name>` flag. There is no default decider: deciders are named things you invoke deliberately, and `default_agent` names an agent. Naming a decider that is not defined exits `1` with an error naming the available deciders.
 
-The positional `[state]` argument uses the same syntax as `run`'s prompt: a literal string (`@@` escapes a leading `@`), `@file` to read from a file, or `-` to read from stdin. Exactly one state argument is accepted; stdin is only read when explicitly requested with `-` or `@-`.
+The positional `[state]` argument uses the same syntax as `run`'s prompt: a literal string (`@@` escapes a leading `@`), `@file` to read from a file, or `-` to read from stdin. Exactly one state argument is accepted; stdin is only read when explicitly requested with `-` or `@-`. By default the state is sent to the server as a JSON string. Pass `--state-json` to treat it as raw JSON instead (an object or array), sent to the server verbatim - the protocol accepts a string, object, or array state. With `--state-json` the argument must be valid JSON, or the command exits `1` before any call:
+
+```sh
+./blorb decide --decider triage --state-json \
+  '{"subject":"Charged twice","plan":"pro","message":"Please refund the duplicate."}'
+```
 
 stdout is the answers JSON, one object keyed by question name. There is no usage footer: the JSON body is the output a script consumes (usage still lands in the wire logs). A decider-level failure - the server rejected the request - is written to stderr and exits `1`; there is no parent model to react to it, so the failure is yours to see.
 

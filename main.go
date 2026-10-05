@@ -331,7 +331,8 @@ func decideCommand() *cli.Command {
 		Usage:     "Evaluate a decider against a state and print the answers as JSON",
 		ArgsUsage: "[state]",
 		Description: "State: a literal string (start it with @@ to begin with a literal @), @file, or - for stdin. " +
-			"Exactly one state argument is accepted; stdin is read only when explicitly requested with - or @-.",
+			"Exactly one state argument is accepted; stdin is read only when explicitly requested with - or @-. " +
+			"With --state-json the state is passed to the server as raw JSON rather than a JSON string.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "config",
@@ -343,6 +344,10 @@ func decideCommand() *cli.Command {
 				Name:     "decider",
 				Usage:    "Name of the decider to evaluate",
 				Required: true,
+			},
+			&cli.BoolFlag{
+				Name:  "state-json",
+				Usage: "Treat the state argument as raw JSON (an object or array), passed to the server verbatim, instead of a plain string",
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -375,6 +380,7 @@ func decideCommand() *cli.Command {
 				Stdout:     os.Stdout,
 				Stderr:     os.Stderr,
 				ConfigPath: cmd.String("config"),
+				StateJSON:  cmd.Bool("state-json"),
 			}, state)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {

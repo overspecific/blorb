@@ -25,6 +25,10 @@ type Options struct {
 	Stdout     io.Writer
 	Stderr     io.Writer
 	ConfigPath string
+	// StateJSON treats the state argument as raw JSON instead of a plain
+	// string: the bytes are passed to the server verbatim, so a structured
+	// object or array state is expressible. Invalid JSON is an error.
+	StateJSON bool
 	// NewDecisionClient overrides decision client construction.
 	// Tests only; nil uses the real path.
 	NewDecisionClient func(cfg config.Config, decider config.Decider) (llm.DeciderClient, error)
@@ -38,12 +42,17 @@ func Run(ctx context.Context, opts Options, state string) error {
 		return err
 	}
 
+	raw, err := encodeState(state, opts.StateJSON)
+	if err != nil {
+		return err
+	}
+
 	runner := engine.NewDeciderRunner(engine.DeciderRunnerConfig{
 		Config:            opts.Config,
 		NewDecisionClient: opts.newDecisionClientFor(sink),
 	})
 
-	res, err := runner.RunDecider(ctx, opts.Decider.Name, json.RawMessage(strconv.Quote(state)))
+	res, err := runner.RunDecider(ctx, opts.Decider.Name, raw)
 	if err != nil {
 		return err
 	}
@@ -57,6 +66,19 @@ func Run(ctx context.Context, opts Options, state string) error {
 		fmt.Fprintln(opts.Stdout, res.Output)
 	}
 	return nil
+}
+
+// encodeState turns the state text into the wire state: as raw JSON passed
+// through verbatim when asJSON is set, else as a JSON string. asJSON with
+// invalid JSON is an error.
+func encodeState(state string, asJSON bool) (json.RawMessage, error) {
+	if !asJSON {
+		return json.RawMessage(strconv.Quote(state)), nil
+	}
+	if !json.Valid([]byte(state)) {
+		return nil, errors.New("state is not valid JSON")
+	}
+	return json.RawMessage(state), nil
 }
 
 // newDecisionClientFor returns the decision client factory: the injected

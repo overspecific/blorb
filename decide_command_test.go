@@ -211,3 +211,39 @@ func TestDecideCommandMissingDeciderFlag(t *testing.T) {
 		t.Errorf("error = %v, want the required-flag error", err)
 	}
 }
+
+// TestDecideCommandStateJSON passes structured state through the CLI and
+// asserts the provider receives it verbatim.
+func TestDecideCommandStateJSON(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"priority":{"type":"choice","choice":"high"}},"usage":{}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfgPath := writeDeciderConfig(t, t.TempDir(), srv.URL)
+	out, _, err := runDecideCommand(t, cfgPath, "", "--decider", "triage", "--state-json", `{"subject":"Charged twice"}`)
+	if err != nil {
+		t.Fatalf("decide error = %v, want nil", err)
+	}
+	if !strings.Contains(out, `"priority":{"type":"choice","choice":"high"}`) {
+		t.Errorf("stdout = %q, want the answers JSON", out)
+	}
+	if !strings.Contains(gotBody, `"state":{"subject":"Charged twice"}`) {
+		t.Errorf("request body = %q, want the structured state verbatim", gotBody)
+	}
+}
+
+// TestDecideCommandStateJSONInvalid rejects a non-JSON state before any call.
+func TestDecideCommandStateJSONInvalid(t *testing.T) {
+	srv := newFakeDecisionServer(t)
+	cfgPath := writeDeciderConfig(t, t.TempDir(), srv.URL)
+
+	_, _, err := runDecideCommand(t, cfgPath, "", "--decider", "triage", "--state-json", "not json")
+	if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Errorf("error = %v, want the invalid-JSON error", err)
+	}
+}

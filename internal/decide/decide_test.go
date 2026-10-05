@@ -170,3 +170,57 @@ func TestRunRealPathModelError(t *testing.T) {
 		t.Errorf("Run error = %v, want a model-resolution error", err)
 	}
 }
+
+func TestRunStateJSON(t *testing.T) {
+	t.Parallel()
+
+	cfg, decider := decideConfig(t)
+	fake := &fakeDecisionClient{response: &llm.DecisionResponse{
+		Answers: map[string]llm.DecisionAnswer{"priority": {Type: "choice", Choice: "high"}},
+	}}
+
+	var stdout strings.Builder
+	err := decide.Run(context.Background(), decide.Options{
+		Config:    cfg,
+		Decider:   decider,
+		Stdout:    &stdout,
+		Stderr:    &strings.Builder{},
+		StateJSON: true,
+		NewDecisionClient: func(config.Config, config.Decider) (llm.DeciderClient, error) {
+			return fake, nil
+		},
+	}, `{"subject":"Charged twice","plan":"pro"}`)
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("decision calls = %d, want 1", len(fake.requests))
+	}
+	if got, want := string(fake.requests[0].State), `{"subject":"Charged twice","plan":"pro"}`; got != want {
+		t.Errorf("state = %s, want the raw JSON verbatim %s", got, want)
+	}
+}
+
+func TestRunStateJSONInvalid(t *testing.T) {
+	t.Parallel()
+
+	cfg, decider := decideConfig(t)
+	called := false
+	err := decide.Run(context.Background(), decide.Options{
+		Config:    cfg,
+		Decider:   decider,
+		Stdout:    &strings.Builder{},
+		Stderr:    &strings.Builder{},
+		StateJSON: true,
+		NewDecisionClient: func(config.Config, config.Decider) (llm.DeciderClient, error) {
+			called = true
+			return &fakeDecisionClient{}, nil
+		},
+	}, `not json`)
+	if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Errorf("Run error = %v, want an invalid-JSON error", err)
+	}
+	if called {
+		t.Error("decision client was built before the state was validated")
+	}
+}

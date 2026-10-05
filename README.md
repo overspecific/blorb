@@ -139,7 +139,7 @@ See the [output formats reference](docs/formats.md) for the format details: the 
 ./blorb decide --decider triage "The invoice failed twice and the customer is threatening to cancel."
 ```
 
-The state argument shares `run`'s prompt syntax (literal, `@@` escape, `@file`, `-` for stdin). `--decider` is required. See [Deciders](docs/configuration.md#deciders) for what a decider is and the [CLI reference](docs/cli.md#blorb-decide) for the command.
+The state argument shares `run`'s prompt syntax (literal, `@@` escape, `@file`, `-` for stdin); by default it is sent as a JSON string, and `--state-json` sends a structured object or array verbatim instead. `--decider` is required. See [Deciders](docs/configuration.md#deciders) for what a decider is and the [CLI reference](docs/cli.md#blorb-decide) for the command.
 
 ### Listing installed models
 
