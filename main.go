@@ -14,6 +14,7 @@ import (
 	"github.com/overspecific/blorb/internal/band"
 	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/decide"
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/prefactor"
@@ -42,6 +43,7 @@ func rootCommand() *cli.Command {
 		Commands: []*cli.Command{
 			chatCommand(),
 			runCommand(),
+			decideCommand(),
 			bandCommand(),
 			modelsCommand(),
 			{
@@ -256,7 +258,7 @@ func runCommand() *cli.Command {
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			prompt, err := run.ResolvePrompt(cmd.Args().First(), os.Stdin)
+			prompt, err := run.ResolvePrompt("run", cmd.Args().First(), os.Stdin)
 			if err == nil && cmd.Args().Len() > 1 {
 				err = fmt.Errorf("run: unexpected arguments after the prompt: %s", strings.Join(cmd.Args().Slice()[1:], " "))
 			}
@@ -312,6 +314,72 @@ func runCommand() *cli.Command {
 				// No "run: " prefix here: run.Run's errors already carry
 				// it (mapTurnOutcome and the tracer wrappers), and a
 				// second prefix would double up.
+				return cli.Exit(err.Error(), 1)
+			}
+			return nil
+		},
+	}
+}
+
+// decideCommand builds the decide subcommand: evaluate one decider against
+// one state argument and print the answers JSON, the decider counterpart
+// of run. The state is a positional argument sharing run's prompt syntax
+// (literal, @@ escape, @file, - for stdin).
+func decideCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "decide",
+		Usage:     "Evaluate a decider against a state and print the answers as JSON",
+		ArgsUsage: "[state]",
+		Description: "State: a literal string (start it with @@ to begin with a literal @), @file, or - for stdin. " +
+			"Exactly one state argument is accepted; stdin is read only when explicitly requested with - or @-.",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Value:   config.DefaultPath,
+				Usage:   "Path to blorb.json",
+			},
+			&cli.StringFlag{
+				Name:     "decider",
+				Usage:    "Name of the decider to evaluate",
+				Required: true,
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			state, err := run.ResolvePrompt("decide", cmd.Args().First(), os.Stdin)
+			if err == nil && cmd.Args().Len() > 1 {
+				err = fmt.Errorf("decide: unexpected arguments after the state: %s", strings.Join(cmd.Args().Slice()[1:], " "))
+			}
+			if err != nil {
+				return cli.Exit(err.Error(), 1)
+			}
+
+			cfg, err := config.Load(cmd.String("config"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("decide: %v", err), 1)
+			}
+
+			decider, err := resolveDecider(cfg, cmd.String("decider"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("decide: %v", err), 1)
+			}
+
+			// SIGINT maps to exit code 130 via context propagation,
+			// mirroring run.
+			sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt)
+			defer stop()
+
+			err = decide.Run(sigCtx, decide.Options{
+				Config:     cfg,
+				Decider:    decider,
+				Stdout:     os.Stdout,
+				Stderr:     os.Stderr,
+				ConfigPath: cmd.String("config"),
+			}, state)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return cli.Exit("decide: interrupted", 130)
+				}
 				return cli.Exit(err.Error(), 1)
 			}
 			return nil
@@ -443,6 +511,28 @@ func sortedAgentNames(cfg config.Config) []string {
 	names := make([]string, 0, len(cfg.Agents))
 	for _, a := range cfg.Agents {
 		names = append(names, a.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// resolveDecider resolves the named decider: deciders are named things you
+// invoke deliberately, so there is no defaulting. It fails with the
+// available decider names when the chosen name is not in the config.
+func resolveDecider(cfg config.Config, name string) (config.Decider, error) {
+	decider, ok := cfg.Decider(name)
+	if !ok {
+		return config.Decider{}, fmt.Errorf("decider %q is not defined in the config (available: %s)", name, strings.Join(sortedDeciderNames(cfg), ", "))
+	}
+	return decider, nil
+}
+
+// sortedDeciderNames lists the config's decider names sorted
+// alphabetically.
+func sortedDeciderNames(cfg config.Config) []string {
+	names := make([]string, 0, len(cfg.Deciders))
+	for _, d := range cfg.Deciders {
+		names = append(names, d.Name)
 	}
 	sort.Strings(names)
 	return names

@@ -121,7 +121,7 @@ func TestResolvePrompt(t *testing.T) {
 				arg = tt.setup(t, t.TempDir())
 			}
 
-			got, err := run.ResolvePrompt(arg, strings.NewReader(tt.stdin))
+			got, err := run.ResolvePrompt("run", arg, strings.NewReader(tt.stdin))
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("ResolvePrompt(%q) = %q, want error containing %q", arg, got, tt.wantErr)
@@ -144,7 +144,7 @@ func TestResolvePrompt(t *testing.T) {
 func TestResolvePromptMissingFileWrapsOSError(t *testing.T) {
 	t.Parallel()
 
-	_, err := run.ResolvePrompt("@/no/such/file/here.txt", strings.NewReader(""))
+	_, err := run.ResolvePrompt("run", "@/no/such/file/here.txt", strings.NewReader(""))
 	if err == nil {
 		t.Fatal("ResolvePrompt on a missing file succeeded, want an error")
 	}
