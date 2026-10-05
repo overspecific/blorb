@@ -1,6 +1,6 @@
-# Knowledgebase-grounded decision example
+# Decision-model router over the biscuit knowledgebase
 
-A config that puts a decision model to work on a job a generative model is bad at: narrowing a complaint before the agent acts. It reuses the biscuit knowledgebase from the [simple](../simple) example and adds a `triage` agent that looks a complaint up, a `search` subagent that digs for it when a first pattern comes up empty, and a `decider` - a fixed set of typed questions for a System One model (Jev) - that the agent calls once to decide which biscuit and region are at stake, whether the excerpt it gathered already answers the complaint, and what to do next.
+A config that puts a decision model to work on a job a generative model is bad at: picking a route through a body of text before the agent reads it. It reuses the biscuit knowledgebase from the [simple](../simple) example and adds a `scholar` agent that answers biscuit questions, and a `route_question` decider - a fixed set of typed questions for a System One model (Jev) - that the scholar calls once per question to decide which region file to read and whether it needs to read at all.
 
 The chat model is the same local server the [simple](../simple) example uses. The decision model is hosted, because it speaks a different protocol.
 
@@ -18,70 +18,77 @@ A decision model sits on an `openai-compatible` provider and is marked with `"mo
 
 ## The agents
 
-`triage` is the default agent. It is granted the `kb` toolset from the [simple](../simple) example, pointing at that example's knowledgebase with a relative `base_dir` (`../simple/knowledgebase`, resolved against `blorb.json`'s directory). The grant shows both forms: the whole `kb` toolset, which is `kb-read` and `kb-grep`, and the single `kb-read` member by name. It also gets the `search` subagent tool and the `triage_ticket` decider tool. Its system prompt tells it to never decide blind: grep the knowledgebase for the biscuit and the issue, read the region file the match points at when it needs the full entry, and delegate to `search` when a pattern comes up empty. Only then does it call the decider.
+`scholar` is the default agent. It is granted the `kb` toolset from the [simple](../simple) example, pointing at that example's knowledgebase with a relative `base_dir` (`../simple/knowledgebase`, resolved against `blorb.json`'s directory). The grant is the whole `kb` toolset, which is `kb-read` and `kb-grep`. It also gets the `search` subagent tool and the `route_question` decider tool. Its system prompt tells it to call `route_question` first for any biscuit question, then read what the decision points at. The decision is the plan: which file to read, and whether the excerpt it already has is enough.
 
-`search` is an expert searcher given the same `kb` toolset and no delegations of its own. When a grep pattern comes up empty it tries alternatives before reporting back: other spellings, synonyms, singular and plural, broader terms. Its output is grep's format (`path:line:text`).
+`search` is an expert searcher given the same `kb` toolset and no delegations of its own. When a grep pattern comes up empty it tries alternatives before reporting back: other spellings, synonyms, singular and plural, broader terms. Its output is grep's format (`path:line:text`). The scholar delegates to it when a pattern comes up empty.
 
 ## The decider
 
-A decider fixes the typed questions every call asks; only the state varies per call. This example asks four at once - the decision model evaluates all of them against the same state in a single request, so the agent needs one call to narrow the complaint:
+A decider fixes the typed questions every call asks; only the state varies per call. This example asks four at once - the decision model evaluates all of them against the same state in a single request, so the scholar needs one call to plan its route:
 
 ```json
 {
-  "name": "triage",
+  "name": "route_question",
   "model": "jev",
   "questions": {
-    "biscuit": {
-      "type": "choice",
-      "instructions": "Which named biscuit is the complaint about? Choose Other when no listed biscuit fits.",
-      "criteria": {
-        "rich_tea": "Rich Tea, the plain British dunker",
-        "digestive": "Digestive, including the chocolate variant",
-        "...": "..."
-      }
-    },
     "region": {
       "type": "choice",
-      "instructions": "Which region file of the knowledgebase owns that biscuit? Choose unknown when the excerpt does not make it clear.",
-      "criteria": { "united_kingdom": "The British Isles", "...": "..." }
+      "instructions": "Which region file of the knowledgebase is most likely to hold the answer? Choose unknown when the question is not region-specific.",
+      "criteria": {
+        "united_kingdom": "The British Isles",
+        "france": "France",
+        "...": "...",
+        "unknown": "The question is not region-specific"
+      }
+    },
+    "question_kind": {
+      "type": "choice",
+      "instructions": "What kind of question is this, so the agent knows what to read?",
+      "criteria": {
+        "origin": "Where and when a biscuit comes from",
+        "ingredients": "What a biscuit is made of",
+        "dunking": "How a biscuit behaves in a hot drink",
+        "comparison": "How biscuits compare to one another",
+        "other": "None of the listed kinds fits"
+      }
     },
     "answerable_from_excerpt": {
       "type": "noul",
-      "instructions": "Does the excerpt in the state already hold enough to answer the complaint, or does it need more digging?",
-      "criteria": { "true": "The excerpt is enough to answer", "false": "More digging is needed" }
+      "instructions": "Does the excerpt in the state already hold enough to answer the question, or does the knowledgebase need to be read?",
+      "criteria": { "true": "The excerpt is enough to answer", "false": "The knowledgebase needs to be read" }
     },
     "action": {
       "type": "score",
-      "instructions": "What should the agent do with this complaint?",
+      "instructions": "What should your agent do next with this question?",
       "criteria": [
-        "Answer from the knowledgebase as it is",
-        "Dig further with the search agent",
-        "Refer the complaint to a human"
+        "Answer from the excerpt as it is",
+        "Retrieve from the chosen region file",
+        "Dig further with the search agent"
       ]
     }
   }
 }
 ```
 
-`biscuit` and `region` are `choice` questions: `criteria` is a map of option name to description, and each answer selects one option with a probability per option. `answerable_from_excerpt` is a `noul`: a calibration whose answer is the probability of yes. `action` is a `score`: an ordered rubric. The `region` options name the knowledgebase's region files, so the decision itself tells the agent which file to read.
+`region` and `question_kind` are `choice` questions: `criteria` is a map of option name to description, and each answer selects one option with a probability per option. `answerable_from_excerpt` is a `noul`: a calibration whose answer is the probability of yes. `action` is a `score`: an ordered rubric. The `region` options name the knowledgebase's region files, so the decision itself tells the scholar which file to read.
 
 ## The tool
 
-The `triage_ticket` tool references the decider by name. A decider tool takes a single `state` string by default; this one gives the tool a custom `args_schema`, so the raw JSON arguments are the state - a structured ticket rather than a blob of text:
+The `route_question` tool references the decider by name. A decider tool takes a single `state` string by default; this one gives the tool a custom `args_schema`, so the raw JSON arguments are the state - a structured question and excerpt rather than a blob of text:
 
 ```json
 {
   "type": "decider",
-  "name": "triage_ticket",
-  "description": "Evaluate a biscuit complaint against a knowledgebase excerpt and return which biscuit and region are at stake, whether the excerpt answers it, and the recommended action.",
-  "decider": "triage",
+  "name": "route_question",
+  "description": "Plan how to answer a biscuit question: which region file is most likely to hold the answer, what kind of question it is, whether the excerpt already suffices, and whether to retrieve or answer.",
+  "decider": "route_question",
   "args_schema": {
     "type": "object",
     "properties": {
-      "complaint": { "type": "string", "description": "The original complaint text, verbatim" },
-      "excerpt": { "type": "string", "description": "The knowledgebase excerpt gathered about the biscuit and issue" }
+      "question": { "type": "string", "description": "The user's biscuit question, verbatim" },
+      "excerpt": { "type": "string", "description": "Any knowledgebase excerpt already gathered, or an empty string" }
     },
-    "required": ["complaint", "excerpt"],
+    "required": ["question", "excerpt"],
     "additionalProperties": false
   }
 }
@@ -90,13 +97,13 @@ The `triage_ticket` tool references the decider by name. A decider tool takes a 
 The tool makes one decision API call with the decider's four questions and the structured state, and returns the answers as a JSON object, keyed by question name. In chat, the decision prints as a labeled, indented block before the tool result, so you watch it land:
 
 ```text
->>> Tool: triage_ticket
-{"complaint":"My chocolate digestive collapsed on the second dunk. I want compensation.","excerpt":"united-kingdom.md:11: ... chocolate digestives are a gamble (the chocolate acts as a partial barrier ...)"}
+>>> Tool: route_question
+{"question":"which biscuits survive a long dunking?","excerpt":""}
 
-[triage] >>> Decision:
-  {"biscuit":{"type":"choice","choice":"digestive","probabilities":{...},"confidence":0.91},"region":{"type":"choice","choice":"united_kingdom",...},"answerable_from_excerpt":{"type":"noul","noul":0.86},"action":{"type":"score","score":0,...}}
->>> Result: Tool: triage_ticket
-  {"biscuit":...,"region":...,"answerable_from_excerpt":...,"action":...}
+[route_question] >>> Decision:
+  {"region":{"type":"choice","choice":"united_kingdom","probabilities":{...},"confidence":0.74},"question_kind":{"type":"choice","choice":"dunking",...},"answerable_from_excerpt":{"type":"noul","noul":0.05},"action":{"type":"score","score":1,...}}
+>>> Result: Tool: route_question
+  {"region":...,"question_kind":...,"answerable_from_excerpt":...,"action":...}
 ```
 
 ## Run
@@ -106,19 +113,21 @@ From the repo root:
 ```sh
 bin/build
 
-# chat with the triage agent; it retrieves from the knowledgebase, then decides
+# chat with the scholar; it routes each question through the decider, then reads
 ./blorb chat --config examples/decision/blorb.json
 
 # or run the decider directly, the way `run --agent` invokes an agent
-./blorb decide --config examples/decision/blorb.json --decider triage \
-  "My chocolate digestive collapsed on the second dunk."
+./blorb decide --config examples/decision/blorb.json --decider route_question \
+  "which biscuits survive a long dunking?"
 ```
+
+Then try prompts like `tell me about french biscuits`, `which biscuits survive a long dunking?`, or `who eats something like a jammie dodger?` and watch the decision pick a region before the scholar reads.
 
 `blorb decide` prints the answers JSON to stdout and exits: the decider counterpart of `blorb run`. The `[state]` argument shares `run`'s prompt syntax (literal, `@@` escape, `@file`, `-` for stdin); by default it is sent as a JSON string, and `--state-json` sends a structured object or array verbatim:
 
 ```sh
-./blorb decide --config examples/decision/blorb.json --decider triage --state-json \
-  '{"complaint":"My chocolate digestive collapsed on the second dunk.","excerpt":"chocolate digestives are a gamble; the chocolate is a partial barrier."}'
+./blorb decide --config examples/decision/blorb.json --decider route_question --state-json \
+  '{"question":"which biscuits survive a long dunking?","excerpt":""}'
 ```
 
 The command does not need the chat model or the local server, only the decision provider.

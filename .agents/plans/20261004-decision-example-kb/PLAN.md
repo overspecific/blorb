@@ -1,6 +1,6 @@
-# Decision example: knowledgebase-grounded triage
+# Decision example: a decider router over the biscuit knowledgebase
 
-Rework `examples/decision` so the decision model does the routing that a generative model is bad at, using the biscuit knowledgebase from the `simple` example as the material. The example becomes a small two-agent system: a `triage` agent that greps the shared `kb` toolset for a ticket's biscuit and then calls one `triage_ticket` decider that answers several narrowing questions at once (which biscuit is at stake, which region owns it, whether the complaint is answerable from one region file, and the recommended action). It also gets a `search` subagent to fall back on, and demonstrates a custom `args_schema` so the decider's state is structured rather than a flat string.
+Rework `examples/decision` so the decision model does the routing that a generative model is bad at, using the biscuit knowledgebase from the `simple` example as the material. The example is a small two-agent system: a `scholar` agent that answers biscuit questions, and a `route_question` decider it calls once per question to plan the route - which region file to read and whether it needs to read at all - answering several narrowing questions at once (which region, what kind of question, whether the excerpt already suffices, and whether to answer or retrieve). It also gets a `search` subagent to fall back on, and demonstrates a custom `args_schema` so the decider's state is structured rather than a flat string.
 
 The knowledgebase itself does not move. The decision config references `../simple/knowledgebase` by relative path, the same way `examples/prefactor-tracing` and `examples/ollama-cloud` already do, so the biscuit material stays in one place and the new example is a cross-reference rather than a copy. `internal/prefactor/example_test.go` already loads this config under `bin/qc`, so that test's expectations are updated in the same stage as the config change.
 
@@ -8,6 +8,7 @@ The knowledgebase itself does not move. The decision config references `../simpl
 
 - [x] Commit 1: config - the knowledgebase-grounded triage example and its test
 - [x] Commit 2: docs - the top-level README pointer
+- [x] Commit 3: reframe the example as a biscuit scholar whose decider gates any question
 
 ---
 
@@ -42,8 +43,25 @@ The knowledgebase itself does not move. The decision config references `../simpl
 >
 > Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
 
-## Commit 2: docs - the top-level README pointer
+## Commit 3: reframe the example as a biscuit scholar whose decider gates any question
 
-> Expand the `examples/decision` entry in `README.md` (currently one line in the Examples section) to describe the new example: a decision model that narrows a ticket's biscuit, region, answerability and action in one call, with the agent doing knowledgebase retrieval through the shared `kb` toolset and the `search` subagent, and a structured decision state through a custom `args_schema`. Keep it to a sentence or two, in the register of the neighbouring example entries.
+> The shipped example reads as a support desk for complaints, which is not what it was meant to be: it should be a biscuit scholar like `examples/simple`, using the decision model as the routing and confidence gate that runs on any biscuit question, not only on complaints. Reframe it. Edits are to `examples/decision/blorb.json`, `examples/decision/README.md`, `internal/prefactor/example_test.go` and the `examples/decision` entry in `README.md`.
+>
+> In `examples/decision/blorb.json`, rename the default agent from `triage` to `scholar`, and set `default_agent` to `scholar`. Keep the `search` agent as it is. The `scholar` agent's system prompt becomes a biscuit scholar (voice of `examples/simple`'s scholar) with one important rule: for any question about biscuits, it first calls the decider to plan, then answers. Specifically: call `route_question` with the user's question and any knowledgebase excerpt it already has; the decision picks the region file to read and says whether that excerpt is enough. When the decision says the excerpt is not enough, grep the chosen region file (or the whole knowledgebase) with `kb-grep`, reading with `kb-read` when it needs the full entry, and delegate to the `search` agent when a pattern comes up empty. Then answer from what it read, naming the file it drew from. Keep answers short. The scholar keeps `"model": "small"`, `"max_turns": 10`, `"tools": ["kb", "search", "route_question"]`.
+>
+> Rename the `triage` decider to `route_question` (the `decider` field and the `triage_ticket` tool's `decider` reference move with it). Rework the questions so they fit any biscuit question rather than a complaint:
+>
+> - `region` - `choice` over the knowledgebase's regions, one option per region file plus `unknown` (united_kingdom, france, italy, germany, netherlands, spain, scandinavia, north_america, australia_new_zealand, middle_east, india, unknown); instructions ask which region file is most likely to hold the answer; `unknown` when the question is not region-specific.
+> - `question_kind` - `choice` over the kinds of question the knowledgebase answers (origin, ingredients, dunking, comparison, other), so the agent knows whether to read a region file or `dunking.md`.
+> - `answerable_from_excerpt` - `noul`, unchanged in spirit: whether the excerpt in the state already holds enough to answer, so the agent can choose to answer from it or to retrieve.
+> - `action` - `score` over the ordered dispositions (answer from the excerpt as-is, retrieve from the chosen region file, dig further with the search agent). Drop the "refer to a human" level, which belonged to the support framing.
+>
+> Rename the decider tool `triage_ticket` to `route_question`. Change its `args_schema` properties from `complaint`/`excerpt` to `question` (the user's biscuit question, verbatim) and `excerpt` (any knowledgebase excerpt already gathered, empty when none), both required, so the state stays structured. Update the tool description to match.
+>
+> Update `examples/decision/README.md`: retitle it around a decision-model router over the biscuit knowledgebase; describe the `scholar` and `search` agents, the shared `../simple/knowledgebase`, the one decision call that picks the region and gates retrieval, and the structured state. Use a normal biscuit question in the worked example (e.g. `which biscuits survive a long dunking?` or `tell me about french biscuits`), not a complaint, and show the `[route_question] >>> Decision:` block. Keep the Setup section's provider guidance, the `blorb decide` and `--state-json` guidance (updating the example state to a question object), and the Logs section.
+>
+> Update `internal/prefactor/example_test.go`'s `TestDecisionExampleConfigValid` to match: `DefaultAgent` is `scholar`; the `scholar` agent's tools are `kb-read`, `kb-grep`, `search`, `route_question`; the `search` agent's tools are `kb-read`, `kb-grep`; `route_question` is a `ToolTypeDecider` naming the `route_question` decider and carries a custom `args_schema` requiring `question` and `excerpt`; the `route_question` decider names `jev` and carries the four questions with the expected types (`region` choice, `question_kind` choice, `answerable_from_excerpt` noul, `action` score). Keep the existing `mustExampleAgent` helper and the `TestSimpleExampleTracingDisabled` assertion style. Update any prose in the test's doc comment that still says triage.
+>
+> Update the `examples/decision` entry in the top-level `README.md` to describe the router framing (a scholar that routes a biscuit question through one decision call, then retrieves through the shared knowledgebase) rather than ticket triage.
 >
 > Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.

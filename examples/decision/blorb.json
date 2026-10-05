@@ -1,5 +1,5 @@
 {
-  "default_agent": "triage",
+  "default_agent": "scholar",
   "models": [
     {
       "name": "small",
@@ -15,13 +15,13 @@
   ],
   "agents": [
     {
-      "name": "triage",
-      "system_prompt": "You are a support-triage agent for complaints about biscuits. You never decide blind: before you route a complaint, look it up in the biscuit knowledgebase with `kb-grep`, and use `kb-read` when you need the full entry. If a first pattern comes up empty, delegate to the `search` agent, which tries alternative spellings and phrasings. Once an excerpt pins down the biscuit and the issue, call `triage_ticket` as the last thing you do in the turn: pass the original complaint in `complaint` and your knowledgebase excerpt in `excerpt`. The decision names the biscuit, the region that owns it, whether your excerpt already answers the complaint, and the recommended action. Answer from the decision: name the biscuit and its region, say whether the point is contested, and give the action. Keep your answer short.",
+      "name": "scholar",
+      "system_prompt": "You are an enthusiastic biscuit scholar. You have the biscuit knowledgebase using `kb-grep` and `kb-read`, and a `route_question` decider that plans your search. For any biscuit question, call `route_question` first with the user's question in `question` and any knowledgebase excerpt you already have in `excerpt`: the decision picks the region file most likely to hold the answer and says whether your excerpt is already enough. If it is, answer from the excerpt; if not, grep the chosen region file (or the whole knowledgebase) with `kb-grep` and read the full entry with `kb-read` when you need it, delegating to the `search` agent when a pattern comes up empty. Answer from what you read, naming the file you drew from. Keep your answer short.",
       "max_turns": 10,
       "tools": [
         "kb",
         "search",
-        "triage_ticket"
+        "route_question"
       ],
       "model": "small"
     },
@@ -37,28 +37,12 @@
   ],
   "deciders": [
     {
-      "name": "triage",
+      "name": "route_question",
       "model": "jev",
       "questions": {
-        "biscuit": {
-          "type": "choice",
-          "instructions": "Which named biscuit is the complaint about? Choose Other when no listed biscuit fits.",
-          "criteria": {
-            "rich_tea": "Rich Tea, the plain British dunker",
-            "digestive": "Digestive, including the chocolate variant",
-            "jammie_dodger": "Jammie Dodger, the jam-windowed shortbread",
-            "ginger_nut": "Ginger Nut, the hard gingered biscuit",
-            "hobnob": "Hobnob, the oaty British biscuit",
-            "tim_tam": "Tim Tam, the Australian chocolate biscuit",
-            "stroopwafel": "Stroopwafel, the Dutch caramel-filled waffle",
-            "madeleine": "Madeleine, the French shell-shaped sponge",
-            "biscotti": "Biscotti, the Italian twice-baked biscuit",
-            "other": "No listed biscuit fits"
-          }
-        },
         "region": {
           "type": "choice",
-          "instructions": "Which region file of the knowledgebase owns that biscuit? Choose unknown when the excerpt does not make it clear.",
+          "instructions": "Which region file of the knowledgebase is most likely to hold the answer? Choose unknown when the question is not region-specific.",
           "criteria": {
             "united_kingdom": "The British Isles",
             "france": "France",
@@ -71,24 +55,35 @@
             "australia_new_zealand": "Australia and New Zealand",
             "middle_east": "The Middle East",
             "india": "India",
-            "unknown": "The excerpt does not make it clear"
+            "unknown": "The question is not region-specific"
+          }
+        },
+        "question_kind": {
+          "type": "choice",
+          "instructions": "What kind of question is this, so the agent knows what to read?",
+          "criteria": {
+            "origin": "Where and when a biscuit comes from",
+            "ingredients": "What a biscuit is made of",
+            "dunking": "How a biscuit behaves in a hot drink",
+            "comparison": "How biscuits compare to one another",
+            "other": "None of the listed kinds fits"
           }
         },
         "answerable_from_excerpt": {
           "type": "noul",
-          "instructions": "Does the excerpt in the state already hold enough to answer the complaint, or does it need more digging?",
+          "instructions": "Does the excerpt in the state already hold enough to answer the question, or does the knowledgebase need to be read?",
           "criteria": {
             "true": "The excerpt is enough to answer",
-            "false": "More digging is needed"
+            "false": "The knowledgebase needs to be read"
           }
         },
         "action": {
           "type": "score",
-          "instructions": "What should the agent do with this complaint?",
+          "instructions": "What should your agent do next with this question?",
           "criteria": [
-            "Answer from the knowledgebase as it is",
-            "Dig further with the search agent",
-            "Refer the complaint to a human"
+            "Answer from the excerpt as it is",
+            "Retrieve from the chosen region file",
+            "Dig further with the search agent"
           ]
         }
       }
@@ -97,23 +92,23 @@
   "tools": [
     {
       "type": "decider",
-      "name": "triage_ticket",
-      "description": "Evaluate a biscuit complaint against a knowledgebase excerpt and return which biscuit and region are at stake, whether the excerpt answers it, and the recommended action.",
-      "decider": "triage",
+      "name": "route_question",
+      "description": "Plan how to answer a biscuit question: which region file is most likely to hold the answer, what kind of question it is, whether the excerpt already suffices, and whether to retrieve or answer.",
+      "decider": "route_question",
       "args_schema": {
         "type": "object",
         "properties": {
-          "complaint": {
+          "question": {
             "type": "string",
-            "description": "The original complaint text, verbatim"
+            "description": "The user's biscuit question, verbatim"
           },
           "excerpt": {
             "type": "string",
-            "description": "The knowledgebase excerpt gathered about the biscuit and issue"
+            "description": "Any knowledgebase excerpt already gathered, or an empty string"
           }
         },
         "required": [
-          "complaint",
+          "question",
           "excerpt"
         ],
         "additionalProperties": false

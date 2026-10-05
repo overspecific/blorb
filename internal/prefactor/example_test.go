@@ -201,9 +201,9 @@ func toolNames(entries []config.ToolEntry) []string {
 }
 
 // TestDecisionExampleConfigValid ensures the shipped decision example
-// blorb.json loads, validates, and carries the knowledgebase-grounded
-// triage story it documents: two agents sharing the simple example's
-// knowledgebase, and a decider that narrows a biscuit complaint.
+// blorb.json loads, validates, and carries the knowledgebase-router story
+// it documents: a scholar and a searcher sharing the simple example's
+// knowledgebase, and a decider that routes a biscuit question.
 func TestDecisionExampleConfigValid(t *testing.T) {
 	path := filepath.Join("..", "..", "examples", "decision", "blorb.json")
 	if _, err := os.Stat(path); err != nil {
@@ -214,16 +214,15 @@ func TestDecisionExampleConfigValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(examples/decision/blorb.json) error = %v, want nil", err)
 	}
-	if cfg.DefaultAgent != "triage" {
-		t.Errorf("DefaultAgent = %q, want triage", cfg.DefaultAgent)
+	if cfg.DefaultAgent != "scholar" {
+		t.Errorf("DefaultAgent = %q, want scholar", cfg.DefaultAgent)
 	}
 
-	// The triage agent consults the knowledgebase (grep via the toolset,
-	// read via the single-member pull), falls back to the search subagent,
-	// and finishes by calling the decider.
-	triage := mustExampleAgent(t, cfg, "triage")
-	if got, want := toolNames(cfg.AgentTools(triage)), []string{"kb-read", "kb-grep", "search", "triage_ticket"}; fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("AgentTools(triage) = %v, want %v", got, want)
+	// The scholar consults the knowledgebase through the kb toolset, falls
+	// back to the search subagent, and calls the decider to plan the route.
+	scholar := mustExampleAgent(t, cfg, "scholar")
+	if got, want := toolNames(cfg.AgentTools(scholar)), []string{"kb-read", "kb-grep", "search", "route_question"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("AgentTools(scholar) = %v, want %v", got, want)
 	}
 	search, ok := cfg.Agent("search")
 	if !ok {
@@ -236,28 +235,28 @@ func TestDecisionExampleConfigValid(t *testing.T) {
 	// The decider tool carries a custom args schema, so the raw arguments
 	// (not a single state string) become the decision state.
 	var deciderTool config.ToolEntry
-	for _, entry := range cfg.AgentTools(triage) {
-		if entry.Name == "triage_ticket" {
+	for _, entry := range cfg.AgentTools(scholar) {
+		if entry.Name == "route_question" {
 			deciderTool = entry
 		}
 	}
 	if deciderTool.Type != config.ToolTypeDecider {
-		t.Fatalf("tool triage_ticket type = %q, want decider", deciderTool.Type)
+		t.Fatalf("tool route_question type = %q, want decider", deciderTool.Type)
 	}
-	if deciderTool.Decider != "triage" {
-		t.Errorf("tool triage_ticket decider = %q, want triage", deciderTool.Decider)
+	if deciderTool.Decider != "route_question" {
+		t.Errorf("tool route_question decider = %q, want route_question", deciderTool.Decider)
 	}
 	var schema struct {
 		Required []string `json:"required"`
 	}
 	if err := json.Unmarshal(deciderTool.ArgsSchema, &schema); err != nil {
-		t.Fatalf("unmarshal triage_ticket args_schema: %v", err)
+		t.Fatalf("unmarshal route_question args_schema: %v", err)
 	}
-	if got, want := schema.Required, []string{"complaint", "excerpt"}; fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("triage_ticket args_schema required = %v, want %v", got, want)
+	if got, want := schema.Required, []string{"question", "excerpt"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("route_question args_schema required = %v, want %v", got, want)
 	}
 
-	// The decision model and the four narrowing questions it answers at once.
+	// The decision model and the four routing questions it answers at once.
 	jev, ok := cfg.Model("jev")
 	if !ok {
 		t.Fatal("Model(jev) missing")
@@ -265,16 +264,16 @@ func TestDecisionExampleConfigValid(t *testing.T) {
 	if jev.ResolvedModelType() != config.ModelTypeDecision {
 		t.Errorf("jev model_type = %q, want decision", jev.ResolvedModelType())
 	}
-	decider, ok := cfg.Decider("triage")
+	decider, ok := cfg.Decider("route_question")
 	if !ok {
-		t.Fatalf("Decider(triage) missing; deciders = %v", cfg.Deciders)
+		t.Fatalf("Decider(route_question) missing; deciders = %v", cfg.Deciders)
 	}
 	if decider.Model != "jev" {
 		t.Errorf("decider model = %q, want jev", decider.Model)
 	}
 	wantTypes := map[string]string{
-		"biscuit":                 config.QuestionTypeChoice,
 		"region":                  config.QuestionTypeChoice,
+		"question_kind":           config.QuestionTypeChoice,
 		"answerable_from_excerpt": config.QuestionTypeNoul,
 		"action":                  config.QuestionTypeScore,
 	}
