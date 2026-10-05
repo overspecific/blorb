@@ -18,7 +18,8 @@ Plans are written into `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` - a new di
   > Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
 - The Todo list is an ordered checklist of the commits
 - Each stage is checked off in its Todo list in the same commit as the stage's work - never a separate check-off commit
-- After each stage, stop and let the user review and commit before starting the next stage
+- When executing a plan, do the whole thing: work through every stage in order, committing per stage, unless the user asks to stop after each commit for review
+- The exception: if a stage cannot be done the way the plan is written - the plan needs to change - pause and ask the user what to do before continuing
 - For a new PLAN.md, use the template below
 
 ## Template

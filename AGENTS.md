@@ -34,7 +34,8 @@ We build high-quality, well-architected, correct code. We don't take shortcuts; 
 Plans live in `.agents/plans/{yyyymmdd}-{plan_name}/PLAN.md` (see the planning skill for how they are written). When executing one:
 
 - Work through the stages in order, one stage per commit, commit message matching the stage name.
-- Stop after each commit and let the user review before starting the next stage.
+- Do the whole plan: commit each stage and continue to the next without pausing, unless the user asks to stop after each commit for review.
+- The exception: if a stage cannot be done the way the plan is written - the plan needs to change - pause and ask the user what to do before continuing.
 - The exception to "only commit when the user explicitly asks" above: executing a requested plan commits per stage as part of the request.
 - Each stage prompt says "do not commit" - that is addressed to the per-stage agent within the plan's own workflow, not to you; you are the one committing after verifying with `bin/qc`.
 - Check off each stage in the plan's Todo list in the same commit as the stage's work. Do not make a separate commit that only checks off an item. If the stage itself excludes plan edits, wait: check it off in the next commit that touches the plan, or with the final check-off commit if no later stage edits the plan.
