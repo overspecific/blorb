@@ -102,6 +102,7 @@ An `ollama` provider, with a model on it, looks like this instead:
 | `default_agent` | no       | Name of the agent commands use when none is given; must name a defined agent.        |
 | `tools`         | no       | Top-level tool declarations, shared across agents (see below).                       |
 | `toolsets`      | no       | Named groups of tools, granted to agents by name (see below).                        |
+| `deciders`      | no       | Named decision-model evaluations with fixed typed questions (see below).             |
 | `logging`       | no       | Wire logging config (see below).                                                     |
 | `prefactor`     | no       | Prefactor tracing config (see below).                                                |
 
@@ -147,14 +148,24 @@ Each model entry declares one named LLM backend: a provider connection (by name)
 | ---------------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
 | `name`           | yes      | Identifier agents reference; unique within the config, and free-form to the config author.                             |
 | `provider`       | yes      | Name of a defined top-level provider entry carrying the connection.                                                    |
-| `model_name`     | yes      | Model name passed to the API (for ollama, the Ollama tag, e.g. `llama3.1:latest`).                                     |
-| `reasoning_effort` | no     | The thinking effort the backend is asked for: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Empty (the default) means the server default applies. The value is passed through verbatim on both paths - which values a given model accepts is the server's business - except that `none` becomes `think: false` on the ollama path, since Ollama rejects the string `none`. Thinking output surfaces as reasoning, streamed live for both types (`reasoning_content` over SSE for openai-compatible, `thinking` over Ollama's NDJSON for ollama). |
-| `format`         | no       | **Ollama-only** (a model on an `openai-compatible` provider is rejected): Ollama's structured-output setting, either the JSON string `"json"` or a JSON schema object. Anything else - arrays, scalars, invalid JSON - is a config error. |
-| `keep_alive`     | no       | **Ollama-only** (rejected on `openai-compatible`): how long the model stays loaded after the request, passed through verbatim (e.g. `"5m"`); which duration forms a given server accepts is the server's business. |
-| `tool_choice`    | no       | How the model is steered around tools: `auto` (the default), `none`, `required`, or `force`. See below.                 |
-| `forced_tool`    | only with `tool_choice: "force"` | The tool the model must call in force mode; an error anywhere else. Must match `^[a-zA-Z0-9_-]+$`. |
-| `logprobs`       | no       | Ask the server for per-token log probabilities of the response's content tokens. Models on both provider types.          |
-| `top_logprobs`   | no       | How many top alternative tokens to report per position, in [0, 20]; settable only when `logprobs` is true - an explicit `"top_logprobs": 0` without `logprobs` is a config error. |
+| `model_name`     | yes for `llm`, no for `decision` | Model name passed to the API (for ollama, the Ollama tag, e.g. `llama3.1:latest`). Optional for decision models: when omitted the wire request omits the model field and the server applies its default. |
+| `model_type`     | no       | `llm` (the default) for a chat completions model, or `decision` for a decision model (see [Deciders](#deciders)). A decision model requires an `openai-compatible` provider and rejects every llm-only knob. |
+| `reasoning_effort` | no     | The thinking effort the backend is asked for: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Empty (the default) means the server default applies. The value is passed through verbatim on both paths - which values a given model accepts is the server's business - except that `none` becomes `think: false` on the ollama path, since Ollama rejects the string `none`. Thinking output surfaces as reasoning, streamed live for both types (`reasoning_content` over SSE for openai-compatible, `thinking` over Ollama's NDJSON for ollama). Not valid for decision models. |
+| `format`         | no       | **Ollama-only** (a model on an `openai-compatible` provider is rejected): Ollama's structured-output setting, either the JSON string `"json"` or a JSON schema object. Anything else - arrays, scalars, invalid JSON - is a config error. Not valid for decision models. |
+| `keep_alive`     | no       | **Ollama-only** (rejected on `openai-compatible`): how long the model stays loaded after the request, passed through verbatim (e.g. `"5m"`); which duration forms a given server accepts is the server's business. Not valid for decision models. |
+| `tool_choice`    | no       | How the model is steered around tools: `auto` (the default), `none`, `required`, or `force`. See below. Not valid for decision models. |
+| `forced_tool`    | only with `tool_choice: "force"` | The tool the model must call in force mode; an error anywhere else. Must match `^[a-zA-Z0-9_-]+$`. Not valid for decision models. |
+| `logprobs`       | no       | Ask the server for per-token log probabilities of the response's content tokens. Models on both provider types. Not valid for decision models. |
+| `top_logprobs`   | no       | How many top alternative tokens to report per position, in [0, 20]; settable only when `logprobs` is true - an explicit `"top_logprobs": 0` without `logprobs` is a config error. Not valid for decision models. |
+
+**Decision models.** A `model_type` of `"decision"` declares a decision model: a System One model (Jev is the first example) that evaluates a state against typed questions and returns typed answers with probabilities instead of generated text. A decision model:
+
+- requires an `openai-compatible` provider - the connection is a plain `base_url` plus bearer key from `api_key_env`, and the decision client appends `/systemone` to the provider's `base_url` (the openai client appends `/chat/completions`);
+- may leave `model_name` empty, in which case the wire request omits the model field and the server applies its deployment default;
+- rejects every llm-only knob (`reasoning_effort`, `format`, `keep_alive`, `tool_choice`/`forced_tool`, `logprobs`/`top_logprobs`), since none applies to a decision call;
+- can be referenced only by a decider, never by an agent.
+
+A `base_url` ending in a version segment works for the vendors that share this protocol: TypeSafe (`https://api.typesafe.ai/v1`), OpenRouter (`https://openrouter.ai/api/v1`), jevmodel.org (`https://jevmodel.org/v1`), apimodels, and Venice.
 
 **tool_choice.** The four modes:
 
@@ -192,15 +203,102 @@ Each agent definition carries its own settings and the names of the top-level mo
 
 Tools are shared vocabulary: they are declared once (as top-level `tools` or inside a `toolsets` group), and each agent lists, by name, the ones it may use. An agent's `tools` list may name a top-level tool, a whole toolset, or one toolset member by its granted name. Naming something that does not exist is a config error, and granting the same tool twice - directly or through a toolset - is an error too. The listed order is the agent's: that is the order the tools are presented to the model, with a toolset's members expanding at the toolset's position. See [Toolsets](#toolsets) below. Agent names must match `^[a-zA-Z0-9_-]+$` and be unique within the config.
 
-Models work the same way: an agent's `model` must name a defined top-level model entry.
+Models work the same way: an agent's `model` must name a defined top-level model entry, and that model must be an `llm` model - naming a decision model is a config error (`agents require an llm model`). Decision models are reachable only through deciders.
 
 `default_agent` is optional; when set it must name a defined agent, and when absent `blorb chat` requires an explicit `--agent`.
 
+## Deciders
+
+A decider is a named decision-model evaluation: it names a decision model and fixes the typed questions every call asks, so only the state varies per call. A decider produces no text - you send it a state and typed questions, and it returns typed answers with probabilities and confidence values. It is reachable only through a `decider` tool and the `blorb decide` command; deciders are not agents and have no tools, turns, or judges of their own.
+
+```json
+{
+  "deciders": [
+    {
+      "name": "triage",
+      "model": "jev",
+      "questions": {
+        "department": {
+          "type": "choice",
+          "instructions": "Which team should handle this ticket?",
+          "criteria": {
+            "billing": "Payments, invoices, and refunds",
+            "technical": "Bugs, outages, integrations",
+            "sales": "New purchases and upgrades"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is the request?",
+          "criteria": ["No time constraint", "Can wait this week", "Needs attention within a day"]
+        },
+        "refund_requested": {
+          "type": "noul",
+          "instructions": "Does the customer explicitly request a refund?"
+        }
+      }
+    }
+  ]
+}
+```
+
+| Field       | Required | Description                                                                                          |
+| ----------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `name`      | yes      | Identifier the `decider` tool and `blorb decide --decider` reference; unique within the config, must match `^[a-zA-Z0-9_-]+$`. |
+| `model`     | yes      | Name of a defined `decision` model in the same config. Naming a non-decision model is a config error. |
+| `questions` | yes      | A map of question name to typed question; at least one entry.                                         |
+
+Each question has a `type` and `instructions`, plus type-specific `criteria`:
+
+| Field          | Required | Description                                                                                          |
+| -------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `type`         | yes      | One of `choice`, `noul`, or `score`.                                                                  |
+| `instructions` | yes      | The question itself: a string for short questions, or a JSON object or array putting the question in one field and the data that guides it in the others. Passed to the server verbatim. |
+| `criteria`     | by type  | Defines the answer space. See below.                                                                  |
+
+The three question types:
+
+- **`choice`** selects one of a set of named options. `criteria` is required and is a JSON object of option name to description, with at least two entries:
+
+  ```json
+  {
+    "type": "choice",
+    "instructions": "Which team should handle this?",
+    "criteria": { "billing": "Payments and refunds", "support": "Technical help" }
+  }
+  ```
+
+- **`score`** rates the state against an ordered set of levels. `criteria` is required and is a JSON array of two to ten descriptions, ordered from lowest to highest:
+
+  ```json
+  {
+    "type": "score",
+    "instructions": "How urgent is this?",
+    "criteria": ["Can wait", "Needs attention today", "Immediate outage"]
+  }
+  ```
+
+- **`noul`** asks a calibration question whose answer is the probability of yes. `criteria` is optional; when present it is a JSON object of `true` and `false` descriptions:
+
+  ```json
+  {
+    "type": "noul",
+    "instructions": "Does the customer request a refund?",
+    "criteria": { "true": "Explicitly asks for a refund", "false": "Does not" }
+  }
+  ```
+
+Question names must be identifiers matching `^[a-zA-Z0-9_]+$` and at most 64 characters; they stay in your code and are not sent to the model.
+
+Call semantics: every question is evaluated in parallel against the same state in one request; no question sees another's answer. Which state forms the server accepts - a string, object, or array - and vendor limits such as question counts and state size are the server's to enforce.
+
+The answers come back as an object keyed by question name, one answer per question, each carrying its `type`, the selected value, and the probabilities and confidence the server reported. The `choice` answer carries `choice`, `probabilities`, and `confidence`; `score` carries `score`, `probabilities`, `confidence`, and a `legend`; `noul` carries `noul` (the probability of yes) and no confidence.
+
 ## Tools
 
-Each tool has a required `type` field selecting one of three kinds:
+Each tool has a required `type` field selecting one of four kinds:
 
-The top-level `tools` list takes only these three types. A `"type": "toolset"` entry is not valid there: it is a reference to another toolset, allowed only inside a toolset's `tools` list. See [Toolsets](#toolsets).
+The top-level `tools` list takes only these four types. A `"type": "toolset"` entry is not valid there: it is a reference to another toolset, allowed only inside a toolset's `tools` list. See [Toolsets](#toolsets).
 
 **`command` tools** run an executable as a subprocess:
 
@@ -256,6 +354,39 @@ Execution semantics:
 - The chat interface shows the subagent's activity live - its assistant messages and tool calls - indented and labeled with the subagent's name, so you watch it work.
 - Subagent LLM calls are attributed to the subagent with their own footer line (and in chat's session totals), so a turn's usage shows how much each agent spent.
 - Limitation: nested LLM calls inside subagents are not traced to Prefactor; only the parent agent's spans are recorded.
+
+**`decider` tools** evaluate a named decider defined in the same config:
+
+```json
+{
+  "type": "decider",
+  "name": "triage_ticket",
+  "description": "Decide the priority and escalation of a support ticket.",
+  "decider": "triage"
+}
+```
+
+- `decider` - required; the name of a defined decider in the same config. Naming a decider that does not exist is a config error. A decider holds no tools and nothing recurses through it, so no cycle check is needed.
+- `args_schema` - optional JSON Schema object. By default the tool takes a single required `state` string, the situation to evaluate. With a custom schema, the raw JSON arguments are the state (the decider's questions are fixed in the decider config, so the tool call supplies only the state).
+
+Execution semantics:
+
+- The tool makes one decision API call with the decider's configured questions and returns the typed answers as a JSON object, keyed by question name. Each answer carries its `type`, the selected value (`choice` / `score` / `noul`), and the probabilities and confidence the server reported.
+- The call is one HTTP request under the registry's 30 second per-tool timeout (decision calls are sub-second; a hung server fails like any other tool).
+- A failed call - the server rejected the request - comes back as a normal failed tool result the parent model can read and react to, not as a Go error.
+- In chat (and the run and band frontends), the decision prints as a labeled, indented block before the parent's own tool result, so you watch the decision land the same way you watch a subagent work:
+
+  ```text
+  >>> Tool: triage_ticket
+  {"state":"..."}
+
+  [triage] >>> Decision:
+    {"department":{"type":"choice","choice":"billing",...},"refund_requested":{"type":"noul","noul":0.95}}
+  >>> Result: Tool: triage_ticket
+  ```
+
+- Decision calls are accounted in usage output as calls by the decider's name (the decider is not an agent, but its token usage is reported and attributed).
+- Limitation: decision calls are not traced to Prefactor, the same limitation as nested subagent calls.
 
 ## Toolsets
 

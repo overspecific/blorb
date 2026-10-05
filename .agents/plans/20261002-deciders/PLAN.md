@@ -29,7 +29,7 @@ Out of scope: Prefactor tracing of decision calls (they are not wrapped in the t
 - [x] Commit 5: engine - the real DeciderRunner, wired into subagent and judge registries
 - [x] Commit 6: chat, run and band wiring, decision display
 - [x] Commit 7: the decide command
-- [ ] Commit 8: docs and example
+- [x] Commit 8: docs and example
 
 ---
 

@@ -26,6 +26,8 @@ A non-streaming feature: `--logprobs` both asks the server for the data (overrid
 
 Subagent activity uses the same vocabulary prefixed `subagent_`, with `agent` and `depth` fields added. Judge activity (see [Judges](configuration.md#judges)) uses the same vocabulary prefixed `judge_`, also with `agent` and `depth` fields; a failed judge emits the non-terminal `judge_error {type, judge, error}`. Judge events appear after the turn's events and before the terminal `done`/`error`, and a judge failure never changes the terminal event:
 
+Decider calls (see [Deciders](configuration.md#deciders)) ride the same channel: a decision call's usage is a `subagent_usage` line with `agent` naming the decider, and the decision itself is a `subagent_decision {type, agent, depth, output}` line carrying the answers JSON, emitted after the usage line and before the parent's `tool_result`. A failed decision emits no `subagent_decision` line; the parent's failed `tool_result` carries the failure.
+
 ```text
 text_delta      {type, text}                       assistant text fragment (streaming)
 thinking_delta  {type, thinking}                   reasoning fragment (streaming)
@@ -35,6 +37,7 @@ thinking        {type, thinking}                   whole reasoning (with --no-st
 tool_call       {type, name, arguments}            whole tool call (with --no-stream)
 tool_result     {type, name, output, failed}       tool result; output is always the full body
 usage           {type, agent, model, usage, stats} one LLM call's token usage and call stats
+subagent_decision {type, agent, depth, output}     a decider's answers JSON; agent names the decider
 done            {type, text?, logprobs?, usage, stats, rates?, agents}  terminal on success
 error           {type, error}                      terminal on failure
 ```

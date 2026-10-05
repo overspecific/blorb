@@ -199,3 +199,69 @@ func toolNames(entries []config.ToolEntry) []string {
 	}
 	return names
 }
+
+// TestDecisionExampleConfigValid ensures the shipped decision example
+// blorb.json loads, validates, and carries the decider and decider tool it
+// documents.
+func TestDecisionExampleConfigValid(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "decision", "blorb.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("example not present: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load(examples/decision/blorb.json) error = %v, want nil", err)
+	}
+	if cfg.DefaultAgent != "triage" {
+		t.Errorf("DefaultAgent = %q, want triage", cfg.DefaultAgent)
+	}
+	decider, ok := cfg.Decider("triage")
+	if !ok {
+		t.Fatalf("Decider(triage) missing; deciders = %v", cfg.Deciders)
+	}
+	if decider.Model != "jev" {
+		t.Errorf("decider model = %q, want jev", decider.Model)
+	}
+	jev, ok := cfg.Model("jev")
+	if !ok {
+		t.Fatal("Model(jev) missing")
+	}
+	if jev.ResolvedModelType() != config.ModelTypeDecision {
+		t.Errorf("jev model_type = %q, want decision", jev.ResolvedModelType())
+	}
+	if len(decider.Questions) != 2 {
+		t.Fatalf("decider questions = %d, want 2", len(decider.Questions))
+	}
+	if got := decider.Questions["department"].Type; got != config.QuestionTypeChoice {
+		t.Errorf("department question type = %q, want choice", got)
+	}
+	if got := decider.Questions["refund_requested"].Type; got != config.QuestionTypeNoul {
+		t.Errorf("refund_requested question type = %q, want noul", got)
+	}
+	// The agent is granted the decider tool.
+	if got, want := toolNames(cfg.AgentTools(mustExampleAgent(t, cfg, "triage"))), []string{"triage_ticket"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("triage tools = %v, want %v", got, want)
+	}
+	for _, entry := range cfg.AgentTools(mustExampleAgent(t, cfg, "triage")) {
+		if entry.Type != config.ToolTypeDecider {
+			t.Errorf("tool %q type = %q, want decider", entry.Name, entry.Type)
+		}
+		if entry.Decider != "triage" {
+			t.Errorf("tool %q decider = %q, want triage", entry.Name, entry.Decider)
+		}
+	}
+	if cfg.PrefactorEnabled() {
+		t.Error("PrefactorEnabled() = true, want false — the decision example should not require a tracing token")
+	}
+}
+
+// mustExampleAgent resolves a named agent or fails the test.
+func mustExampleAgent(t *testing.T, cfg config.Config, name string) config.Agent {
+	t.Helper()
+	a, ok := cfg.Agent(name)
+	if !ok {
+		t.Fatalf("Agent(%q) missing", name)
+	}
+	return a
+}

@@ -1540,9 +1540,9 @@ func validateQuestionName(name string) error {
 	return nil
 }
 
-// validate checks one question: its name, type, instructions, and
-// type-specific criteria. The question name is validated here rather than
-// on the question value because the name is the map key.
+// validate checks one question: its type, instructions, and type-specific
+// criteria. The question name is validated separately (it is the map key,
+// not a field); see validateQuestionName.
 func (q *Question) validate() error {
 	if q.Type == "" {
 		return fmt.Errorf("type is required (one of: %s)", strings.Join(SupportedQuestionTypes(), ", "))

@@ -1,0 +1,75 @@
+{
+  "default_agent": "triage",
+  "models": [
+    {
+      "name": "jev",
+      "model_name": "jev-latest",
+      "model_type": "decision",
+      "provider": "typesafe"
+    },
+    {
+      "name": "chat",
+      "model_name": "gpt-4o-mini",
+      "provider": "chat"
+    }
+  ],
+  "agents": [
+    {
+      "name": "triage",
+      "system_prompt": "You are a support-ticket triage agent. When the user describes a ticket, call triage_ticket with the ticket text to get the department and whether a refund is requested. Then answer using the decision: route the ticket and say whether to escalate to a human. Keep your answer short.",
+      "max_turns": 5,
+      "tools": [
+        "triage_ticket"
+      ],
+      "model": "chat"
+    }
+  ],
+  "deciders": [
+    {
+      "name": "triage",
+      "model": "jev",
+      "questions": {
+        "department": {
+          "type": "choice",
+          "instructions": "Which team should handle this ticket?",
+          "criteria": {
+            "billing": "Payments, invoices, and refunds",
+            "technical": "Bugs, outages, integrations",
+            "sales": "New purchases and upgrades",
+            "other": "No listed department fits"
+          }
+        },
+        "refund_requested": {
+          "type": "noul",
+          "instructions": "Does the customer explicitly request a refund?",
+          "criteria": {
+            "true": "Explicitly asks for a refund",
+            "false": "Does not ask for a refund"
+          }
+        }
+      }
+    }
+  ],
+  "tools": [
+    {
+      "type": "decider",
+      "name": "triage_ticket",
+      "description": "Evaluate a support ticket and return its department and whether a refund was requested.",
+      "decider": "triage"
+    }
+  ],
+  "providers": [
+    {
+      "name": "typesafe",
+      "type": "openai-compatible",
+      "base_url": "https://api.typesafe.ai/v1",
+      "api_key_env": "TYPESAFE_API_KEY"
+    },
+    {
+      "name": "chat",
+      "type": "openai-compatible",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  ]
+}

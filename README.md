@@ -21,6 +21,7 @@ Tools are plain executables declared in the config, built-ins implemented inside
 - Usage stats: every turn ends with a usage footer with one line per agent and a `total:` line. Each line carries tokens plus, when the client measures, elapsed time, output bytes with a text/reasoning/tool-call split, and derived throughput; chat prints the same session totals at exit
 - Full wire logging: every LLM request/response and tool call/result is written to a timestamped file per session, so a plain sort of the filenames replays a turn in order (see [Logging](docs/configuration.md#logging))
 - Tools as local subprocesses, built-ins (`read`, `grep`), subagents - one agent delegating to another defined in the same config - or toolsets: named groups of tools granted whole or one member at a time, with prefixed names, nestable, and a built-in `file` bundle - all with JSON Schema argument declarations
+- Deciders: decision models (System One models such as Jev) that return typed answers with probabilities instead of text, exposed to agents as `decider` tools and directly through `blorb decide`
 - Judges: agents that review another agent's completed run, receiving its transcript and printing their judgement
 - OpenAI-compatible chat completions endpoints and Ollama servers (local or cloud) as LLM backends, with provider-level sampling defaults, structured output, tool-choice control, and per-token logprobs
 - `blorb models` - per provider, what the server has installed, flagging configured models that are missing
@@ -66,6 +67,7 @@ Commands:
 
 - `chat` - chat with an agent defined in `blorb.json`
 - `run` - run one agent turn and exit
+- `decide` - evaluate a decider against a state and print the answers as JSON
 - `band` - connect to the Band platform and answer room mentions
 - `models` - list the models each provider's server has installed
 - `version` - print the version
@@ -128,6 +130,16 @@ git diff | ./blorb run @-
 Exit codes: `0` on a completed turn, `1` on any error, `130` on Ctrl-C (SIGINT).
 
 See the [output formats reference](docs/formats.md) for the format details: the ndjson event types, the `stats` object, streaming behavior, and logprobs output.
+
+### Deciding
+
+`blorb decide` is the decider counterpart of `run`: it evaluates one decider against one state and prints the typed answers as JSON, the way `run --agent` invokes an agent directly:
+
+```sh
+./blorb decide --decider triage "The invoice failed twice and the customer is threatening to cancel."
+```
+
+The state argument shares `run`'s prompt syntax (literal, `@@` escape, `@file`, `-` for stdin). `--decider` is required. See [Deciders](docs/configuration.md#deciders) for what a decider is and the [CLI reference](docs/cli.md#blorb-decide) for the command.
 
 ### Listing installed models
 
@@ -220,7 +232,7 @@ A `blorb.json` defines the shared provider, model, and tool vocabularies and the
 
 With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb chat --agent quiet` runs the quiet one, and `./blorb chat --agent nope` fails naming the defined agents. Both agents share the `echo` tool; only `simple` also uses the `read` builtin. Both models share one provider - one server declaration, two model entries.
 
-See [docs/configuration.md](docs/configuration.md) for the complete field reference: providers (and their sampling fields), models (tool choice, logprobs, structured output), agents, tools (command, builtin, subagent), toolsets, judges, wire logging, and Prefactor tracing.
+See [docs/configuration.md](docs/configuration.md) for the complete field reference: providers (and their sampling fields), models (tool choice, logprobs, structured output, decision models), agents, deciders, tools (command, builtin, subagent, decider), toolsets, judges, wire logging, and Prefactor tracing.
 
 ## Examples
 
@@ -231,6 +243,8 @@ See [examples/prefactor-tracing](examples/prefactor-tracing) for a single-agent 
 See [examples/ollama-cloud](examples/ollama-cloud) for a single-agent variant pointed at Ollama cloud (native `ollama` model type, API key via `api_key_env`, `reasoning_effort` on a thinking model).
 
 See [examples/plaud](examples/plaud) for a two-agent config exposing the Plaud CLI (`files` and `transcript`) as command tools the agents can call to list the user's recordings and fetch their transcripts, plus a `summarize` subagent tool that delegates to a summarizer agent returning a JSON summary with action items.
+
+See [examples/decision](examples/decision) for a decision-model config: a `decider` tool an agent can call, and a direct `blorb decide` invocation.
 
 ## Contributing
 

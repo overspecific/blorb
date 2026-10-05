@@ -152,3 +152,14 @@ func TestResolvePromptMissingFileWrapsOSError(t *testing.T) {
 		t.Errorf("error = %v, want it to wrap the os error (ErrNotExist)", err)
 	}
 }
+
+// TestResolvePromptCommandPrefix pins that the error prefix is the command
+// name the caller passes, so the decide command reports "decide: ...".
+func TestResolvePromptCommandPrefix(t *testing.T) {
+	t.Parallel()
+
+	_, err := run.ResolvePrompt("decide", "", strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "decide: no prompt given") {
+		t.Errorf("error = %v, want the decide-prefixed usage error", err)
+	}
+}
