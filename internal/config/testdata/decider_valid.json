@@ -1,0 +1,73 @@
+{
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:1"
+    }
+  ],
+  "models": [
+    {
+      "name": "m",
+      "provider": "local",
+      "model_name": "m"
+    },
+    {
+      "name": "jev",
+      "provider": "local",
+      "model_name": "jev",
+      "model_type": "decision"
+    }
+  ],
+  "agents": [
+    {
+      "name": "helper",
+      "system_prompt": "You are helpful.",
+      "max_turns": 1,
+      "model": "m"
+    }
+  ],
+  "deciders": [
+    {
+      "name": "triage",
+      "model": "jev",
+      "questions": {
+        "priority": {
+          "type": "choice",
+          "instructions": "How urgent is this ticket?",
+          "criteria": {
+            "low": "Not urgent",
+            "high": "Urgent"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Should this be escalated?",
+          "criteria": {
+            "true": "Escalate",
+            "false": "Do not escalate"
+          }
+        }
+      }
+    }
+  ],
+  "tools": [
+    {
+      "type": "decider",
+      "name": "triage_ticket",
+      "description": "Triage the ticket.",
+      "decider": "triage",
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      }
+    }
+  ]
+}

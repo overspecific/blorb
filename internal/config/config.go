@@ -39,6 +39,12 @@ const ToolTypeSubagent ToolType = "subagent"
 // referred toolset's own name supplies the granted prefix.
 const ToolTypeToolset ToolType = "toolset"
 
+// ToolTypeDecider selects a tool that evaluates one of the config's
+// deciders: the tool call supplies only the state, and blorb makes one
+// decision-model call with the decider's fixed questions and returns the
+// typed answers.
+const ToolTypeDecider ToolType = "decider"
+
 // ToolTypeBand selects a tool that calls the Band platform. It is never
 // valid in blorb.json: band tools are constructed programmatically by
 // the band command and injected into the registry.
@@ -69,6 +75,10 @@ func supportedJudgeWhens() []string {
 // they are valid function names for the API and safe to exec.
 var NamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// QuestionNamePattern is the pattern decider question names must match:
+// the decision wire format restricts question names to identifiers.
+var QuestionNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+
 const (
 	// DefaultPath is used when no config path flag is given.
 	DefaultPath = "./blorb.json"
@@ -96,6 +106,20 @@ const (
 	// questions and returns typed answers with probabilities. Only
 	// deciders may reference a decision model.
 	ModelTypeDecision = "decision"
+
+	// QuestionTypeChoice asks a question whose answer space is a set of
+	// named options; the answer selects one and reports a probability per
+	// option.
+	QuestionTypeChoice = "choice"
+
+	// QuestionTypeNoul asks a calibration question whose answer is the
+	// probability of yes.
+	QuestionTypeNoul = "noul"
+
+	// QuestionTypeScore asks a question whose answer space is an ordered
+	// set of levels; the answer selects a level and reports a probability
+	// per level.
+	QuestionTypeScore = "score"
 
 	// DefaultPrefactorAPIURL is the Prefactor API base URL used when
 	// api_url is unset in the prefactor config block.
@@ -138,7 +162,11 @@ type Config struct {
 	// Toolsets is the shared toolset vocabulary: named groups of tools
 	// that agents grant whole. A toolset's members are renamed with the
 	// toolset name as a prefix when granted; see AgentTools.
-	Toolsets  []Toolset        `json:"toolsets,omitempty"`
+	Toolsets []Toolset `json:"toolsets,omitempty"`
+	// Deciders is the shared decider vocabulary: named decision-model
+	// evaluations fixed to a set of typed questions. A decider tool
+	// references one by name; the declarations live here, once.
+	Deciders  []Decider        `json:"deciders,omitempty"`
 	Logging   LogConfig        `json:"logging"`
 	Prefactor *PrefactorConfig `json:"prefactor,omitempty"`
 
@@ -147,6 +175,37 @@ type Config struct {
 	// programmatically-built Config that never went through Load, which
 	// makes relative paths resolve against the process working directory.
 	dir string
+}
+
+// Decider is one named decider definition inside a config. It names a
+// decision model and fixes the typed questions every call asks; only
+// the state varies per call. Deciders are reachable only through
+// decider tools; they are not agents and have no tools, turns, or
+// judges of their own.
+type Decider struct {
+	// Name identifies the decider within the config. It must match
+	// NamePattern and be unique among deciders.
+	Name string `json:"name"`
+	// Model names the decision model this decider evaluates with. It must
+	// be a defined decision model in the same config.
+	Model string `json:"model"`
+	// Questions fixes the typed questions every call asks, keyed by
+	// question name. There must be at least one.
+	Questions map[string]Question `json:"questions"`
+}
+
+// Question is one typed question a decider asks. Type is one of
+// choice, noul, or score. Instructions is the question itself: a
+// string for short questions, or an object or array putting the
+// question in one field and the data that guides it in the others;
+// it is passed to the server verbatim. Criteria defines the answer
+// space: an object of two or more option descriptions for choice, an
+// ordered array of two to ten level descriptions for score, and
+// optional true/false label descriptions (an object) for noul.
+type Question struct {
+	Type         string          `json:"type"`
+	Instructions json.RawMessage `json:"instructions"`
+	Criteria     json.RawMessage `json:"criteria,omitempty"`
 }
 
 // Agent is one named agent definition inside a config. It owns the
@@ -567,6 +626,11 @@ type ToolEntry struct {
 	// a defined agent in the same config.
 	Agent string `json:"agent,omitempty"`
 
+	// Fields for type "decider".
+	// Decider names the decider this tool evaluates; it must be a
+	// defined decider in the same config.
+	Decider string `json:"decider,omitempty"`
+
 	// Fields for type "toolset": a reference to another top-level
 	// toolset. Valid only inside a toolset's tools list; the granted
 	// prefix comes from the referenced toolset's own name.
@@ -648,6 +712,12 @@ func SupportedModelTypes() []string {
 	return []string{ModelTypeDecision, ModelTypeLLM}
 }
 
+// SupportedQuestionTypes lists the question types this build recognizes,
+// sorted alphabetically.
+func SupportedQuestionTypes() []string {
+	return []string{QuestionTypeChoice, QuestionTypeNoul, QuestionTypeScore}
+}
+
 // MaxTurnsOrDefault returns MaxTurns, or DefaultMaxTurns when unset (zero).
 func (a Agent) MaxTurnsOrDefault() int {
 	if a.MaxTurns == 0 {
@@ -700,6 +770,17 @@ func (c Config) Toolset(name string) (Toolset, bool) {
 		}
 	}
 	return Toolset{}, false
+}
+
+// Decider returns the named decider definition and whether it exists in
+// the config.
+func (c Config) Decider(name string) (Decider, bool) {
+	for _, d := range c.Deciders {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return Decider{}, false
 }
 
 // DefaultAgentName returns the configured default agent name and whether
@@ -883,6 +964,14 @@ func (c *Config) Validate() error {
 	if err := validateUniqueModelNames(c.Models); err != nil {
 		return err
 	}
+	for _, d := range c.Deciders {
+		if err := d.validate(c.Models); err != nil {
+			return fmt.Errorf("decider %q: %w", d.Name, err)
+		}
+	}
+	if err := validateUniqueDeciderNames(c.Deciders); err != nil {
+		return err
+	}
 	if c.Agents == nil {
 		return fmt.Errorf("agents is required")
 	}
@@ -948,6 +1037,9 @@ func (c *Config) Validate() error {
 	if err := c.validateSubagentRefs(); err != nil {
 		return err
 	}
+	if err := c.validateDeciderRefs(); err != nil {
+		return err
+	}
 	if err := c.validateJudgeRefs(); err != nil {
 		return err
 	}
@@ -976,6 +1068,31 @@ func (c *Config) validateSubagentRefs() error {
 			}
 			if _, ok := c.Agent(t.Agent); !ok {
 				return fmt.Errorf("toolset %q: agent %q is not a defined agent", ts.Name, t.Agent)
+			}
+		}
+	}
+	return nil
+}
+
+// validateDeciderRefs checks that every decider tool entry names a defined
+// decider, at the top level and inside every toolset. No cycle detection is
+// needed: deciders hold no tools and nothing recurses through them.
+func (c *Config) validateDeciderRefs() error {
+	for _, t := range c.Tools {
+		if t.Type != ToolTypeDecider {
+			continue
+		}
+		if _, ok := c.Decider(t.Decider); !ok {
+			return fmt.Errorf("tool %q: decider %q is not a defined decider", t.Name, t.Decider)
+		}
+	}
+	for _, ts := range c.Toolsets {
+		for _, t := range ts.Tools {
+			if t.Type != ToolTypeDecider {
+				continue
+			}
+			if _, ok := c.Decider(t.Decider); !ok {
+				return fmt.Errorf("toolset %q: decider %q is not a defined decider", ts.Name, t.Decider)
 			}
 		}
 	}
@@ -1375,6 +1492,133 @@ func (m *Model) validateDecision(provider Provider) error {
 	return nil
 }
 
+// validate checks one decider definition: its name, that the model it
+// names is a defined decision model, and that its questions are
+// well-formed. models is the already-validated top-level list the decider
+// references by name.
+func (d *Decider) validate(models []Model) error {
+	if d.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if !NamePattern.MatchString(d.Name) {
+		return fmt.Errorf("name %q must match %s", d.Name, NamePattern)
+	}
+	if d.Model == "" {
+		return fmt.Errorf("model is required")
+	}
+	idx := slices.IndexFunc(models, func(m Model) bool { return m.Name == d.Model })
+	if idx < 0 {
+		return fmt.Errorf("model %q is not a defined model", d.Model)
+	}
+	if models[idx].ResolvedModelType() != ModelTypeDecision {
+		return fmt.Errorf("model %q is not a decision model", d.Model)
+	}
+	if len(d.Questions) == 0 {
+		return fmt.Errorf("questions must not be empty")
+	}
+	for name, q := range d.Questions {
+		if err := validateQuestionName(name); err != nil {
+			return fmt.Errorf("question %q: %w", name, err)
+		}
+		if err := q.validate(); err != nil {
+			return fmt.Errorf("question %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// validateQuestionName checks a decider question's name: the wire format
+// restricts question names to identifiers, and the server caps them at 64
+// characters.
+func validateQuestionName(name string) error {
+	if !QuestionNamePattern.MatchString(name) {
+		return fmt.Errorf("name %q must match %s", name, QuestionNamePattern)
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("name %q must be at most 64 characters", name)
+	}
+	return nil
+}
+
+// validate checks one question: its name, type, instructions, and
+// type-specific criteria. The question name is validated here rather than
+// on the question value because the name is the map key.
+func (q *Question) validate() error {
+	if q.Type == "" {
+		return fmt.Errorf("type is required (one of: %s)", strings.Join(SupportedQuestionTypes(), ", "))
+	}
+	if !slices.Contains(SupportedQuestionTypes(), q.Type) {
+		return fmt.Errorf("unknown type %q (supported: %s)", q.Type, strings.Join(SupportedQuestionTypes(), ", "))
+	}
+	if len(q.Instructions) == 0 {
+		return fmt.Errorf("instructions is required")
+	}
+	if !json.Valid(q.Instructions) {
+		return fmt.Errorf("instructions must be valid JSON")
+	}
+	switch q.Type {
+	case QuestionTypeChoice:
+		return validateChoiceCriteria(q.Criteria)
+	case QuestionTypeScore:
+		return validateScoreCriteria(q.Criteria)
+	case QuestionTypeNoul:
+		if len(q.Criteria) == 0 {
+			return nil
+		}
+		var asAny any
+		if err := json.Unmarshal(q.Criteria, &asAny); err != nil {
+			return fmt.Errorf("criteria must be valid JSON: %w", err)
+		}
+		if _, ok := asAny.(map[string]any); !ok {
+			return fmt.Errorf("criteria must be a JSON object")
+		}
+	}
+	return nil
+}
+
+// validateChoiceCriteria checks a choice question's criteria: required, a
+// JSON object with at least two option descriptions.
+func validateChoiceCriteria(criteria json.RawMessage) error {
+	if len(criteria) == 0 {
+		return fmt.Errorf("criteria is required for choice questions")
+	}
+	var asAny any
+	if err := json.Unmarshal(criteria, &asAny); err != nil {
+		return fmt.Errorf("criteria must be valid JSON: %w", err)
+	}
+	obj, ok := asAny.(map[string]any)
+	if !ok {
+		return fmt.Errorf("criteria must be a JSON object")
+	}
+	if len(obj) < 2 {
+		return fmt.Errorf("choice criteria must have at least two options")
+	}
+	return nil
+}
+
+// validateScoreCriteria checks a score question's criteria: required, a
+// JSON array of two to ten level descriptions.
+func validateScoreCriteria(criteria json.RawMessage) error {
+	if len(criteria) == 0 {
+		return fmt.Errorf("criteria is required for score questions")
+	}
+	var asAny any
+	if err := json.Unmarshal(criteria, &asAny); err != nil {
+		return fmt.Errorf("criteria must be valid JSON: %w", err)
+	}
+	arr, ok := asAny.([]any)
+	if !ok {
+		return fmt.Errorf("criteria must be a JSON array")
+	}
+	if len(arr) < 2 {
+		return fmt.Errorf("score criteria must have at least two levels")
+	}
+	if len(arr) > 10 {
+		return fmt.Errorf("score criteria must have at most ten levels")
+	}
+	return nil
+}
+
 // validateLogprobs checks the logprobs/top_logprobs pair: top_logprobs in
 // [0, 20] (OpenAI's cap), and settable only when logprobs is true. Models
 // on both provider types support the knob.
@@ -1498,15 +1742,15 @@ func validateFormat(format json.RawMessage, providerType string) error {
 // level, sorted alphabetically. The toolset-reference type is valid only
 // inside a toolset; see supportedToolEntryTypes.
 func SupportedToolTypes() []string {
-	return []string{string(ToolTypeBuiltin), string(ToolTypeCommand), string(ToolTypeSubagent)}
+	return []string{string(ToolTypeBuiltin), string(ToolTypeCommand), string(ToolTypeDecider), string(ToolTypeSubagent)}
 }
 
 // supportedToolEntryTypes lists the tool types valid in the given location,
-// sorted alphabetically: the three registry types everywhere, plus the
+// sorted alphabetically: the registry types everywhere, plus the
 // toolset-reference type inside a toolset's tools list.
 func supportedToolEntryTypes(inToolset bool) []string {
 	if inToolset {
-		return []string{string(ToolTypeBuiltin), string(ToolTypeCommand), string(ToolTypeSubagent), string(ToolTypeToolset)}
+		return []string{string(ToolTypeBuiltin), string(ToolTypeCommand), string(ToolTypeDecider), string(ToolTypeSubagent), string(ToolTypeToolset)}
 	}
 	return SupportedToolTypes()
 }
@@ -1596,6 +1840,28 @@ func (t *ToolEntry) validate(dir string, inToolset bool) error {
 		if len(t.Config) > 0 {
 			return fmt.Errorf("config is not valid for subagent tools")
 		}
+	case ToolTypeDecider:
+		if t.Decider == "" {
+			return fmt.Errorf("decider is required")
+		}
+		if !NamePattern.MatchString(t.Decider) {
+			return fmt.Errorf("decider %q must match %s", t.Decider, NamePattern)
+		}
+		if len(t.ArgsSchema) > 0 && !json.Valid(t.ArgsSchema) {
+			return fmt.Errorf("args_schema must be valid JSON")
+		}
+		if len(t.Command) > 0 {
+			return fmt.Errorf("command is not valid for decider tools")
+		}
+		if t.Builtin != "" {
+			return fmt.Errorf("builtin is not valid for decider tools")
+		}
+		if len(t.Config) > 0 {
+			return fmt.Errorf("config is not valid for decider tools")
+		}
+		if t.Agent != "" {
+			return fmt.Errorf("agent is not valid for decider tools")
+		}
 	}
 	return nil
 }
@@ -1668,6 +1934,17 @@ func validateUniqueModelNames(models []Model) error {
 			return fmt.Errorf("duplicate model name %q", m.Name)
 		}
 		seen[m.Name] = struct{}{}
+	}
+	return nil
+}
+
+func validateUniqueDeciderNames(deciders []Decider) error {
+	seen := make(map[string]struct{}, len(deciders))
+	for _, d := range deciders {
+		if _, ok := seen[d.Name]; ok {
+			return fmt.Errorf("duplicate decider name %q", d.Name)
+		}
+		seen[d.Name] = struct{}{}
 	}
 	return nil
 }

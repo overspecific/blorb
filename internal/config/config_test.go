@@ -377,6 +377,33 @@ func validAgent() config.Agent {
 	}
 }
 
+// validDecisionModel returns the canonical valid decision model for
+// programmatic configs: it names validProvider's provider.
+func validDecisionModel() config.Model {
+	return config.Model{
+		Name:      "jev",
+		Provider:  "local",
+		ModelName: "jev",
+		ModelType: config.ModelTypeDecision,
+	}
+}
+
+// validDecider returns the canonical valid decider for programmatic
+// configs: it names validDecisionModel and asks one choice question.
+func validDecider() config.Decider {
+	return config.Decider{
+		Name:  "triage",
+		Model: "jev",
+		Questions: map[string]config.Question{
+			"priority": {
+				Type:         config.QuestionTypeChoice,
+				Instructions: json.RawMessage(`"How urgent?"`),
+				Criteria:     json.RawMessage(`{"low":"Low","high":"High"}`),
+			},
+		},
+	}
+}
+
 func TestLoadWithPrefactor(t *testing.T) {
 	cfg, err := loadTestdata(t, "with_prefactor.json")
 	if err != nil {
@@ -699,6 +726,32 @@ func TestLoadRejects(t *testing.T) {
 		{"agent_grants_toolset_and_member.json", []string{`agent "main": duplicate tool "kb-read"`}},
 		{"toolset_reference_space_collision.json", []string{`duplicate name "a-b-c"`, "tools, toolsets, and toolset members share one reference space"}},
 		{"toolset_subagent_agent_cycle.json", []string{`agent cycle detected: "a" -> "b" -> "a"`}},
+		{"decider_missing_name.json", []string{`decider "": name is required`}},
+		{"decider_bad_name.json", []string{`decider "has space": name "has space" must match`}},
+		{"decider_missing_model.json", []string{`decider "triage": model is required`}},
+		{"decider_unknown_model.json", []string{`decider "triage": model "ghost" is not a defined model`}},
+		{"decider_llm_model.json", []string{`decider "triage": model "m" is not a decision model`}},
+		{"decider_no_questions.json", []string{`decider "triage": questions must not be empty`}},
+		{"decider_question_bad_name.json", []string{`question "bad-name": name "bad-name" must match`}},
+		{"decider_question_long_name.json", []string{`must be at most 64 characters`}},
+		{"decider_question_unknown_type.json", []string{`question "q": unknown type "nope" (supported: choice, noul, score)`}},
+		{"decider_question_missing_instructions.json", []string{`question "q": instructions is required`}},
+		{"decider_choice_no_criteria.json", []string{`question "q": criteria is required for choice questions`}},
+		{"decider_choice_criteria_not_object.json", []string{`question "q": criteria must be a JSON object`}},
+		{"decider_choice_one_option.json", []string{`question "q": choice criteria must have at least two options`}},
+		{"decider_score_no_criteria.json", []string{`question "q": criteria is required for score questions`}},
+		{"decider_score_criteria_not_array.json", []string{`question "q": criteria must be a JSON array`}},
+		{"decider_score_one_level.json", []string{`question "q": score criteria must have at least two levels`}},
+		{"decider_score_eleven_levels.json", []string{`question "q": score criteria must have at most ten levels`}},
+		{"decider_noul_criteria_not_object.json", []string{`question "q": criteria must be a JSON object`}},
+		{"decider_duplicate_names.json", []string{`duplicate decider name "triage"`}},
+		{"tool_decider_missing_decider.json", []string{`decider is required`}},
+		{"tool_decider_unknown_decider.json", []string{`tool "triage_tool": decider "ghost" is not a defined decider`}},
+		{"toolset_decider_unknown_decider.json", []string{`toolset "a": decider "ghost" is not a defined decider`}},
+		{"tool_decider_with_command.json", []string{"command is not valid for decider tools"}},
+		{"tool_decider_with_builtin.json", []string{"builtin is not valid for decider tools"}},
+		{"tool_decider_with_config.json", []string{"config is not valid for decider tools"}},
+		{"tool_decider_with_agent.json", []string{"agent is not valid for decider tools"}},
 		{"unknown_top_level_field.json", []string{"unknown_field"}},
 		{"band_top_level.json", []string{"unknown field", `"band"`}},
 		{"prefactor_unknown_field.json", []string{"no_such_field"}},
@@ -719,6 +772,43 @@ func TestLoadRejects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadDeciderValid(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadTestdata(t, "decider_valid.json")
+	if err != nil {
+		t.Fatalf("Load(decider_valid.json) error = %v, want nil", err)
+	}
+	d, ok := cfg.Decider("triage")
+	if !ok {
+		t.Fatal("Decider(\"triage\") missing")
+	}
+	if d.Model != "jev" {
+		t.Errorf("Model = %q, want jev", d.Model)
+	}
+	if len(d.Questions) != 2 {
+		t.Fatalf("len(Questions) = %d, want 2", len(d.Questions))
+	}
+	if q := d.Questions["priority"]; q.Type != config.QuestionTypeChoice {
+		t.Errorf("priority.Type = %q, want choice", q.Type)
+	}
+	if q := d.Questions["escalate"]; q.Type != config.QuestionTypeNoul {
+		t.Errorf("escalate.Type = %q, want noul", q.Type)
+	}
+	if len(cfg.Tools) != 1 {
+		t.Fatalf("len(Tools) = %d, want 1", len(cfg.Tools))
+	}
+	if cfg.Tools[0].Type != config.ToolTypeDecider {
+		t.Errorf("Type = %q, want decider", cfg.Tools[0].Type)
+	}
+	if cfg.Tools[0].Decider != "triage" {
+		t.Errorf("Decider = %q, want triage", cfg.Tools[0].Decider)
+	}
+	if len(cfg.Tools[0].ArgsSchema) == 0 || !json.Valid(cfg.Tools[0].ArgsSchema) {
+		t.Errorf("ArgsSchema = %s, want the raw custom schema", cfg.Tools[0].ArgsSchema)
 	}
 }
 
@@ -934,8 +1024,54 @@ func TestValidateRejectsSubagentBadArgsSchema(t *testing.T) {
 
 func TestValidateSubagentToolTypes(t *testing.T) {
 	// SupportedToolTypes stays sorted alphabetically.
-	if got, want := config.SupportedToolTypes(), []string{"builtin", "command", "subagent"}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if got, want := config.SupportedToolTypes(), []string{"builtin", "command", "decider", "subagent"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("SupportedToolTypes() = %v, want %v", got, want)
+	}
+}
+
+// TestValidateRejectsDeciderBadArgsSchema covers args_schema validation for
+// decider tools. Like the subagent variant it cannot be exercised through
+// Load: json.RawMessage only captures values that are already valid JSON, so
+// invalid schema JSON fails the outer parse first.
+func TestValidateRejectsDeciderBadArgsSchema(t *testing.T) {
+	cfg := config.Config{
+		Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel(), validDecisionModel()},
+		Agents:   []config.Agent{validAgent()},
+		Deciders: []config.Decider{validDecider()},
+		Tools: []config.ToolEntry{{
+			Type:        config.ToolTypeDecider,
+			Name:        "t",
+			Description: "Decides with a broken schema.",
+			Decider:     "triage",
+			ArgsSchema:  json.RawMessage(`{oops`),
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "args_schema must be valid JSON") {
+		t.Errorf("Validate error = %v, want an args_schema error", err)
+	}
+}
+
+// TestValidateRejectsDeciderBadInstructionsJSON covers instructions
+// validation for deciders built programmatically: an invalid RawMessage
+// cannot come through Load, which parses the outer JSON first.
+func TestValidateRejectsDeciderBadInstructionsJSON(t *testing.T) {
+	cfg := config.Config{
+		Providers: []config.Provider{validProvider()}, Models: []config.Model{validModel(), validDecisionModel()},
+		Agents: []config.Agent{validAgent()},
+		Deciders: []config.Decider{{
+			Name:  "triage",
+			Model: "jev",
+			Questions: map[string]config.Question{
+				"q": {Type: config.QuestionTypeNoul, Instructions: json.RawMessage(`{oops`)},
+			},
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "instructions must be valid JSON") {
+		t.Errorf("Validate error = %v, want an instructions error", err)
 	}
 }
 
@@ -1160,7 +1296,7 @@ func TestToolsetValidationProgrammatic(t *testing.T) {
 			Tools: []config.ToolEntry{{Type: "webhook"}},
 		}}
 		err := cfg.Validate()
-		if err == nil || !contains(err.Error(), `unknown tool type "webhook" (supported: builtin, command, subagent, toolset)`) {
+		if err == nil || !contains(err.Error(), `unknown tool type "webhook" (supported: builtin, command, decider, subagent, toolset)`) {
 			t.Errorf("Validate error = %v, want the four-value supported list", err)
 		}
 	})
