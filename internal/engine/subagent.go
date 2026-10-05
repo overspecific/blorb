@@ -20,6 +20,10 @@ type SubagentRunnerConfig struct {
 	// Stream enables streaming in subagent engines; clients that do not
 	// implement llm.StreamingClient fall back to whole messages.
 	Stream bool
+	// DeciderRunner evaluates decider tools granted to a subagent. It is
+	// optional: a registry only errors when the nested agent is actually
+	// granted a decider tool and no runner is configured.
+	DeciderRunner tools.DeciderRunner
 	// Sink receives the nested engines' wire logs.
 	Sink logging.Sink
 }
@@ -53,6 +57,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, agentName, userMessage
 		tools.WithSink(r.cfg.Sink),
 		tools.WithConfigDir(r.cfg.Config.Dir()),
 		tools.WithSubagentRunner(r),
+		tools.WithDeciderRunner(r.cfg.DeciderRunner),
 		tools.WithSubagentEvents(onEvent),
 	)
 	if err != nil {

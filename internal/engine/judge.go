@@ -50,6 +50,10 @@ type JudgeRunnerConfig struct {
 	// Stream enables streaming in judge engines; clients that do not
 	// implement llm.StreamingClient fall back to whole messages.
 	Stream bool
+	// DeciderRunner evaluates decider tools granted to a judge. It is
+	// optional: a registry only errors when the nested agent is actually
+	// granted a decider tool and no runner is configured.
+	DeciderRunner tools.DeciderRunner
 	// Sink receives the nested engines' wire logs.
 	Sink logging.Sink
 }
@@ -157,6 +161,7 @@ func (r *JudgeRunner) runJudge(ctx context.Context, judgeName string, judge conf
 		tools.WithSink(r.cfg.Sink),
 		tools.WithConfigDir(r.cfg.Config.Dir()),
 		tools.WithSubagentRunner(r.subagentRunner),
+		tools.WithDeciderRunner(r.cfg.DeciderRunner),
 		tools.WithSubagentEvents(nil),
 	)
 	if err != nil {
