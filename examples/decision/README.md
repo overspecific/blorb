@@ -1,6 +1,6 @@
 # Decision-model router over the biscuit knowledgebase
 
-A config that puts a decision model to work on a job a generative model is bad at: picking a route through a body of text before the agent reads it. It reuses the biscuit knowledgebase from the [simple](../simple) example and adds a `scholar` agent that answers biscuit questions, and a `route_question` decider - a fixed set of typed questions for a System One model (Jev) - that the scholar calls once per question to decide which region file to read and whether it needs to read at all.
+A config that puts a decision model to work on a job a generative model is bad at: picking a route through a body of text before the agent reads it. It reuses the biscuit knowledgebase from the [simple](../simple) example and adds a `scholar` agent that answers biscuit questions, and a `route_question` decider - a fixed set of typed questions for a System One model (Jev) - that the scholar calls once per question to decide which knowledgebase file to read and whether it needs to read at all.
 
 The chat model is the same local server the [simple](../simple) example uses. The decision model is hosted, because it speaks a different protocol.
 
@@ -18,7 +18,7 @@ A decision model sits on an `openai-compatible` provider and is marked with `"mo
 
 ## The agents
 
-`scholar` is the default agent. It is granted the `kb` toolset from the [simple](../simple) example, pointing at that example's knowledgebase with a relative `base_dir` (`../simple/knowledgebase`, resolved against `blorb.json`'s directory). The grant is the whole `kb` toolset, which is `kb-read` and `kb-grep`. It also gets the `search` subagent tool and the `route_question` decider tool. Its system prompt tells it to call `route_question` first for any biscuit question, then read what the decision points at. The decision is the plan: which file to read, and whether the excerpt it already has is enough.
+`scholar` is the default agent. It is granted the `kb` toolset from the [simple](../simple) example, pointing at that example's knowledgebase with a relative `base_dir` (`../simple/knowledgebase`, resolved against `blorb.json`'s directory). The grant is the whole `kb` toolset, which is `kb-read` and `kb-grep`. It also gets the `search` subagent tool and the `route_question` decider tool. Its system prompt tells it the knowledgebase is one file per region (`france.md`, `united-kingdom.md`, ...), plus `dunking.md` and a `README.md`. For any biscuit question it calls `route_question` first, then passes the decision's `region` answer - a filename - straight to `kb-grep` as the `path`. The decision is the plan: which file to read, and whether the excerpt it already has is enough.
 
 `search` is an expert searcher given the same `kb` toolset and no delegations of its own. When a grep pattern comes up empty it tries alternatives before reporting back: other spellings, synonyms, singular and plural, broader terms. Its output is grep's format (`path:line:text`). The scholar delegates to it when a pattern comes up empty.
 
@@ -33,12 +33,12 @@ A decider fixes the typed questions every call asks; only the state varies per c
   "questions": {
     "region": {
       "type": "choice",
-      "instructions": "Which region file of the knowledgebase is most likely to hold the answer? Choose unknown when the question is not region-specific.",
+      "instructions": "Which knowledgebase file is most likely to hold the answer? Answer with the filename to read. Choose unknown when the question is not region-specific, in which case search the whole knowledgebase.",
       "criteria": {
-        "united_kingdom": "The British Isles",
-        "france": "France",
+        "united-kingdom.md": "The British Isles",
+        "france.md": "France",
         "...": "...",
-        "unknown": "The question is not region-specific"
+        "unknown": "Not region-specific; search the whole knowledgebase"
       }
     },
     "question_kind": {
@@ -62,7 +62,7 @@ A decider fixes the typed questions every call asks; only the state varies per c
       "instructions": "What should your agent do next with this question?",
       "criteria": [
         "Answer from the excerpt as it is",
-        "Retrieve from the chosen region file",
+        "Retrieve from the chosen knowledgebase file",
         "Dig further with the search agent"
       ]
     }
@@ -70,7 +70,7 @@ A decider fixes the typed questions every call asks; only the state varies per c
 }
 ```
 
-`region` and `question_kind` are `choice` questions: `criteria` is a map of option name to description, and each answer selects one option with a probability per option. `answerable_from_excerpt` is a `noul`: a calibration whose answer is the probability of yes. `action` is a `score`: an ordered rubric. The `region` options name the knowledgebase's region files, so the decision itself tells the scholar which file to read.
+`region` and `question_kind` are `choice` questions: `criteria` is a map of option name to description, and each answer selects one option with a probability per option. `answerable_from_excerpt` is a `noul`: a calibration whose answer is the probability of yes. `action` is a `score`: an ordered rubric. The `region` options are the actual knowledgebase filenames (`france.md`, `united-kingdom.md`, ...), so the decision's answer is used directly as the path the scholar reads; `unknown` means the question is not region-specific and the scholar searches the whole knowledgebase.
 
 ## The tool
 
@@ -80,7 +80,7 @@ The `route_question` tool references the decider by name. A decider tool takes a
 {
   "type": "decider",
   "name": "route_question",
-  "description": "Plan how to answer a biscuit question: which region file is most likely to hold the answer, what kind of question it is, whether the excerpt already suffices, and whether to retrieve or answer.",
+  "description": "Plan how to answer a biscuit question: which knowledgebase file is most likely to hold the answer, what kind of question it is, whether the excerpt already suffices, and whether to retrieve or answer.",
   "decider": "route_question",
   "args_schema": {
     "type": "object",
@@ -101,7 +101,7 @@ The tool makes one decision API call with the decider's four questions and the s
 {"question":"which biscuits survive a long dunking?","excerpt":""}
 
 [route_question] >>> Decision:
-  {"region":{"type":"choice","choice":"united_kingdom","probabilities":{...},"confidence":0.74},"question_kind":{"type":"choice","choice":"dunking",...},"answerable_from_excerpt":{"type":"noul","noul":0.05},"action":{"type":"score","score":1,...}}
+  {"region":{"type":"choice","choice":"united-kingdom.md","probabilities":{...},"confidence":0.74},"question_kind":{"type":"choice","choice":"dunking",...},"answerable_from_excerpt":{"type":"noul","noul":0.05},"action":{"type":"score","score":1,...}}
 >>> Result: Tool: route_question
   {"region":...,"question_kind":...,"answerable_from_excerpt":...,"action":...}
 ```

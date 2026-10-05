@@ -9,6 +9,7 @@ The knowledgebase itself does not move. The decision config references `../simpl
 - [x] Commit 1: config - the knowledgebase-grounded triage example and its test
 - [x] Commit 2: docs - the top-level README pointer
 - [x] Commit 3: reframe the example as a biscuit scholar whose decider gates any question
+- [x] Commit 4: make the decider's region answer the actual knowledgebase filename
 
 ---
 
@@ -63,5 +64,21 @@ The knowledgebase itself does not move. The decision config references `../simpl
 > Update `internal/prefactor/example_test.go`'s `TestDecisionExampleConfigValid` to match: `DefaultAgent` is `scholar`; the `scholar` agent's tools are `kb-read`, `kb-grep`, `search`, `route_question`; the `search` agent's tools are `kb-read`, `kb-grep`; `route_question` is a `ToolTypeDecider` naming the `route_question` decider and carries a custom `args_schema` requiring `question` and `excerpt`; the `route_question` decider names `jev` and carries the four questions with the expected types (`region` choice, `question_kind` choice, `answerable_from_excerpt` noul, `action` score). Keep the existing `mustExampleAgent` helper and the `TestSimpleExampleTracingDisabled` assertion style. Update any prose in the test's doc comment that still says triage.
 >
 > Update the `examples/decision` entry in the top-level `README.md` to describe the router framing (a scholar that routes a biscuit question through one decision call, then retrieves through the shared knowledgebase) rather than ticket triage.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 4: make the decider's region answer the actual knowledgebase filename
+
+> The route the decider picks is not directly usable: `region` answers with option keys like `france`, but the knowledgebase files are `france.md`, so the scholar greps `path: france` and fails with `statat france: no such file or directory`. Fix that and the prompt, so the decision output can be used verbatim. Edits are to `examples/decision/blorb.json`, `examples/decision/README.md`, and (only if needed) `internal/prefactor/example_test.go`.
+>
+> In `examples/decision/blorb.json`:
+>
+> - Rename the `region` choice options to the actual filenames, so the selected value is the file to read: `united-kingdom.md`, `france.md`, `italy.md`, `germany.md`, `netherlands.md`, `spain.md`, `scandinavia.md`, `north-america.md`, `australia-new-zealand.md`, `middle-east.md`, `india.md`, and `unknown`. Note the hyphens in the filenames where the current keys use underscores (`united_kingdom` -> `united-kingdom.md`), and that choice criteria keys are free-form strings, not constrained to identifiers (only the question names are). Update the `region` instructions to say the answer is the knowledgebase filename to read, and that `unknown` means the question is not region-specific so the whole knowledgebase should be searched.
+> - In the `scholar` system prompt, state the knowledgebase files explicitly so the model never invents one: the files are one per region, named like `france.md` and `united-kingdom.md`, plus `dunking.md` and a `README.md` that lists them. Say the decision's `region` answer is the filename to read (or `unknown` for the whole tree), to pass it straight to `kb-grep`/`kb-read` as the `path` argument, and to include the `.md` suffix. When the region is `unknown`, search the whole knowledgebase. Keep the rest of the prompt's intent.
+> - Update the `route_question` tool description if it implied a region name rather than a filename.
+>
+> In `examples/decision/README.md`: update the `region` criteria sample and the prose to say the options are the knowledgebase filenames (including `.md`), so the decision's answer is used directly as the read path; update the worked decision block's `region` value to `united-kingdom.md` (or `france.md`) and the `[route_question] >>> Decision:` output accordingly; and fix the sample state in the `--state-json` invocation if it names a region.
+>
+> In `internal/prefactor/example_test.go`: the `region` question stays a `choice`; no assertion currently checks its criteria keys, so the test likely needs no change - read it and adjust only if it does.
 >
 > Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.

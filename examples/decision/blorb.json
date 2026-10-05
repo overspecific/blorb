@@ -16,7 +16,7 @@
   "agents": [
     {
       "name": "scholar",
-      "system_prompt": "You are an enthusiastic biscuit scholar. You have the biscuit knowledgebase using `kb-grep` and `kb-read`, and a `route_question` decider that plans your search. For any biscuit question, call `route_question` first with the user's question in `question` and any knowledgebase excerpt you already have in `excerpt`: the decision picks the region file most likely to hold the answer and says whether your excerpt is already enough. If it is, answer from the excerpt; if not, grep the chosen region file (or the whole knowledgebase) with `kb-grep` and read the full entry with `kb-read` when you need it, delegating to the `search` agent when a pattern comes up empty. Answer from what you read, naming the file you drew from. Keep your answer short.",
+      "system_prompt": "You are an enthusiastic biscuit scholar. You have the biscuit knowledgebase using `kb-grep` and `kb-read`, and a `route_question` decider that plans your search. The knowledgebase is one file per region, named like `france.md` and `united-kingdom.md`, plus `dunking.md` and a `README.md` that lists them all. For any biscuit question, call `route_question` first with the user's question in `question` and any knowledgebase excerpt you already have in `excerpt`: the decision names the knowledgebase file most likely to hold the answer (its `region` answer is a filename, or `unknown` for a whole-tree search) and says whether your excerpt is already enough. If your excerpt is enough, answer from it. Otherwise pass the decision's filename straight to `kb-grep` as the `path` argument (include the `.md` suffix; when the region is `unknown`, leave `path` out to search the whole knowledgebase), read the full entry with `kb-read` when you need it, and delegate to the `search` agent when a pattern comes up empty. Answer from what you read, naming the file you drew from. Keep your answer short.",
       "max_turns": 10,
       "tools": [
         "kb",
@@ -42,20 +42,20 @@
       "questions": {
         "region": {
           "type": "choice",
-          "instructions": "Which region file of the knowledgebase is most likely to hold the answer? Choose unknown when the question is not region-specific.",
+          "instructions": "Which knowledgebase file is most likely to hold the answer? Answer with the filename to read. Choose unknown when the question is not region-specific, in which case search the whole knowledgebase.",
           "criteria": {
-            "united_kingdom": "The British Isles",
-            "france": "France",
-            "italy": "Italy",
-            "germany": "Germany",
-            "netherlands": "The Netherlands",
-            "spain": "Spain",
-            "scandinavia": "Scandinavia",
-            "north_america": "North America",
-            "australia_new_zealand": "Australia and New Zealand",
-            "middle_east": "The Middle East",
-            "india": "India",
-            "unknown": "The question is not region-specific"
+            "united-kingdom.md": "The British Isles",
+            "france.md": "France",
+            "italy.md": "Italy",
+            "germany.md": "Germany",
+            "netherlands.md": "The Netherlands",
+            "spain.md": "Spain",
+            "scandinavia.md": "Scandinavia",
+            "north-america.md": "North America",
+            "australia-new-zealand.md": "Australia and New Zealand",
+            "middle-east.md": "The Middle East",
+            "india.md": "India",
+            "unknown": "Not region-specific; search the whole knowledgebase"
           }
         },
         "question_kind": {
@@ -93,7 +93,7 @@
     {
       "type": "decider",
       "name": "route_question",
-      "description": "Plan how to answer a biscuit question: which region file is most likely to hold the answer, what kind of question it is, whether the excerpt already suffices, and whether to retrieve or answer.",
+      "description": "Plan how to answer a biscuit question: which knowledgebase file is most likely to hold the answer, what kind of question it is, whether the excerpt already suffices, and whether to retrieve or answer.",
       "decider": "route_question",
       "args_schema": {
         "type": "object",
