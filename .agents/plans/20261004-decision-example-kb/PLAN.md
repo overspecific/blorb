@@ -10,6 +10,7 @@ The knowledgebase itself does not move. The decision config references `../simpl
 - [x] Commit 2: docs - the top-level README pointer
 - [x] Commit 3: reframe the example as a biscuit scholar whose decider gates any question
 - [x] Commit 4: make the decider's region answer the actual knowledgebase filename
+- [x] Commit 5: read the chosen region file instead of grepping for a guessed pattern
 
 ---
 
@@ -80,5 +81,15 @@ The knowledgebase itself does not move. The decision config references `../simpl
 > In `examples/decision/README.md`: update the `region` criteria sample and the prose to say the options are the knowledgebase filenames (including `.md`), so the decision's answer is used directly as the read path; update the worked decision block's `region` value to `united-kingdom.md` (or `france.md`) and the `[route_question] >>> Decision:` output accordingly; and fix the sample state in the `--state-json` invocation if it names a region.
 >
 > In `internal/prefactor/example_test.go`: the `region` question stays a `choice`; no assertion currently checks its criteria keys, so the test likely needs no change - read it and adjust only if it does.
+>
+> Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.
+
+## Commit 5: read the chosen region file instead of grepping for a guessed pattern
+
+> In the last run the scholar, told to grep, guessed a pattern (`biscuit.*french`) that matched nothing and reported failure even though `france.md` was right there. The region files are short, so the scholar should read the file the decision names rather than invent a pattern. Edit the `scholar` system prompt in `examples/decision/blorb.json` (and the matching prose in `examples/decision/README.md`) to say: once the decision names a file, read it with `kb-read`; use `kb-grep` only when the question is about a specific term across the whole knowledgebase (region `unknown`) or when the file is long, and delegate to the `search` agent when a grep pattern comes up empty. Keep it short and keep the rest of the prompt's intent.
+>
+> In `examples/decision/README.md`, update the agents section to describe read-first and grep-for-cross-cutting-questions, and the worked `[route_question] >>> Decision:` example if it shows a grep step.
+>
+> No test changes are expected (`internal/prefactor/example_test.go` asserts the config shape, not the prompt); read it and adjust only if it does.
 >
 > Verify with `bin/qc`. Do not commit. Do not create or modify any plan file, except to check off your item in the Todo list at the top when done.

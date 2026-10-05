@@ -18,7 +18,7 @@ A decision model sits on an `openai-compatible` provider and is marked with `"mo
 
 ## The agents
 
-`scholar` is the default agent. It is granted the `kb` toolset from the [simple](../simple) example, pointing at that example's knowledgebase with a relative `base_dir` (`../simple/knowledgebase`, resolved against `blorb.json`'s directory). The grant is the whole `kb` toolset, which is `kb-read` and `kb-grep`. It also gets the `search` subagent tool and the `route_question` decider tool. Its system prompt tells it the knowledgebase is one file per region (`france.md`, `united-kingdom.md`, ...), plus `dunking.md` and a `README.md`. For any biscuit question it calls `route_question` first, then passes the decision's `region` answer - a filename - straight to `kb-grep` as the `path`. The decision is the plan: which file to read, and whether the excerpt it already has is enough.
+`scholar` is the default agent. It is granted the `kb` toolset from the [simple](../simple) example, pointing at that example's knowledgebase with a relative `base_dir` (`../simple/knowledgebase`, resolved against `blorb.json`'s directory). The grant is the whole `kb` toolset, which is `kb-read` and `kb-grep`. It also gets the `search` subagent tool and the `route_question` decider tool. Its system prompt tells it the knowledgebase is one file per region (`france.md`, `united-kingdom.md`, ...), plus `dunking.md` and a `README.md`. For any biscuit question it calls `route_question` first, then reads the file the decision names: the region files are short, so it reads the whole file rather than inventing a grep pattern. It greps only for a term across the whole knowledgebase, and delegates to `search` when a pattern comes up empty. The decision is the plan: which file to read, and whether the excerpt it already has is enough.
 
 `search` is an expert searcher given the same `kb` toolset and no delegations of its own. When a grep pattern comes up empty it tries alternatives before reporting back: other spellings, synonyms, singular and plural, broader terms. Its output is grep's format (`path:line:text`). The scholar delegates to it when a pattern comes up empty.
 
@@ -70,7 +70,7 @@ A decider fixes the typed questions every call asks; only the state varies per c
 }
 ```
 
-`region` and `question_kind` are `choice` questions: `criteria` is a map of option name to description, and each answer selects one option with a probability per option. `answerable_from_excerpt` is a `noul`: a calibration whose answer is the probability of yes. `action` is a `score`: an ordered rubric. The `region` options are the actual knowledgebase filenames (`france.md`, `united-kingdom.md`, ...), so the decision's answer is used directly as the path the scholar reads; `unknown` means the question is not region-specific and the scholar searches the whole knowledgebase.
+`region` and `question_kind` are `choice` questions: `criteria` is a map of option name to description, and each answer selects one option with a probability per option. `answerable_from_excerpt` is a `noul`: a calibration whose answer is the probability of yes. `action` is a `score`: an ordered rubric. The `region` options are the actual knowledgebase filenames (`france.md`, `united-kingdom.md`, `dunking.md`, ...), so the decision's answer is used directly as the path the scholar reads; `unknown` means the question is not region-specific and the scholar searches the whole knowledgebase.
 
 ## The tool
 
