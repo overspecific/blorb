@@ -305,7 +305,7 @@ func (r *Room) Handle(ctx context.Context, msg ChatMessage) error {
 	// room in the process lifetime converts Band's room context into
 	// engine history so the model sees what came before.
 	if !r.bootstrapped {
-		if err := r.seedHistory(ctx); err != nil {
+		if err := r.seedHistory(ctx, msg); err != nil {
 			return fmt.Errorf("seed history: %w", err)
 		}
 		r.bootstrapped = true
@@ -474,13 +474,22 @@ func (r *Room) hasSeen(id string) bool {
 // (tool_call, tool_result, thought, and so on) are skipped: they
 // duplicate what the engine history holds or are another participant's
 // activity noise.
-func (r *Room) seedHistory(ctx context.Context) error {
+//
+// The context endpoint returns every text message that mentions the
+// agent, including ones this process has not handled yet, and current
+// is the oldest of those. Seeding stops at current: it and every later
+// mention become this and later turns' prompts, so seeding them here
+// would show the model each message twice and make it answer twice.
+func (r *Room) seedHistory(ctx context.Context, current ChatMessage) error {
 	messages, err := r.client.Context(ctx, r.roomID)
 	if err != nil {
 		return err
 	}
 	var history []llm.Message
 	for _, m := range messages {
+		if m.ID == current.ID {
+			break
+		}
 		if m.MessageType != "text" {
 			continue
 		}

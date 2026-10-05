@@ -212,6 +212,43 @@ func TestRoomSeedsHistoryFromContext(t *testing.T) {
 	}
 }
 
+func TestRoomSeedStopsAtCurrentMessage(t *testing.T) {
+	// The context endpoint returns unprocessed mentions too, including
+	// the one being handled and later queued ones. Seeding them would
+	// show the model the same message twice (seed plus prompt) and make
+	// it answer twice, so the seed stops at the current message.
+	page := contextPage(
+		ctxMsg("c1", "u-9", "Other User", "User", "text", "before the mention"),
+		ctxMsg("m-1", "u-1", "User One", "User", "text", "hi"),
+		ctxMsg("c3", "u-8", "Later User", "User", "text", "after the mention"),
+	)
+	f := newBandRestFake(t, page)
+	room, llm := newRoom(t, f, []llm.Response{roomTextResp("ok")})
+
+	if err := handleMsg(t, room, mentionMsg("u-1", "User One", "hi")); err != nil {
+		t.Fatalf("Handle error = %v, want nil", err)
+	}
+
+	var userTexts []string
+	for _, m := range llm.requests[0].Messages {
+		if m.Role == "user" {
+			userTexts = append(userTexts, m.Content)
+		}
+	}
+	want := []string{
+		"Other User (id: u-9): before the mention",
+		"User One (id: u-1): hi",
+	}
+	if len(userTexts) != len(want) {
+		t.Fatalf("user messages = %v, want %v", userTexts, want)
+	}
+	for i := range want {
+		if userTexts[i] != want[i] {
+			t.Errorf("user message %d = %q, want %q", i, userTexts[i], want[i])
+		}
+	}
+}
+
 func TestRoomSeedHappensOnce(t *testing.T) {
 	f := newBandRestFake(t, "[]")
 	room, _ := newRoom(t, f, []llm.Response{roomTextResp("a"), roomTextResp("b")})
