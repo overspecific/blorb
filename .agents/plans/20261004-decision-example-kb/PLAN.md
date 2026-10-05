@@ -31,7 +31,7 @@ The knowledgebase itself does not move. The decision config references `../simpl
 >
 > - `biscuit` - `choice` over a sample of the knowledgebase's biscuits across regions (Rich Tea, Digestive, Jammie Dodger, Ginger Nut, Hobnob, Tim Tam, Stroopwafel, Other), instructions asking which named biscuit the complaint is about; `Other` covers anything not listed.
 > - `region` - `choice` over the knowledgebase's regions, one option per region file plus `unknown` (united_kingdom, france, italy, germany, netherlands, spain, scandinavia, north_america, australia_new_zealand, middle_east, india, unknown), instructions asking which region file owns that biscuit; `unknown` when the excerpt does not make it clear.
-> - `answerable_from_one_file` - `noul` asking whether the excerpt (state) already holds enough to answer, so the agent can decide whether to delegate to `search`; use the `criteria` true/false labels.
+> - `answerable_from_excerpt` - `noul` asking whether the excerpt (state) already holds enough to answer, so the agent can decide whether to delegate to `search`; use the `criteria` true/false labels.
 > - `action` - `score` over the ordered dispositions (answer from the knowledgebase as-is, dig further with the search agent, refer to a human).
 >
 > Set the decider tool's `args_schema` to a custom object with `complaint` (string) and `excerpt` (string) properties, both required, so the raw JSON arguments become the state rather than the default single `state` field. This is the example's demonstration of a structured decider state.
