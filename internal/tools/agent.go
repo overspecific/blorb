@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/overspecific/blorb/internal/llm"
 )
@@ -20,6 +21,11 @@ const (
 	// SubagentUsage carries the token usage of one completed LLM call
 	// by the named agent.
 	SubagentUsage SubagentEventKind = "usage"
+	// SubagentDecision carries a decider's answers, riding the same
+	// display and accounting channel as subagent activity: Output holds
+	// the answers JSON, Agent the decider's name, and Depth the nesting
+	// level below the calling agent (1 for a directly invoked decider).
+	SubagentDecision SubagentEventKind = "decision"
 )
 
 // SubagentEvent is one observable moment of a subagent run. Agent is
@@ -79,6 +85,26 @@ type SubagentResult struct {
 // The real implementation lives in the engine package; tests use fakes.
 type SubagentRunner interface {
 	RunSubagent(ctx context.Context, agentName, userMessage string, onEvent func(SubagentEvent) error) (SubagentResult, error)
+}
+
+// DeciderResult is the outcome of a decider run, mirroring
+// ToolResult: Err marks a decider-level failure (for example the
+// server rejected the request), which is still a valid tool result
+// for the parent model.
+type DeciderResult struct {
+	Output string
+	Err    bool
+	// Usage holds the decision call's own usage, one record; empty
+	// when the call failed before reaching the server.
+	Usage []SubagentUsageRecord
+}
+
+// DeciderRunner evaluates a named decider from the same config
+// against a state: one decision-model call with the decider's
+// configured questions, returning the answers as JSON. The real
+// implementation lives in the engine package; tests use fakes.
+type DeciderRunner interface {
+	RunDecider(ctx context.Context, deciderName string, state json.RawMessage) (DeciderResult, error)
 }
 
 // JudgeEventKind mirrors the engine event kinds relevant to display,

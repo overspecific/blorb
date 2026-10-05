@@ -76,6 +76,9 @@ type Registry struct {
 	subagentRunner SubagentRunner
 	// subagentEvents receives subagent activity for display; may be nil.
 	subagentEvents func(SubagentEvent) error
+	// deciderRunner evaluates named deciders; required only when the
+	// entries include a decider tool.
+	deciderRunner DeciderRunner
 	// bandExecutor executes Band platform tools; required only when the
 	// entries include a band tool.
 	bandExecutor BandExecutor
@@ -114,6 +117,12 @@ func WithSubagentEvents(cb func(SubagentEvent) error) Option {
 	return func(r *Registry) { r.subagentEvents = cb }
 }
 
+// WithDeciderRunner sets the runner that decider tools use to evaluate
+// their named deciders. Required for configs containing decider tools.
+func WithDeciderRunner(r DeciderRunner) Option {
+	return func(reg *Registry) { reg.deciderRunner = r }
+}
+
 // NewRegistry converts config tool entries into a registry, revalidating
 // each entry per its type. Configuration validation errors surface here.
 func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) {
@@ -143,6 +152,8 @@ func NewRegistry(entries []config.ToolEntry, opts ...Option) (*Registry, error) 
 			t, err = newBuiltinTool(e, r.baseDir)
 		case config.ToolTypeSubagent:
 			t, err = newSubagentTool(e, r.subagentRunner, r.subagentEvents)
+		case config.ToolTypeDecider:
+			t, err = newDeciderTool(e, r.deciderRunner, r.subagentEvents)
 		case config.ToolTypeBand:
 			t, err = newBandTool(e, r.bandExecutor)
 		default:
