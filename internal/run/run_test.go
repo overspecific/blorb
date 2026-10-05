@@ -3990,3 +3990,188 @@ func TestRunJudgePlainThinkingOnStderr(t *testing.T) {
 		t.Errorf("stderr = %q, want the judge's streamed reasoning", stderr.String())
 	}
 }
+
+// runDeciderConfig builds a single-agent config: the parent is granted a
+// decider tool targeting the "triage" decider on a decision model.
+func runDeciderConfig(t *testing.T) config.Config {
+	t.Helper()
+
+	parent := runTestAgent()
+	parent.Name = "parent"
+	parent.MaxTurns = 3
+
+	cfg := config.Config{
+		Providers: []config.Provider{runTestProvider()},
+		Models: []config.Model{
+			runTestModel(),
+			{Name: "jev", Provider: "local", ModelName: "jev-latest", ModelType: config.ModelTypeDecision},
+		},
+		Agents: []config.Agent{parent},
+		Deciders: []config.Decider{{
+			Name:  "triage",
+			Model: "jev",
+			Questions: map[string]config.Question{
+				"priority": {
+					Type:         config.QuestionTypeChoice,
+					Instructions: json.RawMessage(`"How urgent?"`),
+					Criteria:     json.RawMessage(`{"low":"Low","high":"High"}`),
+				},
+			},
+		}},
+		Tools: []config.ToolEntry{{
+			Type: config.ToolTypeDecider, Name: "triage_tool", Description: "Triage.", Decider: "triage",
+		}},
+	}
+	cfg.Agents[0].Tools = []string{"triage_tool"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("runDeciderConfig invalid: %v", err)
+	}
+	return cfg
+}
+
+// runFakeDecisionClient records decision requests and returns canned answers.
+type runFakeDecisionClient struct {
+	requests []llm.DecisionRequest
+	response *llm.DecisionResponse
+}
+
+func (f *runFakeDecisionClient) Decide(_ context.Context, req llm.DecisionRequest) (*llm.DecisionResponse, error) {
+	f.requests = append(f.requests, req)
+	if f.response != nil {
+		return f.response, nil
+	}
+	return &llm.DecisionResponse{Answers: map[string]llm.DecisionAnswer{}}, nil
+}
+
+func parentDeciderResponses() *runFakeClient {
+	return &runFakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_d", Type: "function", FunctionName: "triage_tool", FunctionArgs: `{"state":"the ticket"}`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{Message: llm.NewTextMessage(llm.RoleAssistant, "parent done"), FinishReason: llm.FinishStop},
+	}}
+}
+
+func cannedDecision() *runFakeDecisionClient {
+	return &runFakeDecisionClient{response: &llm.DecisionResponse{
+		Model:   "jev-1.13.0",
+		Answers: map[string]llm.DecisionAnswer{"priority": {Type: "choice", Choice: "high", Confidence: ptrFloat64(0.9)}},
+		Usage:   llm.Usage{PromptTokens: 40, CompletionTokens: 3, TotalTokens: 43},
+	}}
+}
+
+const decisionJSON = `{"priority":{"type":"choice","choice":"high","confidence":0.9}}`
+
+// TestRunDeciderRendersDecisionPlain pins that plain prints the decision
+// block on stderr (where subagent activity goes) and the final text on
+// stdout.
+func TestRunDeciderRendersDecisionPlain(t *testing.T) {
+	t.Parallel()
+
+	cfg := runDeciderConfig(t)
+	parent := parentDeciderResponses()
+	decision := cannedDecision()
+
+	var stdout, stderr runSyncBuffer
+	final, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Format: run.FormatPlain,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return parent, nil
+		},
+		NewDecisionClient: func(config.Config, config.Decider) (llm.DeciderClient, error) {
+			return decision, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if final != "parent done" {
+		t.Errorf("final = %q, want parent done", final)
+	}
+	if got := stdout.String(); got != "parent done" {
+		t.Errorf("stdout = %q, want only the parent's text", got)
+	}
+	diag := stderr.String()
+	if !strings.Contains(diag, "[triage] >>> Decision:") || !strings.Contains(diag, decisionJSON) {
+		t.Errorf("stderr = %q, want the labeled decision block", diag)
+	}
+	if !strings.Contains(diag, ">>> Result: Tool: triage_tool") {
+		t.Errorf("stderr = %q, want the parent result heading", diag)
+	}
+	decisionAt := strings.Index(diag, "[triage] >>> Decision:")
+	resultAt := strings.Index(diag, ">>> Result: Tool: triage_tool")
+	if decisionAt < 0 || resultAt < 0 || decisionAt > resultAt {
+		t.Errorf("stderr = %q, want the decision block before the parent result", diag)
+	}
+}
+
+// TestRunDeciderRendersDecisionNDJSON pins the subagent_decision line
+// between the tool_call and tool_result lines.
+func TestRunDeciderRendersDecisionNDJSON(t *testing.T) {
+	t.Parallel()
+
+	cfg := runDeciderConfig(t)
+	parent := parentDeciderResponses()
+	decision := cannedDecision()
+
+	var stdout runSyncBuffer
+	_, err := run.Run(context.Background(), run.Options{
+		Config: cfg,
+		Agent:  cfg.Agents[0],
+		Stdout: &stdout,
+		Format: run.FormatNDJSON,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return parent, nil
+		},
+		NewDecisionClient: func(config.Config, config.Decider) (llm.DeciderClient, error) {
+			return decision, nil
+		},
+	}, "go")
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	lines := parseNDJSONLines(t, stdout.String())
+	var decisionLine *ndjsonLine
+	toolCallIdx, toolResultIdx, decisionIdx := -1, -1, -1
+	for i, l := range lines {
+		switch l.Type {
+		case "tool_call":
+			if l.Name == "triage_tool" {
+				toolCallIdx = i
+			}
+		case "tool_result":
+			if l.Name == "triage_tool" {
+				toolResultIdx = i
+			}
+		case "subagent_decision":
+			decisionLine = &lines[i]
+			decisionIdx = i
+		}
+	}
+	if decisionLine == nil {
+		t.Fatalf("no subagent_decision line in:\n%s", stdout.String())
+	}
+	if decisionLine.Agent != "triage" {
+		t.Errorf("decision agent = %q, want triage", decisionLine.Agent)
+	}
+	if decisionLine.Depth == nil || *decisionLine.Depth != 1 {
+		t.Errorf("decision depth = %v, want 1", decisionLine.Depth)
+	}
+	if decisionLine.Output != decisionJSON {
+		t.Errorf("decision output = %q, want %q", decisionLine.Output, decisionJSON)
+	}
+	if !(toolCallIdx < decisionIdx && decisionIdx < toolResultIdx) {
+		t.Errorf("line order call=%d decision=%d result=%d, want call < decision < result", toolCallIdx, decisionIdx, toolResultIdx)
+	}
+}
+
+func ptrFloat64(v float64) *float64 { return &v }

@@ -199,6 +199,8 @@ func (s *ndjsonSink) onSubagent(ev tools.SubagentEvent) error {
 	case tools.SubagentUsage:
 		stats := ev.Stats
 		e = ndjsonEvent{Type: "subagent_usage", Model: ev.Model, Usage: &ev.Usage, Stats: &stats}
+	case tools.SubagentDecision:
+		e = ndjsonEvent{Type: "subagent_decision", Output: ev.Output}
 	default:
 		return nil
 	}

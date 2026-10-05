@@ -3192,3 +3192,174 @@ func TestChatJudgeStreamsThinkingDeltasAndToolCalls(t *testing.T) {
 		t.Errorf("stdout = %q, want the judgement printed exactly once", out)
 	}
 }
+
+// deciderTestConfig builds a two-agent config: parent granted a decider
+// tool targeting the "triage" decider, with a decision model on the shared
+// provider.
+func deciderTestConfig(t *testing.T) config.Config {
+	t.Helper()
+
+	parent := testAgent()
+	parent.Name = "parent"
+	parent.MaxTurns = 3
+
+	cfg := config.Config{
+		Providers: []config.Provider{testProvider()},
+		Models: []config.Model{
+			testModel(),
+			{Name: "jev", Provider: "local", ModelName: "jev-latest", ModelType: config.ModelTypeDecision},
+		},
+		Agents: []config.Agent{parent},
+		Deciders: []config.Decider{{
+			Name:  "triage",
+			Model: "jev",
+			Questions: map[string]config.Question{
+				"priority": {
+					Type:         config.QuestionTypeChoice,
+					Instructions: json.RawMessage(`"How urgent?"`),
+					Criteria:     json.RawMessage(`{"low":"Low","high":"High"}`),
+				},
+			},
+		}},
+		Tools: []config.ToolEntry{{
+			Type:        config.ToolTypeDecider,
+			Name:        "triage_tool",
+			Description: "Triage the ticket.",
+			Decider:     "triage",
+		}},
+	}
+	cfg.Agents[0].Tools = []string{"triage_tool"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("deciderTestConfig invalid: %v", err)
+	}
+	return cfg
+}
+
+// fakeDecisionClient records decision requests and returns canned answers.
+type fakeDecisionClient struct {
+	requests []llm.DecisionRequest
+	response *llm.DecisionResponse
+}
+
+func (f *fakeDecisionClient) Decide(_ context.Context, req llm.DecisionRequest) (*llm.DecisionResponse, error) {
+	f.requests = append(f.requests, req)
+	if f.response != nil {
+		return f.response, nil
+	}
+	return &llm.DecisionResponse{Answers: map[string]llm.DecisionAnswer{}}, nil
+}
+
+// TestRunDeciderToolRendersDecision is the end-to-end chat test: the
+// parent calls the decider tool, the decision block renders indented and
+// labeled, and the parent's tool result carries the same JSON.
+func TestRunDeciderToolRendersDecision(t *testing.T) {
+	t.Parallel()
+
+	cfg := deciderTestConfig(t)
+	parent := &fakeClient{responses: []llm.Response{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "call_d", Type: "function", FunctionName: "triage_tool", FunctionArgs: `{"state":"the ticket"}`}},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "parent done"),
+			FinishReason: llm.FinishStop,
+		},
+	}}
+
+	decision := &fakeDecisionClient{response: &llm.DecisionResponse{
+		Model:   "jev-1.13.0",
+		Answers: map[string]llm.DecisionAnswer{"priority": {Type: "choice", Choice: "high", Confidence: ptrFloat(0.9)}},
+		Usage:   llm.Usage{PromptTokens: 40, CompletionTokens: 3, TotalTokens: 43},
+	}}
+
+	var stdout strings.Builder
+	o := chat.Options{
+		Config:     cfg,
+		Agent:      cfg.Agents[0],
+		Version:    "test",
+		Stdin:      strings.NewReader("go\nexit\n"),
+		Stdout:     &stdout,
+		ToolOutput: false,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return parent, nil
+		},
+		NewDecisionClient: func(config.Config, config.Decider) (llm.DeciderClient, error) {
+			return decision, nil
+		},
+	}
+
+	if err := chat.Run(context.Background(), o); err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, ">>> Tool: triage_tool") {
+		t.Errorf("stdout = %q, want the parent tool call heading", out)
+	}
+	if !strings.Contains(out, "[triage] >>> Decision:") {
+		t.Errorf("stdout = %q, want the labeled decision block", out)
+	}
+	decisionJSON := `{"priority":{"type":"choice","choice":"high","confidence":0.9}}`
+	if !strings.Contains(out, "[triage] >>> Decision:\n  "+decisionJSON) {
+		t.Errorf("stdout = %q, want the indented decision JSON under the heading", out)
+	}
+	// With tool output off the parent's result shows a summary, but the
+	// decision block still prints in full.
+	if !strings.Contains(out, ">>> Result: Tool: triage_tool") {
+		t.Errorf("stdout = %q, want the parent result heading", out)
+	}
+	resultAt := strings.Index(out, ">>> Result: Tool: triage_tool")
+	decisionAt := strings.Index(out, "[triage] >>> Decision:")
+	if decisionAt < 0 || resultAt < 0 || decisionAt > resultAt {
+		t.Errorf("stdout = %q, want the decision block before the parent result", out)
+	}
+
+	// The turn footer attributes the decision call to the decider's name.
+	if !strings.Contains(out, "triage: 40 prompt, 3 completion, 43 total") {
+		t.Errorf("stdout = %q, want the decision usage attributed to triage", out)
+	}
+
+	if len(decision.requests) != 1 {
+		t.Fatalf("decision calls = %d, want 1", len(decision.requests))
+	}
+	if string(decision.requests[0].State) != `"the ticket"` {
+		t.Errorf("decision state = %s, want the tool-call state", decision.requests[0].State)
+	}
+}
+
+func TestRunDecisionClientFactoryRejectsAgentDecisionModel(t *testing.T) {
+	t.Parallel()
+
+	cfg := deciderTestConfig(t)
+	// Point the agent at the decision model: the real client path must
+	// reject it.
+	cfg.Agents[0].Model = "jev"
+	cfg.Agents[0].Tools = nil
+	decision := &fakeDecisionClient{}
+	o := chat.Options{
+		Config:  cfg,
+		Agent:   cfg.Agents[0],
+		Version: "test",
+		Stdin:   strings.NewReader("exit\n"),
+		Stdout:  io.Discard,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return &fakeClient{}, nil
+		},
+		NewDecisionClient: func(config.Config, config.Decider) (llm.DeciderClient, error) {
+			return decision, nil
+		},
+	}
+	// Remove the injected NewClient so the real path runs and guards.
+	o.NewClient = nil
+	o.Getenv = func(string) string { return "key" }
+	err := chat.Run(context.Background(), o)
+	if err == nil || !strings.Contains(err.Error(), "is a decision model") {
+		t.Errorf("Run error = %v, want a decision-model guard error", err)
+	}
+}
+
+func ptrFloat(v float64) *float64 { return &v }

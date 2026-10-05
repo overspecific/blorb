@@ -1,11 +1,16 @@
 package band_test
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/overspecific/blorb/internal/band"
+	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/logging"
 )
 
 // contextPage builds one scripted /context response body: messages with
@@ -346,4 +351,129 @@ func TestRoomJudgesRunAfterTurn(t *testing.T) {
 	if len(sent) != 1 || sent[0].Content != "fine" {
 		t.Errorf("sent = %+v, want exactly the turn's answer (judge output leaks nowhere)", sent)
 	}
+}
+
+// roomDeciderConfig builds a config whose agent is granted a decider tool
+// on a decision model.
+func roomDeciderConfig(t *testing.T) (config.Config, config.Agent) {
+	t.Helper()
+
+	agent := config.Agent{
+		Name:         "helper",
+		SystemPrompt: "You are helpful.",
+		Model:        "m",
+		MaxTurns:     3,
+		Tools:        []string{"triage_tool"},
+	}
+	cfg := config.Config{
+		Providers: []config.Provider{{
+			Name:    "local",
+			Type:    config.ProviderTypeOpenAI,
+			BaseURL: "http://localhost:1",
+		}},
+		Models: []config.Model{
+			{Name: "m", Provider: "local", ModelName: "m"},
+			{Name: "jev", Provider: "local", ModelName: "jev-latest", ModelType: config.ModelTypeDecision},
+		},
+		Agents: []config.Agent{agent},
+		Deciders: []config.Decider{{
+			Name:  "triage",
+			Model: "jev",
+			Questions: map[string]config.Question{
+				"priority": {
+					Type:         config.QuestionTypeChoice,
+					Instructions: json.RawMessage(`"How urgent?"`),
+					Criteria:     json.RawMessage(`{"low":"Low","high":"High"}`),
+				},
+			},
+		}},
+		Tools: []config.ToolEntry{{
+			Type: config.ToolTypeDecider, Name: "triage_tool", Description: "Triage.", Decider: "triage",
+		}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("roomDeciderConfig invalid: %v", err)
+	}
+	return cfg, agent
+}
+
+// roomDecisionClient returns canned answers and records requests.
+type roomDecisionClient struct {
+	requests []llm.DecisionRequest
+}
+
+func (f *roomDecisionClient) Decide(_ context.Context, req llm.DecisionRequest) (*llm.DecisionResponse, error) {
+	f.requests = append(f.requests, req)
+	return &llm.DecisionResponse{
+		Model:   "jev-1.13.0",
+		Answers: map[string]llm.DecisionAnswer{"priority": {Type: "choice", Choice: "high"}},
+		Usage:   llm.Usage{PromptTokens: 40, CompletionTokens: 3, TotalTokens: 43},
+	}, nil
+}
+
+func TestRoomDeciderToolRendersDecision(t *testing.T) {
+	cfg, agent := roomDeciderConfig(t)
+	f := newBandRestFake(t, "[]")
+	var out strings.Builder
+	llmFake := &roomLLM{responses: []llm.Response{
+		roomToolCallResp("triage_tool", `{"state":"the ticket"}`),
+		roomTextResp("the reply"),
+	}}
+	decision := &roomDecisionClient{}
+	room, err := band.NewRoom(band.RoomOptions{
+		Config:     cfg,
+		Agent:      agent,
+		Client:     band.NewClient(f.srv.URL, "k", logging.NewNop()),
+		RoomID:     "room-1",
+		AgentID:    "agent-1",
+		Stdout:     &out,
+		ToolOutput: true,
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return llmFake, nil
+		},
+		NewDecisionClient: func(config.Config, config.Decider) (llm.DeciderClient, error) {
+			return decision, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRoom error = %v, want nil", err)
+	}
+	t.Cleanup(room.Close)
+
+	if err := handleMsg(t, room, mentionMsg("u-1", "User One", "question")); err != nil {
+		t.Fatalf("Handle error = %v, want nil", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "[triage] >>> Decision:") {
+		t.Errorf("output = %q, want the labeled decision block", got)
+	}
+	if !strings.Contains(got, `{"priority":{"type":"choice","choice":"high"}}`) {
+		t.Errorf("output = %q, want the decision JSON", got)
+	}
+	if len(decision.requests) != 1 {
+		t.Fatalf("decision calls = %d, want 1", len(decision.requests))
+	}
+	if string(decision.requests[0].State) != `"the ticket"` {
+		t.Errorf("decision state = %s, want the tool-call state", decision.requests[0].State)
+	}
+}
+
+func TestRoomWithoutDeciderToolBuildsFine(t *testing.T) {
+	cfg, agent := roomTestConfig()
+	f := newBandRestFake(t, "[]")
+	room, err := band.NewRoom(band.RoomOptions{
+		Config:  cfg,
+		Agent:   agent,
+		Client:  band.NewClient(f.srv.URL, "k", logging.NewNop()),
+		RoomID:  "room-1",
+		AgentID: "agent-1",
+		NewClient: func(config.Config, config.Agent) (llm.Client, error) {
+			return &roomLLM{responses: []llm.Response{roomTextResp("fine")}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRoom error = %v, want nil (no decider tool granted)", err)
+	}
+	defer room.Close()
 }

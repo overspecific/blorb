@@ -62,6 +62,9 @@ type RoomOptions struct {
 	// NewClient overrides LLM client construction. Tests only; nil
 	// builds the real client from the config.
 	NewClient func(cfg config.Config, agent config.Agent) (llm.Client, error)
+	// NewDecisionClient overrides decision client construction. Tests
+	// only; nil builds the real client from the config.
+	NewDecisionClient func(cfg config.Config, decider config.Decider) (llm.DeciderClient, error)
 	// Getenv overrides the environment lookup for api_key_env; nil
 	// means os.Getenv. Tests only.
 	Getenv func(string) string
@@ -171,17 +174,35 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 		r.sentThisTurn = true
 	})
 
+	newDecisionClient := func(cfg config.Config, decider config.Decider) (llm.DeciderClient, error) {
+		if opts.NewDecisionClient != nil {
+			return opts.NewDecisionClient(cfg, decider)
+		}
+		getenv := opts.Getenv
+		if getenv == nil {
+			getenv = os.Getenv
+		}
+		return chat.NewDecisionClientWithGetenv(cfg, decider, getenv, sink)
+	}
+
+	deciderRunner := engine.NewDeciderRunner(engine.DeciderRunnerConfig{
+		Config:            opts.Config,
+		NewDecisionClient: newDecisionClient,
+	})
+
 	registry, err := tools.NewRegistry(
 		append(ToolEntries(), opts.Config.AgentTools(opts.Agent)...),
 		tools.WithSink(sink),
 		tools.WithConfigDir(opts.Config.Dir()),
 		tools.WithBandExecutor(executor),
 		tools.WithSubagentRunner(engine.NewSubagentRunner(engine.SubagentRunnerConfig{
-			Config:    opts.Config,
-			NewClient: newClient,
-			Stream:    stream,
-			Sink:      sink,
+			Config:        opts.Config,
+			NewClient:     newClient,
+			Stream:        stream,
+			DeciderRunner: deciderRunner,
+			Sink:          sink,
 		})),
+		tools.WithDeciderRunner(deciderRunner),
 		tools.WithSubagentEvents(r.subagentEvent),
 	)
 	if err != nil {
@@ -201,10 +222,11 @@ func NewRoom(opts RoomOptions) (*Room, error) {
 	}
 
 	r.judgeRunner = engine.NewJudgeRunner(engine.JudgeRunnerConfig{
-		Config:    opts.Config,
-		NewClient: clientFactory(opts, sink),
-		Stream:    stream,
-		Sink:      sink,
+		Config:        opts.Config,
+		NewClient:     clientFactory(opts, sink),
+		Stream:        stream,
+		DeciderRunner: deciderRunner,
+		Sink:          sink,
 	})
 
 	// The engine holds the holder, not the raw client, so a traced turn

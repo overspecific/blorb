@@ -16,6 +16,7 @@ import (
 	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/engine"
 	"github.com/overspecific/blorb/internal/llm"
+	"github.com/overspecific/blorb/internal/llm/decision"
 	"github.com/overspecific/blorb/internal/llm/ollama"
 	"github.com/overspecific/blorb/internal/llm/openai"
 	"github.com/overspecific/blorb/internal/logging"
@@ -58,12 +59,15 @@ type Options struct {
 	// Agent is the resolved agent definition the session runs: its
 	// system prompt, named model, and max turns drive the engine and
 	// client, and its name names the banner and the Prefactor agent.
-	Agent      config.Agent
-	Version    string
-	Stdin      io.Reader
-	Stdout     io.Writer
-	NewClient  func(cfg config.Config, agent config.Agent) (llm.Client, error)
-	SigintChan <-chan os.Signal
+	Agent     config.Agent
+	Version   string
+	Stdin     io.Reader
+	Stdout    io.Writer
+	NewClient func(cfg config.Config, agent config.Agent) (llm.Client, error)
+	// NewDecisionClient overrides decision client construction. Tests
+	// only; nil uses the real path.
+	NewDecisionClient func(cfg config.Config, decider config.Decider) (llm.DeciderClient, error)
+	SigintChan        <-chan os.Signal
 	// Getenv overrides the environment lookup used to resolve the
 	// model's api_key_env; os.Getenv when nil. Tests only.
 	Getenv func(string) string
@@ -150,6 +154,7 @@ func Run(ctx context.Context, opts Options) error {
 	registry, err := tools.NewRegistry(opts.Config.AgentTools(opts.Agent),
 		tools.WithSink(sink), tools.WithConfigDir(opts.Config.Dir()),
 		tools.WithSubagentRunner(opts.subagentRunner(sink, streaming)),
+		tools.WithDeciderRunner(opts.deciderRunner(sink)),
 		tools.WithSubagentEvents(pipe.emit))
 	if err != nil {
 		return fmt.Errorf("build tools: %w", err)
@@ -728,6 +733,12 @@ func Events(out io.Writer, toolOutput bool) (func(engine.Event) error, func(tool
 			// print its headings again on a later invocation.
 			subHeadings = map[streamKey]subStreamHeadings{}
 			st = subStreamHeadings{toolHeadings: map[int]bool{}}
+		case tools.SubagentDecision:
+			// The decision itself: always printed in full. It is what the
+			// user asked to see, and it is small (one JSON object), so no
+			// toolOutput gating.
+			heading(label + ">>> Decision:")
+			fmt.Fprintln(out, indent(ev.Depth)+ev.Output)
 		}
 		subHeadings[key] = st
 		return nil
@@ -967,11 +978,46 @@ func NewClientWithGetenv(cfg config.Config, agent config.Agent, getenv func(stri
 	if !ok {
 		return nil, fmt.Errorf("agent %q: model %q is not a defined model", agent.Name, agent.Model)
 	}
+	if model.ResolvedModelType() != config.ModelTypeLLM {
+		return nil, fmt.Errorf("agent %q: model %q is a decision model", agent.Name, agent.Model)
+	}
 	provider, err := modelProvider(cfg, model)
 	if err != nil {
 		return nil, err
 	}
 	return newProviderModelClient(provider, model, getenv, sink)
+}
+
+// NewDecisionClientWithGetenv builds the decision client for a decider's
+// named model: the model resolves its provider, which must be
+// openai-compatible, and the decider's model_name supplies the wire model.
+// getenv is the environment lookup, injectable for tests; pass os.Getenv in
+// production. sink receives wire logs; nil disables them.
+func NewDecisionClientWithGetenv(cfg config.Config, decider config.Decider, getenv func(string) string, sink logging.Sink) (llm.DeciderClient, error) {
+	model, ok := cfg.Model(decider.Model)
+	if !ok {
+		return nil, fmt.Errorf("decider %q: model %q is not a defined model", decider.Name, decider.Model)
+	}
+	if model.ResolvedModelType() != config.ModelTypeDecision {
+		return nil, fmt.Errorf("decider %q: model %q is not a decision model", decider.Name, decider.Model)
+	}
+	provider, err := modelProvider(cfg, model)
+	if err != nil {
+		return nil, err
+	}
+	if provider.Type != config.ProviderTypeOpenAI {
+		return nil, fmt.Errorf("decider %q: provider %q must be openai-compatible", decider.Name, provider.Name)
+	}
+	apiKey, err := resolveAPIKey(provider, getenv)
+	if err != nil {
+		return nil, err
+	}
+	return decision.New(decision.Config{
+		BaseURL: provider.BaseURL,
+		Model:   model.ModelName,
+		APIKey:  apiKey,
+		Sink:    sink,
+	})
 }
 
 // newProviderModelClient dispatches through the provider-type registry,
@@ -1054,8 +1100,9 @@ func (o Options) subagentRunner(sink logging.Sink, streaming bool) *engine.Subag
 		NewClient: func(cfg config.Config, agent config.Agent) (llm.Client, error) {
 			return o.newClientFor(agent, sink)
 		},
-		Stream: o.Stream && streaming,
-		Sink:   sink,
+		Stream:        o.Stream && streaming,
+		DeciderRunner: o.deciderRunner(sink),
+		Sink:          sink,
 	})
 }
 
@@ -1070,7 +1117,34 @@ func (o Options) judgeRunner(sink logging.Sink, streaming bool) *engine.JudgeRun
 		NewClient: func(cfg config.Config, agent config.Agent) (llm.Client, error) {
 			return o.newClientFor(agent, sink)
 		},
-		Stream: o.Stream && streaming,
-		Sink:   sink,
+		Stream:        o.Stream && streaming,
+		DeciderRunner: o.deciderRunner(sink),
+		Sink:          sink,
 	})
+}
+
+// deciderRunner builds the engine-backed decider runner for the session's
+// config: deciders resolve their decision models from the same config, and
+// their decision clients build through the session's factory closure.
+func (o Options) deciderRunner(sink logging.Sink) *engine.DeciderRunner {
+	return engine.NewDeciderRunner(engine.DeciderRunnerConfig{
+		Config: o.Config,
+		NewDecisionClient: func(cfg config.Config, decider config.Decider) (llm.DeciderClient, error) {
+			return o.newDecisionClientFor(cfg, decider, sink)
+		},
+	})
+}
+
+// newDecisionClientFor builds the decision client for any decider: the
+// injected NewDecisionClient factory when set, else the real path with the
+// injected getenv.
+func (o Options) newDecisionClientFor(cfg config.Config, decider config.Decider, sink logging.Sink) (llm.DeciderClient, error) {
+	if o.NewDecisionClient != nil {
+		return o.NewDecisionClient(cfg, decider)
+	}
+	getenv := o.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	return NewDecisionClientWithGetenv(cfg, decider, getenv, sink)
 }

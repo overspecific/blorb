@@ -35,6 +35,9 @@ type Options struct {
 	// builds the real client from the agent's named model. It mirrors
 	// chat.Options.NewClient.
 	NewClient func(cfg config.Config, agent config.Agent) (llm.Client, error)
+	// NewDecisionClient overrides decision client construction. Tests
+	// only; nil uses the real path.
+	NewDecisionClient func(cfg config.Config, decider config.Decider) (llm.DeciderClient, error)
 	// Getenv overrides the environment lookup used to resolve the
 	// model's api_key_env; os.Getenv when nil. Tests only.
 	Getenv func(string) string
@@ -137,6 +140,7 @@ func Run(ctx context.Context, opts Options, prompt string) (string, error) {
 	registry, err := tools.NewRegistry(opts.Config.AgentTools(opts.Agent),
 		tools.WithSink(sink), tools.WithConfigDir(opts.Config.Dir()),
 		tools.WithSubagentRunner(opts.subagentRunner(sink, streaming)),
+		tools.WithDeciderRunner(opts.deciderRunner(sink)),
 		tools.WithSubagentEvents(onSubagent))
 	if err != nil {
 		return "", fmt.Errorf("build tools: %w", err)
@@ -394,10 +398,11 @@ func (o Options) withModelLogprobs(name string) config.Config {
 // result, shared with the run engine.
 func (o Options) subagentRunner(sink logging.Sink, streaming bool) *engine.SubagentRunner {
 	return engine.NewSubagentRunner(engine.SubagentRunnerConfig{
-		Config:    o.Config,
-		NewClient: o.newClientFor(sink),
-		Stream:    o.Stream && streaming,
-		Sink:      sink,
+		Config:        o.Config,
+		NewClient:     o.newClientFor(sink),
+		Stream:        o.Stream && streaming,
+		DeciderRunner: o.deciderRunner(sink),
+		Sink:          sink,
 	})
 }
 
@@ -408,11 +413,40 @@ func (o Options) subagentRunner(sink logging.Sink, streaming bool) *engine.Subag
 // client's capability check result, shared with the run engine.
 func (o Options) judgeRunner(sink logging.Sink, streaming bool) *engine.JudgeRunner {
 	return engine.NewJudgeRunner(engine.JudgeRunnerConfig{
-		Config:    o.Config,
-		NewClient: o.newClientFor(sink),
-		Stream:    o.Stream && streaming,
-		Sink:      sink,
+		Config:        o.Config,
+		NewClient:     o.newClientFor(sink),
+		Stream:        o.Stream && streaming,
+		DeciderRunner: o.deciderRunner(sink),
+		Sink:          sink,
 	})
+}
+
+// deciderRunner builds the engine-backed decider runner for the run's
+// config, mirroring chat's runner: deciders resolve their decision models
+// from the same config, and their decision clients build through the same
+// factory closure.
+func (o Options) deciderRunner(sink logging.Sink) *engine.DeciderRunner {
+	return engine.NewDeciderRunner(engine.DeciderRunnerConfig{
+		Config:            o.Config,
+		NewDecisionClient: o.newDecisionClientFor(sink),
+	})
+}
+
+// newDecisionClientFor returns the decision client factory closure shared
+// by the run's decider runner and its nested runners: the injected
+// NewDecisionClient factory when set, else the real path with the injected
+// getenv.
+func (o Options) newDecisionClientFor(sink logging.Sink) func(cfg config.Config, decider config.Decider) (llm.DeciderClient, error) {
+	return func(cfg config.Config, decider config.Decider) (llm.DeciderClient, error) {
+		if o.NewDecisionClient != nil {
+			return o.NewDecisionClient(cfg, decider)
+		}
+		getenv := o.Getenv
+		if getenv == nil {
+			getenv = os.Getenv
+		}
+		return chat.NewDecisionClientWithGetenv(cfg, decider, getenv, sink)
+	}
 }
 
 // runErrorNote appends the [run error] block to a transcript: the
