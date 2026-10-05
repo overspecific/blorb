@@ -2,15 +2,15 @@
   "default_agent": "triage",
   "models": [
     {
+      "name": "small",
+      "model_name": "Gemma-4-E4B-it-GGUF",
+      "provider": "local"
+    },
+    {
       "name": "jev",
       "model_name": "jev-latest",
       "model_type": "decision",
       "provider": "typesafe"
-    },
-    {
-      "name": "chat",
-      "model_name": "gpt-4o-mini",
-      "provider": "chat"
     }
   ],
   "agents": [
@@ -21,7 +21,7 @@
       "tools": [
         "triage_ticket"
       ],
-      "model": "chat"
+      "model": "small"
     }
   ],
   "deciders": [
@@ -60,16 +60,15 @@
   ],
   "providers": [
     {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:13305/v1"
+    },
+    {
       "name": "typesafe",
       "type": "openai-compatible",
       "base_url": "https://api.typesafe.ai/v1",
       "api_key_env": "TYPESAFE_API_KEY"
-    },
-    {
-      "name": "chat",
-      "type": "openai-compatible",
-      "base_url": "https://api.openai.com/v1",
-      "api_key_env": "OPENAI_API_KEY"
     }
   ]
 }

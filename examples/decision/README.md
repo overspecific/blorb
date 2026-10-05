@@ -2,24 +2,19 @@
 
 A config that uses a decision model as a tool. It declares a `decider` - a fixed set of typed questions for a System One model (Jev) - and a `decider` tool that lets the `triage` agent evaluate a support ticket against it. The agent gets a typed decision back (which department, whether a refund was requested) and answers from it.
 
+The chat model is the same local server the [simple](../simple) example uses. The decision model is hosted, because it speaks a different protocol.
+
 ## Setup
 
-The decision model talks to a System One-compatible endpoint. Any endpoint that speaks the protocol works:
+The chat agent talks to a local OpenAI-compatible server. The model config points at a local [Lemonade](https://lemonade-server.com) server (`http://localhost:13305/v1`) with the `Gemma-4-E4B-it-GGUF` model; adjust `base_url` and `model_name` in the top-level `models` list in `blorb.json` to match whatever OpenAI-compatible endpoint you want to use (OpenAI, Lemonade, LM Studio, vLLM, Ollama, ...). If your endpoint needs an API key, add an `api_key_env` entry naming the environment variable that holds it.
 
-- TypeSafe itself: `https://api.typesafe.ai/v1`
-- OpenRouter's System One surface: `https://openrouter.ai/api/v1`
-- jevmodel.org: `https://jevmodel.org/v1`
-- apimodels, Venice, and other vendors that share the protocol
-
-Point the `typesafe` provider's `base_url` at your vendor (a URL ending in the version segment works for all of them) and set the API key environment variable named by its `api_key_env`:
+The decision model is a System One model (Jev is the first example): it evaluates a state against typed questions and returns typed answers with probabilities instead of generated text. Point the `typesafe` provider's `base_url` at a vendor that speaks the protocol - TypeSafe itself (`https://api.typesafe.ai/v1`), OpenRouter (`https://openrouter.ai/api/v1`), jevmodel.org (`https://jevmodel.org/v1`), apimodels, Venice - and export the key its `api_key_env` names:
 
 ```sh
 export TYPESAFE_API_KEY="..."
 ```
 
-A decision model sits on an `openai-compatible` provider and is marked with `"model_type": "decision"`. Its `model_name` is optional: when omitted, the request leaves the model field out and the server applies its deployment default. It does not accept the chat-model knobs (`reasoning_effort`, `tool_choice`, `logprobs`, and the Ollama-only settings).
-
-The `chat` model the agent talks to is a plain chat completions model on its own provider; point it at whatever chat endpoint you have and export `OPENAI_API_KEY` (or edit the provider to match your server).
+A decision model sits on an `openai-compatible` provider and is marked with `"model_type": "decision"`. Its `model_name` is optional: when omitted, the request leaves the model field out and the server applies its deployment default. It does not accept the chat-model knobs (`reasoning_effort`, `tool_choice`, `logprobs`, and the Ollama-only settings). A decision model cannot be an agent's model; only a decider references it.
 
 ## The decider
 
@@ -76,7 +71,7 @@ The tool makes one decision API call with the decider's questions and returns th
 [triage] >>> Decision:
   {"department":{"type":"choice","choice":"billing","probabilities":{...},"confidence":0.88},"refund_requested":{"type":"noul","noul":0.95}}
 >>> Result: Tool: triage_ticket
-  {"department":...}
+  {"department":...,"refund_requested":...}
 ```
 
 ## Run
@@ -94,7 +89,14 @@ bin/build
   "I was charged twice for one order. Please refund the duplicate before Friday."
 ```
 
-`blorb decide` prints the answers JSON to stdout and exits: the decider counterpart of `blorb run`. The `[state]` argument shares `run`'s prompt syntax (literal, `@@` escape, `@file`, `-` for stdin).
+`blorb decide` prints the answers JSON to stdout and exits: the decider counterpart of `blorb run`. The `[state]` argument shares `run`'s prompt syntax (literal, `@@` escape, `@file`, `-` for stdin); by default it is sent as a JSON string, and `--state-json` sends a structured object or array verbatim:
+
+```sh
+./blorb decide --config examples/decision/blorb.json --decider triage --state-json \
+  '{"subject":"Duplicate charge","message":"I was charged twice. Please refund the duplicate."}'
+```
+
+The command does not need the chat model or the local server, only the decision provider.
 
 ## Logs
 
