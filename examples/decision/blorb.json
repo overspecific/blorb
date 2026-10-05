@@ -16,10 +16,21 @@
   "agents": [
     {
       "name": "triage",
-      "system_prompt": "You are a support-ticket triage agent. When the user describes a ticket, call triage_ticket with the ticket text to get the department and whether a refund is requested. Then answer using the decision: route the ticket and say whether to escalate to a human. Keep your answer short.",
-      "max_turns": 5,
+      "system_prompt": "You are a support-triage agent for complaints about biscuits. You never decide blind: before you route a complaint, look it up in the biscuit knowledgebase with `kb-grep`, and use `kb-read` when you need the full entry. If a first pattern comes up empty, delegate to the `search` agent, which tries alternative spellings and phrasings. Once an excerpt pins down the biscuit and the issue, call `triage_ticket` as the last thing you do in the turn: pass the original complaint in `complaint` and your knowledgebase excerpt in `excerpt`. The decision names the biscuit, the region that owns it, whether your excerpt already answers the complaint, and the recommended action. Answer from the decision: name the biscuit and its region, say whether the point is contested, and give the action. Keep your answer short.",
+      "max_turns": 10,
       "tools": [
+        "kb",
+        "search",
         "triage_ticket"
+      ],
+      "model": "small"
+    },
+    {
+      "name": "search",
+      "system_prompt": "You are an expert search agent. You have the `kb-grep` and `kb-read` tools, and you are relentless at finding things. The grep tool matches regular expressions, so exploit that: use alternation to cover variants in one pass (e.g. `biscuit|cookie`), character classes and optional parts for spelling variations (e.g. `flavou?r`), and case-insensitive matching (e.g. `(?i)jam`) where case might vary. Cover both singular and plural forms (e.g. `biscuits?`). If a pattern comes up empty, try alternatives before giving up: other spellings, synonyms, broader and narrower terms, and remember to try the other number (biscuit vs biscuits). You may read a file to confirm or disambiguate a match. Report back only the most relevant matching lines, in grep's path:line:text format, excluding matches that are beside the point and never padding the results with noise. Do not paraphrase the lines you do return.",
+      "max_turns": 10,
+      "tools": [
+        "kb"
       ],
       "model": "small"
     }
@@ -29,23 +40,56 @@
       "name": "triage",
       "model": "jev",
       "questions": {
-        "department": {
+        "biscuit": {
           "type": "choice",
-          "instructions": "Which team should handle this ticket?",
+          "instructions": "Which named biscuit is the complaint about? Choose Other when no listed biscuit fits.",
           "criteria": {
-            "billing": "Payments, invoices, and refunds",
-            "technical": "Bugs, outages, integrations",
-            "sales": "New purchases and upgrades",
-            "other": "No listed department fits"
+            "rich_tea": "Rich Tea, the plain British dunker",
+            "digestive": "Digestive, including the chocolate variant",
+            "jammie_dodger": "Jammie Dodger, the jam-windowed shortbread",
+            "ginger_nut": "Ginger Nut, the hard gingered biscuit",
+            "hobnob": "Hobnob, the oaty British biscuit",
+            "tim_tam": "Tim Tam, the Australian chocolate biscuit",
+            "stroopwafel": "Stroopwafel, the Dutch caramel-filled waffle",
+            "madeleine": "Madeleine, the French shell-shaped sponge",
+            "biscotti": "Biscotti, the Italian twice-baked biscuit",
+            "other": "No listed biscuit fits"
           }
         },
-        "refund_requested": {
-          "type": "noul",
-          "instructions": "Does the customer explicitly request a refund?",
+        "region": {
+          "type": "choice",
+          "instructions": "Which region file of the knowledgebase owns that biscuit? Choose unknown when the excerpt does not make it clear.",
           "criteria": {
-            "true": "Explicitly asks for a refund",
-            "false": "Does not ask for a refund"
+            "united_kingdom": "The British Isles",
+            "france": "France",
+            "italy": "Italy",
+            "germany": "Germany",
+            "netherlands": "The Netherlands",
+            "spain": "Spain",
+            "scandinavia": "Scandinavia",
+            "north_america": "North America",
+            "australia_new_zealand": "Australia and New Zealand",
+            "middle_east": "The Middle East",
+            "india": "India",
+            "unknown": "The excerpt does not make it clear"
           }
+        },
+        "answerable_from_excerpt": {
+          "type": "noul",
+          "instructions": "Does the excerpt in the state already hold enough to answer the complaint, or does it need more digging?",
+          "criteria": {
+            "true": "The excerpt is enough to answer",
+            "false": "More digging is needed"
+          }
+        },
+        "action": {
+          "type": "score",
+          "instructions": "What should the agent do with this complaint?",
+          "criteria": [
+            "Answer from the knowledgebase as it is",
+            "Dig further with the search agent",
+            "Refer the complaint to a human"
+          ]
         }
       }
     }
@@ -54,8 +98,42 @@
     {
       "type": "decider",
       "name": "triage_ticket",
-      "description": "Evaluate a support ticket and return its department and whether a refund was requested.",
-      "decider": "triage"
+      "description": "Evaluate a biscuit complaint against a knowledgebase excerpt and return which biscuit and region are at stake, whether the excerpt answers it, and the recommended action.",
+      "decider": "triage",
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "complaint": {
+            "type": "string",
+            "description": "The original complaint text, verbatim"
+          },
+          "excerpt": {
+            "type": "string",
+            "description": "The knowledgebase excerpt gathered about the biscuit and issue"
+          }
+        },
+        "required": [
+          "complaint",
+          "excerpt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "subagent",
+      "name": "search",
+      "description": "Delegate the search to the search agent, an expert searcher with the `kb-read` and `kb-grep` tools who is relentless at finding things: trying alternative patterns until something turns up. Give it a description of what to find; it returns matching knowledgebase lines as path:line:text, just like grep, but it tries alternatives when a first attempt comes up empty. Prefer it to grepping by hand when the thing you are looking for might be spelled or phrased in more than one way.",
+      "agent": "search"
+    }
+  ],
+  "toolsets": [
+    {
+      "name": "kb",
+      "type": "builtin",
+      "builtin": "file",
+      "config": {
+        "base_dir": "../simple/knowledgebase"
+      }
     }
   ],
   "providers": [

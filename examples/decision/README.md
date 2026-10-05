@@ -1,6 +1,6 @@
-# Decision example agent
+# Knowledgebase-grounded decision example
 
-A config that uses a decision model as a tool. It declares a `decider` - a fixed set of typed questions for a System One model (Jev) - and a `decider` tool that lets the `triage` agent evaluate a support ticket against it. The agent gets a typed decision back (which department, whether a refund was requested) and answers from it.
+A config that puts a decision model to work on a job a generative model is bad at: narrowing a complaint before the agent acts. It reuses the biscuit knowledgebase from the [simple](../simple) example and adds a `triage` agent that looks a complaint up, a `search` subagent that digs for it when a first pattern comes up empty, and a `decider` - a fixed set of typed questions for a System One model (Jev) - that the agent calls once to decide which biscuit and region are at stake, whether the excerpt it gathered already answers the complaint, and what to do next.
 
 The chat model is the same local server the [simple](../simple) example uses. The decision model is hosted, because it speaks a different protocol.
 
@@ -16,62 +16,87 @@ export TYPESAFE_API_KEY="..."
 
 A decision model sits on an `openai-compatible` provider and is marked with `"model_type": "decision"`. Its `model_name` is optional: when omitted, the request leaves the model field out and the server applies its deployment default. It does not accept the chat-model knobs (`reasoning_effort`, `tool_choice`, `logprobs`, and the Ollama-only settings). A decision model cannot be an agent's model; only a decider references it.
 
+## The agents
+
+`triage` is the default agent. It is granted the `kb` toolset from the [simple](../simple) example, pointing at that example's knowledgebase with a relative `base_dir` (`../simple/knowledgebase`, resolved against `blorb.json`'s directory). The grant shows both forms: the whole `kb` toolset, which is `kb-read` and `kb-grep`, and the single `kb-read` member by name. It also gets the `search` subagent tool and the `triage_ticket` decider tool. Its system prompt tells it to never decide blind: grep the knowledgebase for the biscuit and the issue, read the region file the match points at when it needs the full entry, and delegate to `search` when a pattern comes up empty. Only then does it call the decider.
+
+`search` is an expert searcher given the same `kb` toolset and no delegations of its own. When a grep pattern comes up empty it tries alternatives before reporting back: other spellings, synonyms, singular and plural, broader terms. Its output is grep's format (`path:line:text`).
+
 ## The decider
 
-A decider fixes the typed questions every call asks; only the state varies per call. This example asks two:
+A decider fixes the typed questions every call asks; only the state varies per call. This example asks four at once - the decision model evaluates all of them against the same state in a single request, so the agent needs one call to narrow the complaint:
 
 ```json
 {
   "name": "triage",
   "model": "jev",
   "questions": {
-    "department": {
+    "biscuit": {
       "type": "choice",
-      "instructions": "Which team should handle this ticket?",
+      "instructions": "Which named biscuit is the complaint about? Choose Other when no listed biscuit fits.",
       "criteria": {
-        "billing": "Payments, invoices, and refunds",
-        "technical": "Bugs, outages, integrations",
-        "sales": "New purchases and upgrades",
-        "other": "No listed department fits"
+        "rich_tea": "Rich Tea, the plain British dunker",
+        "digestive": "Digestive, including the chocolate variant",
+        "...": "..."
       }
     },
-    "refund_requested": {
+    "region": {
+      "type": "choice",
+      "instructions": "Which region file of the knowledgebase owns that biscuit? Choose unknown when the excerpt does not make it clear.",
+      "criteria": { "united_kingdom": "The British Isles", "...": "..." }
+    },
+    "answerable_from_excerpt": {
       "type": "noul",
-      "instructions": "Does the customer explicitly request a refund?",
-      "criteria": {
-        "true": "Explicitly asks for a refund",
-        "false": "Does not ask for a refund"
-      }
+      "instructions": "Does the excerpt in the state already hold enough to answer the complaint, or does it need more digging?",
+      "criteria": { "true": "The excerpt is enough to answer", "false": "More digging is needed" }
+    },
+    "action": {
+      "type": "score",
+      "instructions": "What should the agent do with this complaint?",
+      "criteria": [
+        "Answer from the knowledgebase as it is",
+        "Dig further with the search agent",
+        "Refer the complaint to a human"
+      ]
     }
   }
 }
 ```
 
-`department` is a `choice` question: `criteria` is a map of option name to description, and the answer selects one option with a probability per option. `refund_requested` is a `noul` question: a calibration whose answer is the probability of yes. A `score` question (an ordered rubric) is the third type; see [Deciders](../../docs/configuration.md#deciders).
+`biscuit` and `region` are `choice` questions: `criteria` is a map of option name to description, and each answer selects one option with a probability per option. `answerable_from_excerpt` is a `noul`: a calibration whose answer is the probability of yes. `action` is a `score`: an ordered rubric. The `region` options name the knowledgebase's region files, so the decision itself tells the agent which file to read.
 
 ## The tool
 
-The `triage_ticket` tool references the decider by name. By default it takes a single `state` string, so the agent calls it with the ticket text:
+The `triage_ticket` tool references the decider by name. A decider tool takes a single `state` string by default; this one gives the tool a custom `args_schema`, so the raw JSON arguments are the state - a structured ticket rather than a blob of text:
 
 ```json
 {
   "type": "decider",
   "name": "triage_ticket",
-  "description": "Evaluate a support ticket and return its department and whether a refund was requested.",
-  "decider": "triage"
+  "description": "Evaluate a biscuit complaint against a knowledgebase excerpt and return which biscuit and region are at stake, whether the excerpt answers it, and the recommended action.",
+  "decider": "triage",
+  "args_schema": {
+    "type": "object",
+    "properties": {
+      "complaint": { "type": "string", "description": "The original complaint text, verbatim" },
+      "excerpt": { "type": "string", "description": "The knowledgebase excerpt gathered about the biscuit and issue" }
+    },
+    "required": ["complaint", "excerpt"],
+    "additionalProperties": false
+  }
 }
 ```
 
-The tool makes one decision API call with the decider's questions and returns the answers as a JSON object, keyed by question name. In chat, the decision prints as a labeled, indented block before the tool result, so you watch it land:
+The tool makes one decision API call with the decider's four questions and the structured state, and returns the answers as a JSON object, keyed by question name. In chat, the decision prints as a labeled, indented block before the tool result, so you watch it land:
 
 ```text
 >>> Tool: triage_ticket
-{"state":"I was charged twice for one order. Please refund the duplicate."}
+{"complaint":"My chocolate digestive collapsed on the second dunk. I want compensation.","excerpt":"united-kingdom.md:11: ... chocolate digestives are a gamble (the chocolate acts as a partial barrier ...)"}
 
 [triage] >>> Decision:
-  {"department":{"type":"choice","choice":"billing","probabilities":{...},"confidence":0.88},"refund_requested":{"type":"noul","noul":0.95}}
+  {"biscuit":{"type":"choice","choice":"digestive","probabilities":{...},"confidence":0.91},"region":{"type":"choice","choice":"united_kingdom",...},"answerable_from_excerpt":{"type":"noul","noul":0.86},"action":{"type":"score","score":0,...}}
 >>> Result: Tool: triage_ticket
-  {"department":...,"refund_requested":...}
+  {"biscuit":...,"region":...,"answerable_from_excerpt":...,"action":...}
 ```
 
 ## Run
@@ -81,19 +106,19 @@ From the repo root:
 ```sh
 bin/build
 
-# chat with the triage agent; it decides via the decider tool
+# chat with the triage agent; it retrieves from the knowledgebase, then decides
 ./blorb chat --config examples/decision/blorb.json
 
 # or run the decider directly, the way `run --agent` invokes an agent
 ./blorb decide --config examples/decision/blorb.json --decider triage \
-  "I was charged twice for one order. Please refund the duplicate before Friday."
+  "My chocolate digestive collapsed on the second dunk."
 ```
 
 `blorb decide` prints the answers JSON to stdout and exits: the decider counterpart of `blorb run`. The `[state]` argument shares `run`'s prompt syntax (literal, `@@` escape, `@file`, `-` for stdin); by default it is sent as a JSON string, and `--state-json` sends a structured object or array verbatim:
 
 ```sh
 ./blorb decide --config examples/decision/blorb.json --decider triage --state-json \
-  '{"subject":"Duplicate charge","message":"I was charged twice. Please refund the duplicate."}'
+  '{"complaint":"My chocolate digestive collapsed on the second dunk.","excerpt":"chocolate digestives are a gamble; the chocolate is a partial barrier."}'
 ```
 
 The command does not need the chat model or the local server, only the decision provider.
