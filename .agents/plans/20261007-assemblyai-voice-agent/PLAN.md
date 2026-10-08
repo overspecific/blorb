@@ -78,7 +78,7 @@ docs):
 
 - [x] Commit 1: ws dial headers
 - [x] Commit 2: voice config schema
-- [ ] Commit 3: audio subprocesses
+- [x] Commit 3: audio subprocesses
 - [ ] Commit 4: voice client protocol
 - [ ] Commit 5: voice session loop
 - [ ] Commit 6: voice command
