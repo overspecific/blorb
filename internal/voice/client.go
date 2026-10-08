@@ -269,8 +269,12 @@ func (c *Client) handleEvent(ev Event) error {
 		}
 		return c.forward(ev)
 	case typeSessionEnded:
+		// Enqueue the event before signalling End's waiter, so a
+		// concurrent End cannot shut the socket down before the renderer
+		// has seen the session totals.
+		err := c.forward(ev)
 		close(c.ended)
-		return c.forward(ev)
+		return err
 	default:
 		return c.forward(ev)
 	}
