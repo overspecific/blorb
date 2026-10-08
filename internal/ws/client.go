@@ -48,6 +48,7 @@ type dialSettings struct {
 	readWait  time.Duration
 	readLimit int64
 	tlsConfig *tls.Config
+	headers   [][2]string
 }
 
 // WithReadWait sets how long a single frame read may take before the
@@ -67,6 +68,13 @@ func WithReadLimit(n int64) DialOption {
 // use it to accept self-signed server certificates.
 func WithTLSConfig(c *tls.Config) DialOption {
 	return func(s *dialSettings) { s.tlsConfig = c }
+}
+
+// WithHeader appends one header line to the opening handshake. Headers are
+// applied after the fixed handshake headers, in the order the options are
+// given. Dial returns an error if key is empty.
+func WithHeader(key, value string) DialOption {
+	return func(s *dialSettings) { s.headers = append(s.headers, [2]string{key, value}) }
 }
 
 // Conn is a live client-side WebSocket connection. One goroutine reads at
@@ -104,6 +112,11 @@ func Dial(ctx context.Context, rawURL string, opts ...DialOption) (*Conn, error)
 	for _, opt := range opts {
 		opt(&settings)
 	}
+	for _, h := range settings.headers {
+		if h[0] == "" {
+			return nil, errors.New("websocket handshake header name must not be empty")
+		}
+	}
 
 	requestURI := u.RequestURI()
 	if requestURI == "" {
@@ -123,7 +136,11 @@ func Dial(ctx context.Context, rawURL string, opts ...DialOption) (*Conn, error)
 	req.WriteString("Upgrade: websocket\r\n")
 	req.WriteString("Connection: Upgrade\r\n")
 	req.WriteString("Sec-WebSocket-Key: " + key + "\r\n")
-	req.WriteString("Sec-WebSocket-Version: 13\r\n\r\n")
+	req.WriteString("Sec-WebSocket-Version: 13\r\n")
+	for _, h := range settings.headers {
+		req.WriteString(h[0] + ": " + h[1] + "\r\n")
+	}
+	req.WriteString("\r\n")
 
 	hostPort := u.Host
 	if !strings.Contains(hostPort, ":") {

@@ -38,8 +38,9 @@ type testServer struct {
 
 	handshook chan struct{}
 
-	mu   sync.Mutex
-	conn net.Conn
+	mu      sync.Mutex
+	conn    net.Conn
+	headers http.Header
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -90,6 +91,7 @@ func (s *testServer) serve(t *testing.T) {
 
 		s.mu.Lock()
 		s.conn = conn
+		s.headers = req.Header
 		s.mu.Unlock()
 		close(s.handshook)
 
@@ -113,6 +115,15 @@ func (s *testServer) connection(t *testing.T) net.Conn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conn
+}
+
+// requestHeaders returns the headers of the opening handshake request.
+func (s *testServer) requestHeaders(t *testing.T) http.Header {
+	t.Helper()
+	s.waitHandshake(t)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.headers
 }
 
 // awaitText reads one text frame and returns its payload.

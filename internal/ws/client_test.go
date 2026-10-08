@@ -82,6 +82,37 @@ func TestDialHandshakeFailures(t *testing.T) {
 	})
 }
 
+func TestDialHeaders(t *testing.T) {
+	srv := newTestServer(t)
+	srv.serve(t)
+	conn, err := ws.Dial(context.Background(), "ws://"+srv.addr+"/",
+		ws.WithHeader("Authorization", "Bearer k"),
+		ws.WithHeader("X-Extra", "v"),
+	)
+	if err != nil {
+		t.Fatalf("Dial error = %v, want nil", err)
+	}
+	defer conn.Close(1000, "")
+
+	headers := srv.requestHeaders(t)
+	if got := headers.Get("Authorization"); got != "Bearer k" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer k")
+	}
+	if got := headers.Get("X-Extra"); got != "v" {
+		t.Errorf("X-Extra = %q, want %q", got, "v")
+	}
+}
+
+func TestDialEmptyHeaderKey(t *testing.T) {
+	_, err := ws.Dial(context.Background(), "ws://127.0.0.1:0/", ws.WithHeader("", "v"))
+	if err == nil {
+		t.Fatal("Dial error = nil, want an empty header key error")
+	}
+	if !strings.Contains(err.Error(), "header name") {
+		t.Errorf("Dial error = %v, want it to name the header name", err)
+	}
+}
+
 func TestPingAutoAnswer(t *testing.T) {
 	srv := newTestServer(t)
 	srv.serve(t)
