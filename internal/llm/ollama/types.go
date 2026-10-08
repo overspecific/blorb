@@ -126,6 +126,12 @@ type wireToolCall struct {
 type wireFnCall struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+	// Index identifies which tool call a streamed chunk belongs to. In
+	// streaming, Ollama emits one whole tool call per chunk and nests the
+	// call's index here (a chunk's array position is not the call index:
+	// each chunk's array holds one call at position 0). It is a pointer so
+	// an absent field is distinguishable from an explicit 0.
+	Index *int `json:"index,omitempty"`
 }
 
 // wireTool is the Ollama tool definition shape, which wraps the function

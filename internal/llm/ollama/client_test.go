@@ -1076,6 +1076,49 @@ func TestChatStreamTwoToolCallsOneChunk(t *testing.T) {
 	}
 }
 
+// TestChatStreamParallelToolCallsSeparateChunks pins the streaming index
+// rule: Ollama emits one whole tool call per chunk and nests the call's
+// index at function.index. Keying by the chunk's array position (always 0)
+// would merge parallel calls into one malformed arguments string.
+func TestChatStreamParallelToolCallsSeparateChunks(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ndjsonChunks(w,
+			`{"model":"m","message":{"role":"assistant","tool_calls":[{"id":"c0","function":{"index":0,"name":"kb-read","arguments":{"path":"README.md"}}}]}}`,
+			`{"model":"m","message":{"role":"assistant","tool_calls":[{"id":"c1","function":{"index":1,"name":"kb-read","arguments":{"path":"dunking.md"}}}]}}`,
+			`{"model":"m","message":{"role":"assistant","tool_calls":[{"id":"c2","function":{"index":2,"name":"kb-read","arguments":{"path":"france.md"}}}]},"done":true,"done_reason":"tool_calls"}`,
+		)
+	}))
+	defer srv.Close()
+
+	var indexes []int
+	resp, err := newTestClient(t, srv.URL).ChatStream(context.Background(), llm.Request{}, func(d llm.Delta) error {
+		if d.ToolCall != nil {
+			indexes = append(indexes, d.ToolCall.Index)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream error = %v, want nil", err)
+	}
+	if fmt.Sprint(indexes) != "[0 1 2]" {
+		t.Errorf("tool call delta indexes = %v, want [0 1 2]", indexes)
+	}
+	if len(resp.Message.ToolCalls) != 3 {
+		t.Fatalf("final tool calls = %d, want 3", len(resp.Message.ToolCalls))
+	}
+	want := []string{`{"path":"README.md"}`, `{"path":"dunking.md"}`, `{"path":"france.md"}`}
+	for i, tc := range resp.Message.ToolCalls {
+		if tc.FunctionName != "kb-read" {
+			t.Errorf("tool call %d name = %q, want kb-read", i, tc.FunctionName)
+		}
+		if tc.FunctionArgs != want[i] {
+			t.Errorf("tool call %d args = %q, want %q", i, tc.FunctionArgs, want[i])
+		}
+	}
+}
+
 func TestChatStreamThinkFieldOnWire(t *testing.T) {
 	t.Parallel()
 

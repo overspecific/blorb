@@ -286,12 +286,17 @@ func (a *streamAccumulator) addDelta(chunk *chatResponse, onDelta func(llm.Delta
 	for i := range chunk.Message.ToolCalls {
 		wtc := &chunk.Message.ToolCalls[i]
 		args := string(wtc.Function.Arguments)
-		// Ollama delivers a message's tool calls within a single chunk,
-		// so the index is the call's position within that chunk's array;
-		// streamed fragments for the same index accumulate like openai's:
-		// the first establishes id and name, later ones concatenate
-		// arguments.
+		// Ollama streams one whole tool call per chunk and nests the
+		// call's index at function.index (each chunk's array position is
+		// 0, so the position must not be used as the index: parallel calls
+		// would merge). An absent index falls back to the array position,
+		// which is correct for the single-chunk, multi-call case. Fragments
+		// for the same index accumulate like openai's: the first
+		// establishes id and name, later ones concatenate arguments.
 		idx := i
+		if wtc.Function.Index != nil {
+			idx = *wtc.Function.Index
+		}
 		tc, ok := a.toolCalls[idx]
 		if !ok {
 			if len(args) > maxContentLen {
