@@ -518,7 +518,7 @@ func TestSessionSubagentToolRunsAndRenders(t *testing.T) {
 	})
 	cfg.Agents[0].Tools = []string{"echoer", "delegate"}
 
-	scholarLLM := &cannedClient{responses: []llm.Response{
+	scholarLLM := &cannedStreamingClient{responses: []llm.Response{
 		{
 			ID:           "r1",
 			Message:      llm.NewTextMessage(llm.RoleAssistant, "biscuits are lovely"),
@@ -565,19 +565,39 @@ func TestSessionSubagentToolRunsAndRenders(t *testing.T) {
 
 func floatPtr(f float64) *float64 { return &f }
 
-// cannedClient is an llm.Client returning one canned response per call.
-type cannedClient struct {
+// cannedStreamingClient is an llm.StreamingClient returning one canned
+// response per call, emitting its content as a delta so tests exercise the
+// streaming path.
+type cannedStreamingClient struct {
 	mu        sync.Mutex
 	responses []llm.Response
 }
 
-func (c *cannedClient) Chat(_ context.Context, _ llm.Request) (*llm.Response, error) {
+func (c *cannedStreamingClient) Chat(_ context.Context, _ llm.Request) (*llm.Response, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.responses) == 0 {
-		return nil, errors.New("cannedClient: no more responses")
+		return nil, errors.New("cannedStreamingClient: no more responses")
 	}
 	resp := c.responses[0]
 	c.responses = c.responses[1:]
+	return &resp, nil
+}
+
+func (c *cannedStreamingClient) ChatStream(_ context.Context, _ llm.Request, onDelta func(llm.Delta) error) (*llm.Response, error) {
+	c.mu.Lock()
+	if len(c.responses) == 0 {
+		c.mu.Unlock()
+		return nil, errors.New("cannedStreamingClient: no more responses")
+	}
+	resp := c.responses[0]
+	c.responses = c.responses[1:]
+	c.mu.Unlock()
+
+	if resp.Message.Content != "" {
+		if err := onDelta(llm.Delta{Content: resp.Message.Content}); err != nil {
+			return nil, err
+		}
+	}
 	return &resp, nil
 }

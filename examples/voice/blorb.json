@@ -5,6 +5,11 @@
       "name": "small",
       "model_name": "Gemma-4-E4B-it-GGUF",
       "provider": "local"
+    },
+    {
+      "name": "glm-flash",
+      "model_name": "glm-5.3-flash:cloud",
+      "provider": "ollama-cloud"
     }
   ],
   "agents": [
@@ -32,7 +37,7 @@
         "kb",
         "search"
       ],
-      "model": "small"
+      "model": "glm-flash"
     },
     {
       "name": "search",
@@ -41,7 +46,7 @@
       "tools": [
         "kb"
       ],
-      "model": "small"
+      "model": "glm-flash"
     },
     {
       "name": "horologist",
@@ -52,7 +57,7 @@
         "calendar",
         "days_until"
       ],
-      "model": "small"
+      "model": "glm-flash"
     }
   ],
   "tools": [
@@ -166,6 +171,12 @@
       "name": "local",
       "type": "openai-compatible",
       "base_url": "http://localhost:13305/v1"
+    },
+    {
+      "name": "ollama-cloud",
+      "type": "ollama",
+      "base_url": "https://ollama.com",
+      "api_key_env": "OLLAMA_API_KEY"
     }
   ]
 }

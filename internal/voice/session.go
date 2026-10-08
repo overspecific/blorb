@@ -244,7 +244,11 @@ func buildVoiceTools(cfg config.Config, agent config.Agent, sink logging.Sink, n
 	subagents := engine.NewSubagentRunner(engine.SubagentRunnerConfig{
 		Config:    cfg,
 		NewClient: newLLMClient,
-		Sink:      sink,
+		// Stream enables incremental subagent activity when the client
+		// supports it; the engine falls back to whole messages for clients
+		// that do not, so this is safe unconditionally.
+		Stream: true,
+		Sink:   sink,
 	})
 
 	registry, err := tools.NewRegistry(
