@@ -57,6 +57,10 @@ type fakeClient struct {
 	endCalled  bool
 	closeCalls int
 	cfg        ClientConfig
+
+	// endBlock, when non-nil, makes End wait for it before finishing,
+	// modelling the real client's wait for the server's session.ended.
+	endBlock chan struct{}
 }
 
 func newFakeClient() *fakeClient {
@@ -89,11 +93,19 @@ func (f *fakeClient) waitConnected(t *testing.T) {
 	}
 }
 
-// End records the hang-up and finishes the session cleanly.
+// End records the hang-up and finishes the session cleanly, waiting on
+// endBlock first when set.
 func (f *fakeClient) End() error {
 	f.mu.Lock()
 	f.endCalled = true
+	block := f.endBlock
 	f.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-f.done:
+		}
+	}
 	f.finish(nil)
 	return nil
 }
@@ -101,7 +113,16 @@ func (f *fakeClient) End() error {
 func (f *fakeClient) Close() error {
 	f.mu.Lock()
 	f.closeCalls++
+	block := f.endBlock
 	f.mu.Unlock()
+	// A force-close unblocks a waiting End.
+	if block != nil {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	}
 	f.finish(nil)
 	return nil
 }
@@ -338,6 +359,40 @@ func TestSessionSigintEnds(t *testing.T) {
 	fake.mu.Unlock()
 	if !called {
 		t.Error("End was not called on the first SIGINT")
+	}
+}
+
+func TestSessionSigintDoubleTaps(t *testing.T) {
+	// The real client's End blocks until the server answers session.ended.
+	// A second Ctrl-C while End waits must force-close rather than being
+	// ignored behind the blocked End call.
+	sig := make(chan os.Signal, 1)
+	fake, buf, done := startSession(t, voiceConfig(echoTool()), Options{SigintChan: sig})
+	fake.waitConnected(t)
+
+	fake.mu.Lock()
+	fake.endBlock = make(chan struct{})
+	fake.mu.Unlock()
+
+	sig <- os.Interrupt
+	buf.waitFor(t, "Hanging up")
+
+	// End is now blocked; the second signal must force-close.
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second Ctrl-C did not force-close while End was blocked")
+	}
+	fake.mu.Lock()
+	closes := fake.closeCalls
+	fake.mu.Unlock()
+	if closes == 0 {
+		t.Error("Close was not called on the second SIGINT")
 	}
 }
 

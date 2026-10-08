@@ -33,6 +33,8 @@ type fakeVoiceServer struct {
 	failReady bool
 	failCode  string
 	failMsg   string
+	// replyEnd makes the server answer session.end with session.ended.
+	replyEnd bool
 
 	mu       sync.Mutex
 	conn     net.Conn
@@ -104,6 +106,9 @@ func (s *fakeVoiceServer) serveConn(conn net.Conn) {
 			} else {
 				s.pushEvent(`{"type":"session.ready","session_id":"sess-1"}`)
 			}
+		}
+		if voiceType(msg) == typeSessionEnd && s.replyEnd {
+			s.pushEvent(`{"type":"session.ended","session_duration_seconds":1.0}`)
 		}
 	}
 }

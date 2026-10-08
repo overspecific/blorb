@@ -153,13 +153,13 @@ func sessionLoop(ctx context.Context, opts Options, client SessionClient, stdout
 			return endSession(client, ended)
 		case <-sigint:
 			if !ending {
-				// First Ctrl-C: hang up gracefully. The client's End
-				// delivers the server's session.ended before the events
-				// channel closes, so the loop keeps draining.
+				// First Ctrl-C: hang up gracefully. The client's End waits
+				// for the server's session.ended, which can take a moment,
+				// so run it off the loop: a second Ctrl-C must still be
+				// seen (to force-close) and events must keep rendering.
 				ending = true
-				if err := client.End(); err != nil {
-					return err
-				}
+				fmt.Fprint(stdout, "\nHanging up; Ctrl-C again to quit now.\n")
+				go func() { _ = client.End() }()
 				continue
 			}
 			// Second Ctrl-C: force-close.
