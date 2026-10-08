@@ -19,6 +19,11 @@ import (
 // finish after its stdin is closed before the process group is killed.
 const playbackDrainWait = 2 * time.Second
 
+// captureExitWait bounds how long Close waits to see whether a capture
+// subprocess reached a non-zero exit on its own before killing it. A capture
+// runs until the session ends, so reaching this bound is the normal case.
+const captureExitWait = 250 * time.Millisecond
+
 // audioReader reads raw 24 kHz 16-bit little-endian mono PCM from a capture
 // subprocess's stdout. Close kills the process: a capture runs until the
 // session ends, not until it runs dry.
@@ -65,7 +70,7 @@ func (a *audioReader) Close() error {
 		select {
 		case err := <-a.waitErr:
 			a.closeErr = exitStatus("capture", a.cmd, err)
-		default:
+		case <-time.After(captureExitWait):
 			killProcessGroup(a.cmd.Process)
 			<-a.waitErr
 		}
