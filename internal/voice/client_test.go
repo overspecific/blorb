@@ -135,6 +135,88 @@ func TestReplyAudioPlays(t *testing.T) {
 	_ = c
 }
 
+func TestEchoGateHoldsBackMicWhileAgentSpeaks(t *testing.T) {
+	// With the gate on, mic chunks captured while agent audio is playing are
+	// drained but not sent. The test drives a reader that yields chunks
+	// slowly: while reply.audio is queued the chunks are withheld, and once
+	// the gate expires they flow again.
+	srv := newFakeVoiceServer(t)
+	mic := &pacedReader{fill: []byte("mic!"), interval: 10 * time.Millisecond}
+	c := connectVoice(t, srv, ClientConfig{Mic: mic, EchoGate: true})
+
+	// Queue a long chunk of agent audio: 24000 bytes is 500 ms of playback,
+	// so the gate stays closed well past the next few mic reads.
+	long := make([]byte, 24000)
+	srv.pushEvent(`{"type":"reply.audio","data":"` + base64.StdEncoding.EncodeToString(long) + `"}`)
+
+	// Wait until the gate has definitely engaged, then let several mic
+	// chunks pass; they must be swallowed.
+	waitUntil(t, 5*time.Second, func() bool { return c.gateUntil.Load() > time.Now().UnixNano() })
+	time.Sleep(150 * time.Millisecond)
+
+	// Let the gate expire, then wait for a mic chunk to arrive.
+	waitUntil(t, 2*time.Second, func() bool { return time.Now().UnixNano() >= c.gateUntil.Load() })
+	msg := srv.awaitMessage(t, typeInputAudio)
+	decoded, err := base64.StdEncoding.DecodeString(fieldString(t, msg, "audio"))
+	if err != nil {
+		t.Fatalf("decode input.audio: %v", err)
+	}
+	if !bytes.HasPrefix(decoded, []byte("mic!")) {
+		t.Errorf("mic chunk after gate = %q, want it to start with mic!", decoded)
+	}
+}
+
+func TestEchoGateOffStreamsMicDuringReply(t *testing.T) {
+	// With the gate off, mic audio flows even while the agent speaks.
+	srv := newFakeVoiceServer(t)
+	mic := bytes.NewReader([]byte("abcdef"))
+	connectVoice(t, srv, ClientConfig{Mic: mic, EchoGate: false})
+
+	long := make([]byte, 24000)
+	srv.pushEvent(`{"type":"reply.audio","data":"` + base64.StdEncoding.EncodeToString(long) + `"}`)
+	msgs := srv.awaitMessages(t, typeInputAudio, 1)
+	var got []byte
+	for _, m := range msgs {
+		decoded, err := base64.StdEncoding.DecodeString(fieldString(t, m, "audio"))
+		if err != nil {
+			t.Fatalf("decode input.audio: %v", err)
+		}
+		got = append(got, decoded...)
+	}
+	if string(got) != "abcdef" {
+		t.Errorf("mic bytes = %q, want abcdef", got)
+	}
+}
+
+// pacedReader fills the read buffer with repeated copies of fill, sleeping
+// interval between reads, forever.
+type pacedReader struct {
+	fill     []byte
+	interval time.Duration
+}
+
+func (p *pacedReader) Read(b []byte) (int, error) {
+	time.Sleep(p.interval)
+	n := 0
+	for n < len(b) {
+		n += copy(b[n:], p.fill)
+	}
+	return n, nil
+}
+
+// waitUntil polls cond until it is true or the deadline passes.
+func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("condition never became true")
+}
+
 func TestEventsForwarded(t *testing.T) {
 	srv := newFakeVoiceServer(t)
 	c := connectVoice(t, srv, ClientConfig{})

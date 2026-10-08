@@ -504,6 +504,13 @@ type VoiceConfig struct {
 	// WSURL is the Voice Agent WebSocket endpoint. Optional; when empty
 	// DefaultVoiceWSURL applies.
 	WSURL string `json:"ws_url,omitempty"`
+	// EchoGate, when true, mutes the microphone while the agent is
+	// speaking: the mic keeps being read (so capture does not back up) but
+	// its audio is not sent, so a speaker near the microphone cannot feed
+	// the agent's own voice back to it. The trade-off is that talking over
+	// the agent (barge-in) is disabled while it speaks. Leave it off with
+	// headphones, which avoid the feedback without muting the mic.
+	EchoGate bool `json:"echo_gate,omitempty"`
 }
 
 // InputCommandOrDefault returns the configured input_command, or

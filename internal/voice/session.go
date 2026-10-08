@@ -112,6 +112,7 @@ func Run(ctx context.Context, opts Options) error {
 		Tools:        defs,
 		Playback:     io.Discard,
 		RunTool:      runTool,
+		EchoGate:     voiceCfg.EchoGate,
 		Sink:         sink,
 	}
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/overspecific/blorb/internal/llm"
@@ -49,6 +50,10 @@ type ClientConfig struct {
 	Mic io.Reader
 	// Playback receives the agent's PCM. Nil discards it.
 	Playback io.Writer
+	// EchoGate, when true, holds back mic audio while the agent is
+	// speaking, so a speaker near the microphone cannot feed the agent's
+	// own voice back to it. Barge-in is unavailable while it is set.
+	EchoGate bool
 
 	// RunTool runs one tool call. err reports whether the tool itself
 	// failed (the result is still returned to the server, flagged).
@@ -78,11 +83,21 @@ type Client struct {
 	playback io.Writer
 	runTool  func(ctx context.Context, name string, args json.RawMessage) (output string, err bool)
 	sink     logging.Sink
+	echoGate bool
+
+	// gateUntil is the Unix-nanosecond time until which the echo gate holds
+	// back mic audio; a past value means open. The read loop advances it,
+	// the mic loop reads it. See advanceGate.
+	gateUntil atomic.Int64
 
 	// tool timing state, owned by the read loop.
 	lastEvent string
 	pending   []pendingResult
 }
+
+// pcmBytesPerSecond is the byte rate of the 24 kHz 16-bit mono PCM the
+// session exchanges (24000 samples/s * 2 bytes/sample).
+const pcmBytesPerSecond = 24000 * 2
 
 // pendingResult is one completed tool call waiting to be sent.
 type pendingResult struct {
@@ -122,6 +137,7 @@ func Connect(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		playback: playback,
 		runTool:  cfg.RunTool,
 		sink:     sink,
+		echoGate: cfg.EchoGate,
 	}
 
 	update := sessionUpdate{
@@ -202,12 +218,14 @@ func (c *Client) send(msg any) error {
 }
 
 // micLoop streams microphone PCM up as input.audio until the reader ends, the
-// context is cancelled, or the socket dies.
+// context is cancelled, or the socket dies. With the echo gate on, chunks
+// captured while the agent's audio is still playing are drained but not sent,
+// so the speaker output cannot feed back into the conversation.
 func (c *Client) micLoop() {
 	buf := make([]byte, micChunkBytes)
 	for {
 		n, err := io.ReadFull(c.mic, buf)
-		if n > 0 {
+		if n > 0 && (!c.echoGate || time.Now().UnixNano() >= c.gateUntil.Load()) {
 			if sendErr := c.send(inputAudio{
 				Type:  typeInputAudio,
 				Audio: base64.StdEncoding.EncodeToString(buf[:n]),
@@ -216,6 +234,29 @@ func (c *Client) micLoop() {
 			}
 		}
 		if err != nil {
+			return
+		}
+	}
+}
+
+// advanceGate extends the echo gate to cover a chunk of agent audio that was
+// just queued for playback. Audio plays in real time, so the gate closes for
+// the chunk's duration from the later of now and the current gate deadline;
+// that accumulates the playback finish time even when chunks arrive in a
+// burst ahead of real time.
+func (c *Client) advanceGate(pcmLen int) {
+	if !c.echoGate || pcmLen == 0 {
+		return
+	}
+	dur := int64(float64(pcmLen) / pcmBytesPerSecond * float64(time.Second))
+	now := time.Now().UnixNano()
+	for {
+		cur := c.gateUntil.Load()
+		base := now
+		if cur > base {
+			base = cur
+		}
+		if c.gateUntil.CompareAndSwap(cur, base+dur) {
 			return
 		}
 	}
@@ -257,6 +298,7 @@ func (c *Client) handleEvent(ev Event) error {
 		if _, err := c.playback.Write(pcm); err != nil {
 			return fmt.Errorf("play reply audio: %w", err)
 		}
+		c.advanceGate(len(pcm))
 		return nil
 	case typeToolCall:
 		return c.handleToolCall(ev)

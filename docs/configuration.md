@@ -228,10 +228,13 @@ An agent with a `voice` block can run as a spoken conversation through the `blor
 | `input_command`  | no       | The microphone capture command as an argument array. Empty defaults to `["arecord", "-q", "-f", "cd", "-r", "24000", "-c", "1"]`, which emits 24 kHz 16-bit mono PCM on stdout. |
 | `output_command` | no       | The speaker playback command as an argument array. Empty defaults to `["aplay", "-q", "-r", "24000", "-f", "s16_le", "-c", "1"]`, which plays the same format from stdin. |
 | `ws_url`         | no       | The Voice Agent WebSocket endpoint. Empty defaults to `wss://agents.assemblyai.com/v1/ws`; set it for a test server or a regional host. |
+| `echo_gate`      | no       | When true, mutes the microphone while the agent is speaking, so a speaker near the microphone cannot feed the agent's own voice back to it. The trade-off is that talking over the agent (barge-in) is disabled while it speaks. Leave it off with headphones. Default false. |
 
 Validation requires `api_key_env`, rejects a `volume` outside 0 to 100, and requires `ws_url` to be ws/wss with a host when set.
 
 A voice agent's spoken turns do not use its `model`. The Voice Agent API runs the conversation loop server-side - speech recognition, AssemblyAI's managed model, and speech synthesis - so blorb builds no LLM client for the spoken turns. The agent's `tools` still run locally, through the same registry the other commands use: `command` and `builtin` tools work as in `chat`, and `subagent` tools run a normal agent turn through the target agent's configured model on this machine, rendering that activity in the transcript. Because a voice session builds no decision-model path, `decider` tools cannot run, and `blorb voice` fails at startup if the agent is granted one.
+
+A laptop microphone and speaker in the same room feed the agent's speech back to it: it hears itself, transcribes that as the user talking, and interrupts itself. Two ways out. `echo_gate: true` in the `voice` block closes the microphone while the agent's audio is still playing, at the cost of barge-in; it is the right choice for a laptop speaker and microphone. Headphones leave the microphone open and keep barge-in working, so the gate is not needed.
 
 ## Deciders
 

@@ -21,7 +21,8 @@
       "voice": {
         "api_key_env": "ASSEMBLYAI_API_KEY",
         "greeting": "Hi! I am Simple. Ask me about biscuits, or the time.",
-        "voice": "james"
+        "voice": "james",
+        "echo_gate": true
       }
     },
     {

@@ -122,7 +122,8 @@ func TestVoiceRoundTripAllFields(t *testing.T) {
 	      "volume": 0,
 	      "input_command": ["capture"],
 	      "output_command": ["play"],
-	      "ws_url": "ws://ws.example.com/voice"
+	      "ws_url": "ws://ws.example.com/voice",
+	      "echo_gate": true
 	    }
 	  }]
 	}`
@@ -154,6 +155,9 @@ func TestVoiceRoundTripAllFields(t *testing.T) {
 	}
 	if got, want := v.WSURLOrDefault(), "ws://ws.example.com/voice"; got != want {
 		t.Errorf("WSURLOrDefault() = %q, want %q", got, want)
+	}
+	if !v.EchoGate {
+		t.Error("EchoGate = false, want true")
 	}
 }
 
