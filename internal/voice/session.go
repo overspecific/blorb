@@ -275,6 +275,12 @@ type renderer struct {
 	// agentWrote is whether any text has been written to the current agent
 	// block, so a final transcript is not printed twice.
 	agentWrote bool
+	// agentLastByte is the final byte written to the agent block, used to
+	// join word deltas with a space. The server's deltas are inconsistently
+	// spaced: replies usually carry a trailing space ("I ", "am "), but the
+	// greeting's words arrive bare ("Hi!", "I", "am"), so a raw concatenation
+	// runs together.
+	agentLastByte byte
 	// partialLine is whether the last write left the output mid-line.
 	partialLine bool
 }
@@ -291,6 +297,27 @@ func (r *renderer) endLine() {
 func (r *renderer) heading(text string) {
 	r.endLine()
 	fmt.Fprintf(r.out, "\n%s\n", text)
+}
+
+// writeAgentText appends text to the current agent block, inserting a single
+// space when neither the preceding output nor the incoming text already
+// carries one. This joins word deltas into readable text whether the server
+// sends them bare or space-terminated.
+func (r *renderer) writeAgentText(text string) {
+	if text == "" {
+		return
+	}
+	if r.agentWrote && !isSpace(r.agentLastByte) && !isSpace(text[0]) {
+		fmt.Fprint(r.out, " ")
+	}
+	fmt.Fprint(r.out, text)
+	r.agentWrote = true
+	r.agentLastByte = text[len(text)-1]
+	r.partialLine = !strings.HasSuffix(text, "\n")
+}
+
+func isSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
 func (r *renderer) render(ev Event) {
@@ -314,9 +341,7 @@ func (r *renderer) render(ev Event) {
 			r.heading(">>> Assistant:")
 			r.agentOpen = true
 		}
-		fmt.Fprint(r.out, ev.Delta)
-		r.agentWrote = true
-		r.partialLine = !strings.HasSuffix(ev.Delta, "\n")
+		r.writeAgentText(ev.Delta)
 	case typeAgentFinal:
 		if !r.agentOpen {
 			r.heading(">>> Assistant:")
@@ -326,6 +351,7 @@ func (r *renderer) render(ev Event) {
 			fmt.Fprint(r.out, ev.Text)
 			r.agentWrote = true
 		}
+		r.agentLastByte = 0
 		// An interrupted reply is closed by its reply.done, which appends
 		// the marker; a completed one ends here.
 		if !ev.Interrupted {
@@ -341,6 +367,7 @@ func (r *renderer) render(ev Event) {
 			fmt.Fprint(r.out, "\n")
 			r.agentOpen = false
 			r.agentWrote = false
+			r.agentLastByte = 0
 		}
 	case typeSessionEnded:
 		r.renderEnded(ev)

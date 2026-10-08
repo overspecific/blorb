@@ -284,6 +284,54 @@ func TestSessionInterruptedFinalKeepsLineForMarker(t *testing.T) {
 	}
 }
 
+func TestSessionAgentDeltasJoinWords(t *testing.T) {
+	// The server's agent deltas are inconsistently spaced: replies usually
+	// carry a trailing space ("I ", "am "), but the greeting's words arrive
+	// bare ("Hi!", "I", "am"). Both must render as readable words.
+	fake, buf, done := startSession(t, voiceConfig(echoTool()), Options{})
+	fake.waitConnected(t)
+
+	for _, w := range []string{"Hi!", "I", "am", "ready", "when", "you", "are."} {
+		fake.push(Event{Type: typeAgentDelta, Delta: w})
+	}
+	fake.push(Event{Type: typeAgentFinal, Text: "Hi! I am ready when you are."})
+	fake.push(Event{Type: typeReplyDone, Status: "completed"})
+	fake.push(Event{Type: typeSessionEnded})
+	fake.finish(nil)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if out := buf.String(); !strings.Contains(out, ">>> Assistant:\nHi! I am ready when you are.\n") {
+		t.Errorf("bare word deltas did not join with spaces:\n%s", out)
+	}
+}
+
+func TestSessionAgentDeltasKeepServerSpacing(t *testing.T) {
+	// Space-terminated deltas must not gain an extra space.
+	fake, buf, done := startSession(t, voiceConfig(echoTool()), Options{})
+	fake.waitConnected(t)
+
+	for _, w := range []string{"I ", "am ", "not ", "sure."} {
+		fake.push(Event{Type: typeAgentDelta, Delta: w})
+	}
+	fake.push(Event{Type: typeAgentFinal, Text: "I am not sure."})
+	fake.push(Event{Type: typeReplyDone, Status: "completed"})
+	fake.push(Event{Type: typeSessionEnded})
+	fake.finish(nil)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, ">>> Assistant:\nI am not sure.\n") {
+		t.Errorf("space-terminated deltas rendered wrong:\n%s", out)
+	}
+	if strings.Contains(out, "not  sure") || strings.Contains(out, "sure. \n") {
+		t.Errorf("extra space in agent line:\n%s", out)
+	}
+}
+
 func TestSessionToolCallRenders(t *testing.T) {
 	fake, buf, done := startSession(t, voiceConfig(echoTool()), Options{})
 	fake.waitConnected(t)
