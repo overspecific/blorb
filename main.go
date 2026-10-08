@@ -20,6 +20,7 @@ import (
 	"github.com/overspecific/blorb/internal/prefactor"
 	"github.com/overspecific/blorb/internal/run"
 	"github.com/overspecific/blorb/internal/usage"
+	"github.com/overspecific/blorb/internal/voice"
 )
 
 // version is set at build time via -ldflags "-X main.version=..." (see bin/build).
@@ -45,6 +46,7 @@ func rootCommand() *cli.Command {
 			runCommand(),
 			decideCommand(),
 			bandCommand(),
+			voiceCommand(),
 			modelsCommand(),
 			{
 				Name:   "version",
@@ -492,6 +494,80 @@ func bandCommand() *cli.Command {
 		},
 	}
 }
+
+// voiceCommand builds the voice subcommand: run the agent as a voice session
+// through AssemblyAI's Voice Agent API, with local tools and console
+// transcript.
+func voiceCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "voice",
+		Usage: "Run an agent as a voice session through AssemblyAI",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Value:   config.DefaultPath,
+				Usage:   "Path to blorb.json",
+			},
+			&cli.StringFlag{
+				Name:  "agent",
+				Usage: "Name of the agent to run; defaults to the config's default_agent",
+			},
+			&cli.BoolFlag{
+				Name:  "no-mic",
+				Usage: "Run without microphone capture; the session is agent-talk-only",
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			cfg, err := config.Load(cmd.String("config"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("voice: %v", err), 1)
+			}
+
+			agent, err := resolveAgent(cfg, cmd.String("agent"))
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("voice: %v", err), 1)
+			}
+
+			if !agent.VoiceEnabled() {
+				return cli.Exit(fmt.Sprintf("voice: agent %q has no voice section; see examples/voice", agent.Name), 1)
+			}
+
+			// The AssemblyAI API key comes from the configured environment
+			// variable; it must be set and non-empty.
+			voiceCfg := agent.Voice
+			envName := voiceCfg.APIKeyEnv
+			apiKey := os.Getenv(envName)
+			if apiKey == "" {
+				return cli.Exit(fmt.Sprintf("voice: api_key_env %q is set but the environment variable is empty", envName), 1)
+			}
+
+			// Wire logging follows the same rules as chat and run.
+			sink, err := chat.ResolveSink(cmd.String("config"), cfg)
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("voice: %v", err), 1)
+			}
+
+			err = voiceRun(ctx, voice.Options{
+				Agent:   agent,
+				Config:  cfg,
+				APIKey:  apiKey,
+				Sink:    sink,
+				Stdout:  os.Stdout,
+				Version: version,
+				NoMic:   cmd.Bool("no-mic"),
+			})
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("voice: %v", err), 1)
+			}
+			return nil
+		},
+	}
+}
+
+// voiceRun is the voice session entry point, a package variable so the command
+// tests can inject a fake.
+var voiceRun = voice.Run
 
 // resolveAgent picks the agent a chat session runs: the given name when
 // non-empty, else the config's default_agent. It fails with the available

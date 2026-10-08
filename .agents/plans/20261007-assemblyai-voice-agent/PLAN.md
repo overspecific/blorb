@@ -81,7 +81,7 @@ docs):
 - [x] Commit 3: audio subprocesses
 - [x] Commit 4: voice client protocol
 - [x] Commit 5: voice session loop
-- [ ] Commit 6: voice command
+- [x] Commit 6: voice command
 - [ ] Commit 7: example agent and docs
 
 ---
