@@ -24,6 +24,10 @@ const micChunkBytes = 2400
 // closing the socket anyway.
 const endTimeout = 5 * time.Second
 
+// ErrSessionClosed is the terminal error a client reports when it closed
+// deliberately (End, Close, or a clean session.ended) rather than failing.
+var ErrSessionClosed = errors.New("voice session closed")
+
 // ClientConfig is everything Connect needs to open and drive one voice
 // session.
 type ClientConfig struct {
@@ -376,7 +380,7 @@ func (c *Client) logWire(kind string, body []byte) {
 func (c *Client) shutdown(err error) {
 	c.once.Do(func() {
 		if err == nil {
-			err = errors.New("voice session closed")
+			err = ErrSessionClosed
 		}
 		c.cancel()
 		c.done <- err

@@ -113,7 +113,7 @@ func (f *fakeClient) finish(err error) {
 	f.once.Do(func() {
 		close(f.events)
 		if err == nil {
-			err = errors.New("voice session closed")
+			err = ErrSessionClosed
 		}
 		f.done <- err
 	})
@@ -221,6 +221,45 @@ func TestSessionInterruptedMarker(t *testing.T) {
 	}
 	if out := buf.String(); !strings.Contains(out, "[interrupted]") {
 		t.Errorf("missing interrupt marker in output:\n%s", out)
+	}
+}
+
+func TestSessionWholeAgentReply(t *testing.T) {
+	// A reply delivered with no deltas (the whole text arrives at once)
+	// still renders on one Agent line.
+	fake, buf, done := startSession(t, voiceConfig(echoTool()), Options{})
+	fake.waitConnected(t)
+
+	fake.push(Event{Type: typeAgentFinal, Text: "whole reply"})
+	fake.push(Event{Type: typeReplyDone, Status: "completed"})
+	fake.push(Event{Type: typeSessionEnded})
+	fake.finish(nil)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	if out := buf.String(); !strings.Contains(out, "Agent: whole reply\n") {
+		t.Errorf("missing whole agent reply in output:\n%s", out)
+	}
+}
+
+func TestSessionInterruptedFinalKeepsLineForMarker(t *testing.T) {
+	// transcript.agent (interrupted) carries the trimmed text and arrives
+	// before reply.done; the marker must land on the same line.
+	fake, buf, done := startSession(t, voiceConfig(echoTool()), Options{})
+	fake.waitConnected(t)
+
+	fake.push(Event{Type: typeAgentFinal, Text: "I was say", Interrupted: true})
+	fake.push(Event{Type: typeReplyDone, Status: "interrupted"})
+	fake.push(Event{Type: typeSessionEnded})
+	fake.finish(nil)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Agent: I was say [interrupted]\n") {
+		t.Errorf("missing interrupted final line in output:\n%s", out)
 	}
 }
 

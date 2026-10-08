@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -180,10 +181,11 @@ func sessionLoop(ctx context.Context, opts Options, client SessionClient, stdout
 // client's terminal error unless the session already ended cleanly.
 func endSession(client SessionClient, ended bool) error {
 	_ = client.End()
-	if err := <-client.Done(); err != nil && !ended {
-		return err
+	err := <-client.Done()
+	if ended || isCleanClose(err) {
+		return nil
 	}
-	return nil
+	return err
 }
 
 // finish prints a terminal client error and returns it, or nil when the
@@ -199,7 +201,7 @@ func finish(client SessionClient, r *renderer, ended bool, err error) error {
 // isCleanClose reports whether the client's terminal error is the deliberate
 // close sentinel rather than a real failure.
 func isCleanClose(err error) bool {
-	return err == nil || err.Error() == "voice session closed"
+	return err == nil || errors.Is(err, ErrSessionClosed)
 }
 
 // buildVoiceTools builds the tools registry from the agent's granted tools and
@@ -283,17 +285,27 @@ func (r *renderer) render(ev Event) {
 		}
 		fmt.Fprint(r.out, ev.Delta)
 	case typeAgentFinal:
-		if r.agentOpen {
-			fmt.Fprint(r.out, "\n")
-		} else {
-			// No deltas arrived (for example a barge-in that trimmed the
-			// reply): print the final text whole.
-			fmt.Fprintf(r.out, "Agent: %s\n", ev.Text)
+		if !r.agentOpen {
+			// No deltas arrived (for example a reply delivered whole):
+			// start the line now.
+			fmt.Fprint(r.out, "Agent: ")
+			if ev.Text != "" {
+				fmt.Fprint(r.out, ev.Text)
+			}
+			r.agentOpen = true
 		}
-		r.agentOpen = false
+		// An interrupted reply is closed by its reply.done, which appends
+		// the marker; a completed one ends here.
+		if !ev.Interrupted {
+			fmt.Fprint(r.out, "\n")
+			r.agentOpen = false
+		}
 	case typeReplyDone:
-		if ev.Status == "interrupted" && r.agentOpen {
-			fmt.Fprint(r.out, " [interrupted]\n")
+		if r.agentOpen {
+			if ev.Status == "interrupted" {
+				fmt.Fprint(r.out, " [interrupted]")
+			}
+			fmt.Fprint(r.out, "\n")
 			r.agentOpen = false
 		}
 	case typeSessionEnded:
