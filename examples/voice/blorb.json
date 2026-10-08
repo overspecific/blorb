@@ -10,10 +10,13 @@
   "agents": [
     {
       "name": "assistant",
-      "system_prompt": "You are a friendly voice assistant. Keep your answers short: they are spoken aloud. You can tell the current time with your clock tool.",
+      "system_prompt": "You are a friendly voice assistant. Keep your answers short: they are spoken aloud. You have an echo tool and tools for the current time, a month calendar, and how many days remain until a date. Use them whenever the user asks.",
       "max_turns": 10,
       "tools": [
-        "clock"
+        "echo",
+        "current_time",
+        "calendar",
+        "days_until"
       ],
       "model": "small",
       "voice": {
@@ -26,11 +29,79 @@
   "tools": [
     {
       "type": "command",
-      "name": "clock",
-      "description": "Returns the current date and time. Use it whenever the user asks what time or day it is.",
+      "name": "echo",
+      "description": "Echoes back whatever text you pass in, prefixed with 'echo: '. Use it whenever the user asks you to repeat something.",
+      "command": [
+        "jq",
+        "-r",
+        "\"echo: \" + .message"
+      ],
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "The text to echo back"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      }
+    },
+    {
+      "type": "command",
+      "name": "current_time",
+      "description": "Returns the current date and time.",
       "command": [
         "date"
       ]
+    },
+    {
+      "type": "command",
+      "name": "calendar",
+      "description": "Renders a calendar for a month, given a year and month number (1-12), e.g. {\"year\": 2026, \"month\": 9}. Defaults to the current month when no arguments are given.",
+      "command": [
+        "python3",
+        "-u",
+        "-c",
+        "import calendar, json, datetime, sys; a = json.load(sys.stdin); t = datetime.date.today(); y = a.get('year') or t.year; m = a.get('month') or t.month; calendar.TextCalendar().prmonth(y, m)"
+      ],
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "year": {
+            "type": "integer",
+            "description": "The year, e.g. 2026"
+          },
+          "month": {
+            "type": "integer",
+            "description": "The month number 1-12"
+          }
+        }
+      }
+    },
+    {
+      "type": "command",
+      "name": "days_until",
+      "description": "Returns how many days remain until a given date, e.g. {\"date\": \"2026-12-25\"}. The date is in YYYY-MM-DD format.",
+      "command": [
+        "sh",
+        "-c",
+        "jq -r .date | xargs -I{} python3 -u -c \"import datetime, sys; print((datetime.date.fromisoformat('{}') - datetime.date.today()).days)\""
+      ],
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "The target date in YYYY-MM-DD format"
+          }
+        },
+        "required": [
+          "date"
+        ]
+      }
     }
   ],
   "providers": [

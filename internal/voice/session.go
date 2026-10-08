@@ -230,8 +230,9 @@ func buildVoiceTools(cfg config.Config, agent config.Agent, sink logging.Sink) (
 }
 
 // runVoiceTool runs one tool through the registry and renders its call and
-// result to stdout. A tool-reported failure or an infrastructure error is
-// returned to the server flagged as an error, so the conversation recovers.
+// result as heading blocks, matching the chat UI. A tool-reported failure or an
+// infrastructure error is returned to the server flagged as an error, so the
+// conversation recovers.
 func runVoiceTool(ctx context.Context, stdout io.Writer, registry *tools.Registry, name string, args json.RawMessage) (string, bool) {
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
@@ -240,14 +241,14 @@ func runVoiceTool(ctx context.Context, stdout io.Writer, registry *tools.Registr
 
 	res, err := registry.Run(ctx, name, args)
 	if err != nil {
-		fmt.Fprintf(stdout, ">>> Error: %v\n", err)
+		fmt.Fprintf(stdout, "\n>>> Error: Tool: %s\n%v\n", name, err)
 		return err.Error(), true
 	}
 	if res.Err {
-		fmt.Fprintf(stdout, ">>> Error: %s\n", res.Output)
+		fmt.Fprintf(stdout, "\n>>> Error: Tool: %s\n%s\n", name, res.Output)
 		return res.Output, true
 	}
-	fmt.Fprintf(stdout, ">>> Result: %s\n", res.Output)
+	fmt.Fprintf(stdout, "\n>>> Result: Tool: %s\n%s\n", name, res.Output)
 	return res.Output, false
 }
 
@@ -261,44 +262,76 @@ func compactJSON(raw json.RawMessage) string {
 	return buf.String()
 }
 
-// renderer writes the live transcript: partial user speech on an updating
-// line, the agent's words appended in step with the audio, and lifecycle
-// notes.
+// renderer writes the live transcript in the chat UI's style: ">>> User:",
+// ">>> Assistant:" and tool blocks separated by blank lines. The user's
+// partial speech rewrites its line as the transcript grows; the agent's words
+// append as they arrive.
 type renderer struct {
 	out io.Writer
-	// agentOpen is true while an agent line has been started by a delta and
+	// userOpen and agentOpen track whether a block heading was printed and
 	// awaits its terminating newline.
+	userOpen  bool
 	agentOpen bool
+	// agentWrote is whether any text has been written to the current agent
+	// block, so a final transcript is not printed twice.
+	agentWrote bool
+	// partialLine is whether the last write left the output mid-line.
+	partialLine bool
+}
+
+// endLine terminates a partial line so the next block separates cleanly.
+func (r *renderer) endLine() {
+	if r.partialLine {
+		fmt.Fprint(r.out, "\n")
+		r.partialLine = false
+	}
+}
+
+// heading writes a block heading after a blank line, matching chat.
+func (r *renderer) heading(text string) {
+	r.endLine()
+	fmt.Fprintf(r.out, "\n%s\n", text)
 }
 
 func (r *renderer) render(ev Event) {
 	switch ev.Type {
 	case typeUserDelta:
-		// The delta is the full transcript so far: rewrite the line.
-		fmt.Fprintf(r.out, "\r\x1b[KUser: %s", ev.Text)
+		// The delta is the full transcript so far: rewrite its line.
+		if !r.userOpen {
+			r.heading(">>> User:")
+			r.userOpen = true
+		}
+		fmt.Fprintf(r.out, "\r\x1b[K%s", ev.Text)
 	case typeUserFinal:
-		fmt.Fprintf(r.out, "\r\x1b[KUser: %s\n", ev.Text)
+		if !r.userOpen {
+			r.heading(">>> User:")
+			r.userOpen = true
+		}
+		fmt.Fprintf(r.out, "\r\x1b[K%s\n", ev.Text)
+		r.userOpen = false
 	case typeAgentDelta:
 		if !r.agentOpen {
-			fmt.Fprint(r.out, "Agent: ")
+			r.heading(">>> Assistant:")
 			r.agentOpen = true
 		}
 		fmt.Fprint(r.out, ev.Delta)
+		r.agentWrote = true
+		r.partialLine = !strings.HasSuffix(ev.Delta, "\n")
 	case typeAgentFinal:
 		if !r.agentOpen {
-			// No deltas arrived (for example a reply delivered whole):
-			// start the line now.
-			fmt.Fprint(r.out, "Agent: ")
-			if ev.Text != "" {
-				fmt.Fprint(r.out, ev.Text)
-			}
+			r.heading(">>> Assistant:")
 			r.agentOpen = true
+		}
+		if !r.agentWrote && ev.Text != "" {
+			fmt.Fprint(r.out, ev.Text)
+			r.agentWrote = true
 		}
 		// An interrupted reply is closed by its reply.done, which appends
 		// the marker; a completed one ends here.
 		if !ev.Interrupted {
 			fmt.Fprint(r.out, "\n")
 			r.agentOpen = false
+			r.agentWrote = false
 		}
 	case typeReplyDone:
 		if r.agentOpen {
@@ -307,21 +340,24 @@ func (r *renderer) render(ev Event) {
 			}
 			fmt.Fprint(r.out, "\n")
 			r.agentOpen = false
+			r.agentWrote = false
 		}
 	case typeSessionEnded:
 		r.renderEnded(ev)
 	case typeSessionError:
-		fmt.Fprintf(r.out, "voice session error %s: %s\n", ev.Code, ev.Message)
+		r.heading(">>> Voice error")
+		fmt.Fprintf(r.out, "%s: %s\n", ev.Code, ev.Message)
 	}
 }
 
 // renderEnded prints the session's duration when the event carries one.
 func (r *renderer) renderEnded(ev Event) {
+	r.endLine()
 	if ev.SessionDurationSeconds != nil {
-		fmt.Fprintf(r.out, "Session ended (%.1fs).\n", *ev.SessionDurationSeconds)
+		fmt.Fprintf(r.out, "\nSession ended (%.1fs).\n", *ev.SessionDurationSeconds)
 		return
 	}
-	fmt.Fprintln(r.out, "Session ended.")
+	fmt.Fprintln(r.out, "\nSession ended.")
 }
 
 // sigintChannel returns a channel of interrupt signals. A non-nil injected

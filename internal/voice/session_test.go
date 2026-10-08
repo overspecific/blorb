@@ -196,11 +196,11 @@ func TestSessionRendersUserAndAgent(t *testing.T) {
 	if !strings.Contains(out, "blorb test (assistant, voice session)") {
 		t.Errorf("missing banner in output:\n%s", out)
 	}
-	if !strings.Contains(out, "User: hello\n") {
-		t.Errorf("missing final user line in output:\n%s", out)
+	if !strings.Contains(out, ">>> User:") || !strings.Contains(out, "\r\x1b[Khello\n") {
+		t.Errorf("missing final user block in output:\n%s", out)
 	}
-	if !strings.Contains(out, "Agent: Hi there\n") {
-		t.Errorf("missing agent line in output:\n%s", out)
+	if !strings.Contains(out, ">>> Assistant:\nHi there\n") {
+		t.Errorf("missing agent block in output:\n%s", out)
 	}
 	if !strings.Contains(out, "Session ended (3.0s).") {
 		t.Errorf("missing session duration in output:\n%s", out)
@@ -219,7 +219,7 @@ func TestSessionInterruptedMarker(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
-	if out := buf.String(); !strings.Contains(out, "[interrupted]") {
+	if out := buf.String(); !strings.Contains(out, ">>> Assistant:") || !strings.Contains(out, "[interrupted]") {
 		t.Errorf("missing interrupt marker in output:\n%s", out)
 	}
 }
@@ -238,7 +238,7 @@ func TestSessionWholeAgentReply(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
-	if out := buf.String(); !strings.Contains(out, "Agent: whole reply\n") {
+	if out := buf.String(); !strings.Contains(out, ">>> Assistant:\nwhole reply\n") {
 		t.Errorf("missing whole agent reply in output:\n%s", out)
 	}
 }
@@ -258,7 +258,7 @@ func TestSessionInterruptedFinalKeepsLineForMarker(t *testing.T) {
 		t.Fatalf("Run error = %v, want nil", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "Agent: I was say [interrupted]\n") {
+	if !strings.Contains(out, ">>> Assistant:\nI was say [interrupted]\n") {
 		t.Errorf("missing interrupted final line in output:\n%s", out)
 	}
 }
@@ -278,7 +278,7 @@ func TestSessionToolCallRenders(t *testing.T) {
 		t.Errorf("runTool isErr = true, want false; output %q", output)
 	}
 	buf.waitFor(t, ">>> Tool: echoer")
-	buf.waitFor(t, ">>> Result: hi")
+	buf.waitFor(t, ">>> Result: Tool: echoer\nhi")
 
 	fake.push(Event{Type: typeSessionEnded})
 	fake.finish(nil)

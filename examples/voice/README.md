@@ -28,6 +28,8 @@ export ASSEMBLYAI_API_KEY="your-api-key"
 ./blorb voice --config examples/voice/blorb.json
 ```
 
-Speak into your microphone and the agent answers out loud. It needs `arecord` and `aplay` (from ALSA) on the machine, and a microphone and speaker. The console prints a live transcript while you talk: your words as they are recognised, the agent's words as it speaks, and any tool calls it makes. Tools run on this machine, so the agent answers time questions with the local `clock` tool.
+Speak into your microphone and the agent answers out loud. It needs `arecord` and `aplay` (from ALSA) on the machine, and a microphone and speaker. The console prints a live transcript while you talk: your words as they are recognised, the agent's words as it speaks, and any tool calls it makes, in the same `>>>` blocks the chat UI uses.
+
+The tools are the same command tools the [simple](../simple) example uses: `echo`, `current_time`, a month `calendar`, and `days_until`. They run on this machine, so the agent answers time and date questions locally. `echo` and `calendar` need `jq` and `python3` on the machine.
 
 Headphones avoid the microphone picking up the speaker, which the agent hears as you talking over it. Stop the session with Ctrl-C: the first interrupt hangs up cleanly, a second exits at once. Pass `--no-mic` to run without a microphone, so you can test the output path without one.

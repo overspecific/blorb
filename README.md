@@ -263,7 +263,7 @@ See [examples/plaud](examples/plaud) for a two-agent config exposing the Plaud C
 
 See [examples/decision](examples/decision) for a decision-model router: a `scholar` agent answers biscuit questions from the [simple](examples/simple) example's knowledgebase, calling one `route_question` decider that picks the region file to read and gates retrieval (answer from the excerpt, retrieve, or dig further with a `search` subagent), taking a structured state through a custom `args_schema`.
 
-See [examples/voice](examples/voice) for a single-agent config that runs as a spoken conversation through AssemblyAI, with one local command tool.
+See [examples/voice](examples/voice) for a single-agent config that runs as a spoken conversation through AssemblyAI, with local command tools.
 
 ## Contributing
 

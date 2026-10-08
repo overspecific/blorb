@@ -39,7 +39,7 @@ Exit codes: `0` on a completed decision, `1` on any error, `130` on Ctrl-C (SIGI
 
 ## `blorb voice`
 
-`blorb voice` runs one agent as a live voice session through AssemblyAI's Voice Agent API. You speak into the microphone, AssemblyAI runs the conversation loop server-side (speech recognition, its own model, and speech synthesis), the agent's tools run locally, and the reply plays out loud on the speakers. The console prints a live transcript the whole time: your words as they are recognised, the agent's words in step with the audio, and tool activity as it runs.
+`blorb voice` runs one agent as a live voice session through AssemblyAI's Voice Agent API. You speak into the microphone, AssemblyAI runs the conversation loop server-side (speech recognition, its own model, and speech synthesis), the agent's tools run locally, and the reply plays out loud on the speakers. The console prints a live transcript the whole time, in the same `>>> User:`, `>>> Assistant:` and tool blocks the chat UI uses: your words as they are recognised, the agent's words in step with the audio, and tool activity as it runs.
 
 The agent needs a `voice` block; the API key named by its `api_key_env` must be in the environment:
 
