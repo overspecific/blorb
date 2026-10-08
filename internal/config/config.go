@@ -136,7 +136,21 @@ const (
 	// DefaultBandWSURL is the Band subscriptions WebSocket URL used when
 	// ws_url is unset in the band config block.
 	DefaultBandWSURL = "wss://app.band.ai/api/v1/socket/websocket"
+
+	// DefaultVoiceWSURL is the AssemblyAI Voice Agent WebSocket endpoint
+	// used when ws_url is unset in the voice config block.
+	DefaultVoiceWSURL = "wss://agents.assemblyai.com/v1/ws"
 )
+
+// DefaultVoiceInputCommand is the microphone capture command used when
+// input_command is unset in the voice config block: arecord emitting 24 kHz
+// 16-bit mono PCM on stdout.
+var DefaultVoiceInputCommand = []string{"arecord", "-q", "-f", "cd", "-r", "24000", "-c", "1"}
+
+// DefaultVoiceOutputCommand is the speaker playback command used when
+// output_command is unset in the voice config block: aplay consuming 24 kHz
+// 16-bit mono PCM on stdin.
+var DefaultVoiceOutputCommand = []string{"aplay", "-q", "-r", "24000", "-f", "s16_le", "-c", "1"}
 
 // Config is the top-level blorb.json schema. It declares the shared
 // provider, model, and tool vocabularies once and a set of named agents
@@ -242,6 +256,10 @@ type Agent struct {
 	// present block lets the band command serve this agent as a remote
 	// agent on Band; see BandConfig.
 	Band *BandConfig `json:"band,omitempty"`
+	// Voice is the optional voice session configuration for this agent. A
+	// present block lets the voice command serve this agent through
+	// AssemblyAI's Voice Agent API; see VoiceConfig.
+	Voice *VoiceConfig `json:"voice,omitempty"`
 }
 
 // Judge names one agent that judges this agent's run, and when it
@@ -448,6 +466,94 @@ func (b *BandConfig) validate() error {
 	}
 	if b.APIKeyEnv == "" {
 		return fmt.Errorf("api_key_env is required")
+	}
+	return nil
+}
+
+// VoiceEnabled reports whether the agent is configured for a voice session:
+// a present voice block enables it.
+func (a Agent) VoiceEnabled() bool {
+	return a.Voice != nil
+}
+
+// VoiceConfig is the optional voice object in an agent definition, running
+// the agent through AssemblyAI's Voice Agent API. The block's presence
+// enables the voice command for that agent. AssemblyAI's managed model runs
+// the conversation loop server-side, so the agent's model entry is not used.
+type VoiceConfig struct {
+	// APIKeyEnv names the environment variable holding the AssemblyAI API
+	// key. It is required: there is no sensible default for where it
+	// lives.
+	APIKeyEnv string `json:"api_key_env"`
+	// Greeting is what the agent says on connect, spoken verbatim without
+	// the LLM. Optional.
+	Greeting string `json:"greeting,omitempty"`
+	// Voice is the AssemblyAI voice id. Optional; empty means the API
+	// default voice.
+	Voice string `json:"voice,omitempty"`
+	// Volume is the output volume from 0 to 100. It is a pointer so an
+	// explicit 0 (silence) is distinguishable from an absent field, which
+	// means the voice's native level.
+	Volume *int `json:"volume,omitempty"`
+	// InputCommand is the microphone capture command. Optional; when
+	// empty DefaultVoiceInputCommand applies.
+	InputCommand []string `json:"input_command,omitempty"`
+	// OutputCommand is the speaker playback command. Optional; when empty
+	// DefaultVoiceOutputCommand applies.
+	OutputCommand []string `json:"output_command,omitempty"`
+	// WSURL is the Voice Agent WebSocket endpoint. Optional; when empty
+	// DefaultVoiceWSURL applies.
+	WSURL string `json:"ws_url,omitempty"`
+}
+
+// InputCommandOrDefault returns the configured input_command, or
+// DefaultVoiceInputCommand when unset.
+func (v *VoiceConfig) InputCommandOrDefault() []string {
+	if len(v.InputCommand) == 0 {
+		return append([]string(nil), DefaultVoiceInputCommand...)
+	}
+	return append([]string(nil), v.InputCommand...)
+}
+
+// OutputCommandOrDefault returns the configured output_command, or
+// DefaultVoiceOutputCommand when unset.
+func (v *VoiceConfig) OutputCommandOrDefault() []string {
+	if len(v.OutputCommand) == 0 {
+		return append([]string(nil), DefaultVoiceOutputCommand...)
+	}
+	return append([]string(nil), v.OutputCommand...)
+}
+
+// WSURLOrDefault returns the configured ws_url, or DefaultVoiceWSURL when
+// unset.
+func (v *VoiceConfig) WSURLOrDefault() string {
+	if v.WSURL == "" {
+		return DefaultVoiceWSURL
+	}
+	return v.WSURL
+}
+
+// validate checks the voice block: api_key_env is required and non-empty,
+// volume when set must be within 0-100, and ws_url must be ws/wss with a
+// host when set.
+func (v *VoiceConfig) validate() error {
+	if v.APIKeyEnv == "" {
+		return fmt.Errorf("api_key_env is required")
+	}
+	if v.Volume != nil && (*v.Volume < 0 || *v.Volume > 100) {
+		return fmt.Errorf("volume %d must be between 0 and 100", *v.Volume)
+	}
+	if v.WSURL != "" {
+		u, err := url.Parse(v.WSURL)
+		if err != nil {
+			return fmt.Errorf("ws_url %q: %w", v.WSURL, err)
+		}
+		if u.Scheme != "ws" && u.Scheme != "wss" {
+			return fmt.Errorf("ws_url %q must use ws or wss scheme", v.WSURL)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("ws_url %q must include a host", v.WSURL)
+		}
 	}
 	return nil
 }
@@ -1336,6 +1442,11 @@ func (a *Agent) validate(models []Model, index map[string][]ToolEntry) error {
 	if a.Band != nil {
 		if err := a.Band.validate(); err != nil {
 			return fmt.Errorf("agent %q: band: %w", a.Name, err)
+		}
+	}
+	if a.Voice != nil {
+		if err := a.Voice.validate(); err != nil {
+			return fmt.Errorf("agent %q: voice: %w", a.Name, err)
 		}
 	}
 	return nil

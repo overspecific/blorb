@@ -77,7 +77,7 @@ docs):
 ## Todo
 
 - [x] Commit 1: ws dial headers
-- [ ] Commit 2: voice config schema
+- [x] Commit 2: voice config schema
 - [ ] Commit 3: audio subprocesses
 - [ ] Commit 4: voice client protocol
 - [ ] Commit 5: voice session loop

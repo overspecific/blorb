@@ -1,0 +1,33 @@
+{
+  "providers": [
+    {
+      "name": "remote",
+      "type": "openai-compatible",
+      "base_url": "https://api.example.com/v1"
+    }
+  ],
+  "models": [
+    {
+      "name": "m",
+      "provider": "remote",
+      "model_name": "m"
+    }
+  ],
+  "agents": [
+    {
+      "name": "voice-agent",
+      "system_prompt": "You are a helpful voice assistant.",
+      "max_turns": 5,
+      "model": "m",
+      "voice": {
+        "api_key_env": "ASSEMBLYAI_API_KEY",
+        "greeting": "Hello there.",
+        "voice": "james",
+        "volume": 80,
+        "input_command": ["arecord", "-q"],
+        "output_command": ["aplay", "-q"],
+        "ws_url": "wss://voice.example.com/ws"
+      }
+    }
+  ]
+}
