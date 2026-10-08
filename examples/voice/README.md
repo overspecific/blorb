@@ -18,22 +18,15 @@ Create an AssemblyAI account and copy an API key, which the command reads from t
 
 The `voice` block requires `api_key_env`, the environment variable holding the API key. Everything else is optional: `greeting` is what the agent says on connect, `voice` picks a voice, `volume` sets the playback level, and `input_command`/`output_command` override the microphone and speaker commands (`arecord` and `aplay` by default). The endpoint defaults to AssemblyAI's hosted service.
 
-AssemblyAI's own model runs the conversation with `simple`, so `simple`'s `model` entry is not used for the spoken turns. It is still used for the agents `simple` delegates to: `ask_scholar`, `search`, and `ask_horologist` are subagent tools that run a normal agent turn on the machine running the command, through the model in `blorb.json`. This example points those three subagents at `glm-5.3-flash:cloud` on [Ollama cloud](https://ollama.com), so export an Ollama API key too:
-
-```sh
-export OLLAMA_API_KEY="your-ollama-key"
-```
-
-The `ollama-cloud` provider (`type: "ollama"`, `base_url: "https://ollama.com"`) reads that key from `OLLAMA_API_KEY`. The main agent keeps the [simple](../simple) example's local Lemonade model, which a voice session never calls; swap it or point the subagents at any OpenAI-compatible or Ollama endpoint you have.
+AssemblyAI's own model runs the conversation with `simple`, so `simple`'s `model` entry is not used for the spoken turns. It is still used for the agents `simple` delegates to: `ask_scholar`, `search`, and `ask_horologist` are subagent tools that run a normal agent turn on this machine, through the model in `blorb.json`. The model config points at a local [Lemonade](https://lemonade-server.com) server (`http://localhost:13305/v1`) with the `Gemma-4-E4B-it-GGUF` model, shared with [simple](../simple); adjust `base_url` and `model_name` to match whatever OpenAI-compatible endpoint you want.
 
 ## Run
 
-Export the API keys, then start the session from the repo root:
+Export the API key, then start the session from the repo root:
 
 ```sh
 bin/build
 export ASSEMBLYAI_API_KEY="your-api-key"
-export OLLAMA_API_KEY="your-ollama-key"
 ./blorb voice --config examples/voice/blorb.json
 ```
 
