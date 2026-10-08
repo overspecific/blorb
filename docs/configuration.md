@@ -231,7 +231,7 @@ An agent with a `voice` block can run as a spoken conversation through the `blor
 
 Validation requires `api_key_env`, rejects a `volume` outside 0 to 100, and requires `ws_url` to be ws/wss with a host when set.
 
-A voice agent does not use its `model`. The Voice Agent API runs the conversation loop server-side - speech recognition, AssemblyAI's managed model, and speech synthesis - so blorb builds no LLM client for the session. The agent's `tools` still run locally, through the same registry the other commands use. Because a voice session has no local model turn, its `subagent` and `decider` tools cannot run, and `blorb voice` fails at startup if the agent is granted one.
+A voice agent's spoken turns do not use its `model`. The Voice Agent API runs the conversation loop server-side - speech recognition, AssemblyAI's managed model, and speech synthesis - so blorb builds no LLM client for the spoken turns. The agent's `tools` still run locally, through the same registry the other commands use: `command` and `builtin` tools work as in `chat`, and `subagent` tools run a normal agent turn through the target agent's configured model on this machine, rendering that activity in the transcript. Because a voice session builds no decision-model path, `decider` tools cannot run, and `blorb voice` fails at startup if the agent is granted one.
 
 ## Deciders
 

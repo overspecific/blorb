@@ -9,11 +9,13 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"sort"
 	"strings"
+	"sync"
 	"syscall"
 
+	"github.com/overspecific/blorb/internal/chat"
 	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/engine"
 	"github.com/overspecific/blorb/internal/llm"
 	"github.com/overspecific/blorb/internal/logging"
 	"github.com/overspecific/blorb/internal/tools"
@@ -48,19 +50,20 @@ type Options struct {
 	// SigintChan injects the interrupt signal in tests; nil installs the
 	// real SIGINT handler.
 	SigintChan <-chan os.Signal
-	// NewClient connects the voice client. Tests inject a fake; nil dials
-	// the real AssemblyAI endpoint.
-	NewClient func(ctx context.Context, cfg ClientConfig) (SessionClient, error)
+	// NewSessionClient connects the voice client. Tests inject a fake; nil
+	// dials the real AssemblyAI endpoint.
+	NewSessionClient func(ctx context.Context, cfg ClientConfig) (SessionClient, error)
+	// NewLLMClient builds the LLM client for an agent's named model, used
+	// to run subagent tools. Tests inject a fake; nil builds the real
+	// client from the config.
+	NewLLMClient func(cfg config.Config, agent config.Agent) (llm.Client, error)
 }
 
 // Run drives one voice session: it wires the agent's tools, the audio
 // subprocesses and the voice client together, renders the transcript to
 // stdout, and ends the session on Ctrl-C or a terminal client error.
 func Run(ctx context.Context, opts Options) error {
-	stdout := opts.Stdout
-	if stdout == nil {
-		stdout = io.Discard
-	}
+	con := &console{w: opts.Stdout}
 	sink := opts.Sink
 	if sink == nil {
 		sink = logging.NewNop()
@@ -71,24 +74,32 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("agent %q has no voice section", opts.Agent.Name)
 	}
 
-	registry, defs, err := buildVoiceTools(opts.Config, opts.Agent, sink)
+	newLLMClient := opts.NewLLMClient
+	if newLLMClient == nil {
+		newLLMClient = func(cfg config.Config, agent config.Agent) (llm.Client, error) {
+			return chat.NewClientWithGetenv(cfg, agent, os.Getenv, sink)
+		}
+	}
+
+	registry, defs, err := buildVoiceTools(opts.Config, opts.Agent, sink, newLLMClient, con)
 	if err != nil {
 		return err
 	}
 	defer registry.Close()
 
-	newClient := opts.NewClient
-	if newClient == nil {
-		newClient = func(ctx context.Context, cfg ClientConfig) (SessionClient, error) {
+	newSession := opts.NewSessionClient
+	if newSession == nil {
+		newSession = func(ctx context.Context, cfg ClientConfig) (SessionClient, error) {
 			return Connect(ctx, cfg)
 		}
 	}
 
-	// A voice session cannot run a local LLM turn, so its runTool callback
-	// is the only execution path: a hung tool surfaces as a failed result
-	// after the registry's per-call timeout.
+	// Tool execution runs on the client's read loop, which must answer
+	// tool.call; its output, including subagent activity, serializes with
+	// the transcript through the console lock. A hung tool surfaces as a
+	// failed result after the registry's per-call timeout.
 	runTool := func(toolCtx context.Context, name string, args json.RawMessage) (string, bool) {
-		return runVoiceTool(toolCtx, stdout, registry, name, args)
+		return con.runTool(toolCtx, registry, name, args)
 	}
 
 	clientCfg := ClientConfig{
@@ -121,15 +132,15 @@ func Run(ctx context.Context, opts Options) error {
 	defer playback.Close()
 	clientCfg.Playback = playback
 
-	client, err := newClient(ctx, clientCfg)
+	client, err := newSession(ctx, clientCfg)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(stdout, "blorb %s (%s, voice session)\n", opts.Version, opts.Agent.Name)
-	fmt.Fprintln(stdout, "Speak to talk; Ctrl-C hangs up.")
+	con.printf("blorb %s (%s, voice session)\n", opts.Version, opts.Agent.Name)
+	con.printf("Speak to talk; Ctrl-C hangs up.\n")
 
-	return sessionLoop(ctx, opts, client, stdout)
+	return sessionLoop(ctx, opts, client, con)
 }
 
 // sessionLoop renders events until the session ends, the context is
@@ -139,11 +150,11 @@ func Run(ctx context.Context, opts Options) error {
 // delivered, so the loop watches Events alone for the session's end: reading
 // Done in the same select could abandon events still in the channel. Done is
 // consulted once Events closes.
-func sessionLoop(ctx context.Context, opts Options, client SessionClient, stdout io.Writer) error {
+func sessionLoop(ctx context.Context, opts Options, client SessionClient, con *console) error {
 	sigint, stop := sigintChannel(opts.SigintChan)
 	defer stop()
 
-	r := &renderer{out: stdout}
+	r := &renderer{}
 	ended := false
 	ending := false
 
@@ -158,7 +169,7 @@ func sessionLoop(ctx context.Context, opts Options, client SessionClient, stdout
 				// so run it off the loop: a second Ctrl-C must still be
 				// seen (to force-close) and events must keep rendering.
 				ending = true
-				fmt.Fprint(stdout, "\nHanging up; Ctrl-C again to quit now.\n")
+				con.printf("\nHanging up; Ctrl-C again to quit now.\n")
 				go func() { _ = client.End() }()
 				continue
 			}
@@ -167,12 +178,12 @@ func sessionLoop(ctx context.Context, opts Options, client SessionClient, stdout
 			return nil
 		case ev, ok := <-client.Events():
 			if !ok {
-				return finish(client, r, ended, <-client.Done())
+				return finish(con, ended, <-client.Done())
 			}
 			if ev.Type == typeSessionEnded {
 				ended = true
 			}
-			r.render(ev)
+			con.render(r, ev)
 		}
 	}
 }
@@ -190,11 +201,11 @@ func endSession(client SessionClient, ended bool) error {
 
 // finish prints a terminal client error and returns it, or nil when the
 // session ended cleanly.
-func finish(client SessionClient, r *renderer, ended bool, err error) error {
+func finish(con *console, ended bool, err error) error {
 	if ended || err == nil || isCleanClose(err) {
 		return nil
 	}
-	fmt.Fprintf(r.out, "voice: %v\n", err)
+	con.printf("voice: %v\n", err)
 	return err
 }
 
@@ -205,51 +216,48 @@ func isCleanClose(err error) bool {
 }
 
 // buildVoiceTools builds the tools registry from the agent's granted tools and
-// returns its API-facing definitions. Subagent and decider tools cannot run in
-// a voice session: neither has the LLM path a local turn would need, so a
-// config that grants one fails at startup rather than running a reduced agent.
-func buildVoiceTools(cfg config.Config, agent config.Agent, sink logging.Sink) (*tools.Registry, []llm.Tool, error) {
+// returns its API-facing definitions. Decider tools cannot run in a voice
+// session: a decider makes decision-model calls through a path the voice
+// command does not build, so a config that grants one fails at startup rather
+// than running a reduced agent. Subagent tools do run: they recurse into the
+// engine with the agent's configured local model.
+func buildVoiceTools(cfg config.Config, agent config.Agent, sink logging.Sink, newLLMClient func(config.Config, config.Agent) (llm.Client, error), con *console) (*tools.Registry, []llm.Tool, error) {
 	granted := cfg.AgentTools(agent)
-	var unsupported []string
+
+	var deciders []string
 	for _, e := range granted {
-		if e.Type == config.ToolTypeSubagent || e.Type == config.ToolTypeDecider {
-			unsupported = append(unsupported, e.Name)
+		if e.Type == config.ToolTypeDecider {
+			deciders = append(deciders, e.Name)
 		}
 	}
-	if len(unsupported) > 0 {
-		sort.Strings(unsupported)
-		return nil, nil, fmt.Errorf("agent %q: voice sessions cannot run %s tools: %s",
-			agent.Name, "subagent and decider", strings.Join(unsupported, ", "))
+	if len(deciders) > 0 {
+		return nil, nil, fmt.Errorf("agent %q: voice sessions cannot run decider tools: %s",
+			agent.Name, strings.Join(deciders, ", "))
 	}
 
-	registry, err := tools.NewRegistry(granted, tools.WithSink(sink), tools.WithConfigDir(cfg.Dir()))
+	// Subagent engines render through the same chat-style subagent printer
+	// the band room uses. The printer writes to the console's raw writer;
+	// runTool holds the console lock for the whole tool call, so subagent
+	// activity serializes with the transcript without re-entering the lock.
+	_, onSubagent, _ := chat.Events(con.rawWriter(), true)
+
+	subagents := engine.NewSubagentRunner(engine.SubagentRunnerConfig{
+		Config:    cfg,
+		NewClient: newLLMClient,
+		Sink:      sink,
+	})
+
+	registry, err := tools.NewRegistry(
+		granted,
+		tools.WithSink(sink),
+		tools.WithConfigDir(cfg.Dir()),
+		tools.WithSubagentRunner(subagents),
+		tools.WithSubagentEvents(onSubagent),
+	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build tools: %w", err)
 	}
 	return registry, registry.Definitions(), nil
-}
-
-// runVoiceTool runs one tool through the registry and renders its call and
-// result as heading blocks, matching the chat UI. A tool-reported failure or an
-// infrastructure error is returned to the server flagged as an error, so the
-// conversation recovers.
-func runVoiceTool(ctx context.Context, stdout io.Writer, registry *tools.Registry, name string, args json.RawMessage) (string, bool) {
-	if len(args) == 0 {
-		args = json.RawMessage("{}")
-	}
-	fmt.Fprintf(stdout, "\n>>> Tool: %s\n%s\n", name, compactJSON(args))
-
-	res, err := registry.Run(ctx, name, args)
-	if err != nil {
-		fmt.Fprintf(stdout, "\n>>> Error: Tool: %s\n%v\n", name, err)
-		return err.Error(), true
-	}
-	if res.Err {
-		fmt.Fprintf(stdout, "\n>>> Error: Tool: %s\n%s\n", name, res.Output)
-		return res.Output, true
-	}
-	fmt.Fprintf(stdout, "\n>>> Result: Tool: %s\n%s\n", name, res.Output)
-	return res.Output, false
 }
 
 // compactJSON returns raw JSON as a compact single line, or the input
@@ -262,12 +270,72 @@ func compactJSON(raw json.RawMessage) string {
 	return buf.String()
 }
 
-// renderer writes the live transcript in the chat UI's style: ">>> User:",
-// ">>> Assistant:" and tool blocks separated by blank lines. The user's
-// partial speech rewrites its line as the transcript grows; the agent's words
-// append as they arrive.
+// console serializes all session output - the transcript from the session
+// loop and tool and subagent activity from the client's read loop - behind one
+// mutex, so blocks never interleave.
+type console struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+// rawWriter returns the underlying writer without the lock. It is for
+// callbacks that are already invoked under the console lock (the subagent
+// printer during runTool), so they must not take the lock again.
+func (c *console) rawWriter() io.Writer {
+	if c.w == nil {
+		return io.Discard
+	}
+	return c.w
+}
+
+// printf writes formatted output under the lock.
+func (c *console) printf(format string, args ...any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fmt.Fprintf(c.rawWriter(), format, args...)
+}
+
+// render renders one event under the console lock, so a transcript write
+// never interleaves with tool or subagent activity.
+func (c *console) render(r *renderer, ev Event) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	r.render(c.rawWriter(), ev)
+}
+
+// runTool runs one tool through the registry and renders its call and result
+// as heading blocks, matching the chat UI. It holds the console lock for the
+// whole call, so subagent activity serializes with the transcript. A
+// tool-reported failure or an infrastructure error is returned to the server
+// flagged as an error, so the conversation recovers.
+func (c *console) runTool(ctx context.Context, registry *tools.Registry, name string, args json.RawMessage) (output string, isError bool) {
+	if len(args) == 0 {
+		args = json.RawMessage("{}")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w := c.rawWriter()
+
+	fmt.Fprintf(w, "\n>>> Tool: %s\n%s\n", name, compactJSON(args))
+
+	res, err := registry.Run(ctx, name, args)
+	if err != nil {
+		fmt.Fprintf(w, "\n>>> Error: Tool: %s\n%v\n", name, err)
+		return err.Error(), true
+	}
+	if res.Err {
+		fmt.Fprintf(w, "\n>>> Error: Tool: %s\n%s\n", name, res.Output)
+		return res.Output, true
+	}
+	fmt.Fprintf(w, "\n>>> Result: Tool: %s\n%s\n", name, res.Output)
+	return res.Output, false
+}
+
+// renderer turns the decoded server events into the chat UI's blocks:
+// ">>> User:", ">>> Assistant:" and lifecycle notes, separated by blank
+// lines. The user's partial speech rewrites its line as the transcript grows;
+// the agent's words append as they arrive.
 type renderer struct {
-	out io.Writer
 	// userOpen and agentOpen track whether a block heading was printed and
 	// awaits its terminating newline.
 	userOpen  bool
@@ -286,31 +354,31 @@ type renderer struct {
 }
 
 // endLine terminates a partial line so the next block separates cleanly.
-func (r *renderer) endLine() {
+func (r *renderer) endLine(w io.Writer) {
 	if r.partialLine {
-		fmt.Fprint(r.out, "\n")
+		fmt.Fprint(w, "\n")
 		r.partialLine = false
 	}
 }
 
 // heading writes a block heading after a blank line, matching chat.
-func (r *renderer) heading(text string) {
-	r.endLine()
-	fmt.Fprintf(r.out, "\n%s\n", text)
+func (r *renderer) heading(w io.Writer, text string) {
+	r.endLine(w)
+	fmt.Fprintf(w, "\n%s\n", text)
 }
 
 // writeAgentText appends text to the current agent block, inserting a single
 // space when neither the preceding output nor the incoming text already
 // carries one. This joins word deltas into readable text whether the server
 // sends them bare or space-terminated.
-func (r *renderer) writeAgentText(text string) {
+func (r *renderer) writeAgentText(w io.Writer, text string) {
 	if text == "" {
 		return
 	}
 	if r.agentWrote && !isSpace(r.agentLastByte) && !isSpace(text[0]) {
-		fmt.Fprint(r.out, " ")
+		fmt.Fprint(w, " ")
 	}
-	fmt.Fprint(r.out, text)
+	fmt.Fprint(w, text)
 	r.agentWrote = true
 	r.agentLastByte = text[len(text)-1]
 	r.partialLine = !strings.HasSuffix(text, "\n")
@@ -320,71 +388,71 @@ func isSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
-func (r *renderer) render(ev Event) {
+func (r *renderer) render(w io.Writer, ev Event) {
 	switch ev.Type {
 	case typeUserDelta:
 		// The delta is the full transcript so far: rewrite its line.
 		if !r.userOpen {
-			r.heading(">>> User:")
+			r.heading(w, ">>> User:")
 			r.userOpen = true
 		}
-		fmt.Fprintf(r.out, "\r\x1b[K%s", ev.Text)
+		fmt.Fprintf(w, "\r\x1b[K%s", ev.Text)
 	case typeUserFinal:
 		if !r.userOpen {
-			r.heading(">>> User:")
+			r.heading(w, ">>> User:")
 			r.userOpen = true
 		}
-		fmt.Fprintf(r.out, "\r\x1b[K%s\n", ev.Text)
+		fmt.Fprintf(w, "\r\x1b[K%s\n", ev.Text)
 		r.userOpen = false
 	case typeAgentDelta:
 		if !r.agentOpen {
-			r.heading(">>> Assistant:")
+			r.heading(w, ">>> Assistant:")
 			r.agentOpen = true
 		}
-		r.writeAgentText(ev.Delta)
+		r.writeAgentText(w, ev.Delta)
 	case typeAgentFinal:
 		if !r.agentOpen {
-			r.heading(">>> Assistant:")
+			r.heading(w, ">>> Assistant:")
 			r.agentOpen = true
 		}
 		if !r.agentWrote && ev.Text != "" {
-			fmt.Fprint(r.out, ev.Text)
+			fmt.Fprint(w, ev.Text)
 			r.agentWrote = true
 		}
 		r.agentLastByte = 0
 		// An interrupted reply is closed by its reply.done, which appends
 		// the marker; a completed one ends here.
 		if !ev.Interrupted {
-			fmt.Fprint(r.out, "\n")
+			fmt.Fprint(w, "\n")
 			r.agentOpen = false
 			r.agentWrote = false
 		}
 	case typeReplyDone:
 		if r.agentOpen {
 			if ev.Status == "interrupted" {
-				fmt.Fprint(r.out, " [interrupted]")
+				fmt.Fprint(w, " [interrupted]")
 			}
-			fmt.Fprint(r.out, "\n")
+			fmt.Fprint(w, "\n")
 			r.agentOpen = false
 			r.agentWrote = false
 			r.agentLastByte = 0
 		}
 	case typeSessionEnded:
-		r.renderEnded(ev)
+		r.renderEnded(w, ev)
 	case typeSessionError:
-		r.heading(">>> Voice error")
-		fmt.Fprintf(r.out, "%s: %s\n", ev.Code, ev.Message)
+		r.heading(w, ">>> Voice error")
+		fmt.Fprintf(w, "%s: %s\n", ev.Code, ev.Message)
 	}
 }
 
 // renderEnded prints the session's duration when the event carries one.
-func (r *renderer) renderEnded(ev Event) {
-	r.endLine()
+func (r *renderer) renderEnded(w io.Writer, ev Event) {
+	r.endLine(w)
 	if ev.SessionDurationSeconds != nil {
-		fmt.Fprintf(r.out, "\nSession ended (%.1fs).\n", *ev.SessionDurationSeconds)
+		fmt.Fprintf(w, "\nSession ended (%.1fs).\n", *ev.SessionDurationSeconds)
 		return
 	}
-	fmt.Fprintln(r.out, "\nSession ended.")
+	fmt.Fprintln(w, "\nSession ended.")
 }
 
 // sigintChannel returns a channel of interrupt signals. A non-nil injected

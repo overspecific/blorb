@@ -1,5 +1,5 @@
 {
-  "default_agent": "assistant",
+  "default_agent": "simple",
   "models": [
     {
       "name": "small",
@@ -9,21 +9,50 @@
   ],
   "agents": [
     {
-      "name": "assistant",
-      "system_prompt": "You are a friendly voice assistant. Keep your answers short: they are spoken aloud. You have an echo tool and tools for the current time, a month calendar, and how many days remain until a date. Use them whenever the user asks.",
+      "name": "simple",
+      "system_prompt": "You are Simple, a cheerful demo agent. Keep your answers short. You love using your echo tool. You have no direct access to the biscuit knowledgebase or the clock: delegate biscuit questions to the biscuit scholar using the `ask_scholar` tool, and any time, date, or calendar question to the horologist using the `ask_horologist` tool. Relay their answers.",
       "max_turns": 10,
       "tools": [
         "echo",
-        "current_time",
-        "calendar",
-        "days_until"
+        "ask_scholar",
+        "ask_horologist"
       ],
       "model": "small",
       "voice": {
         "api_key_env": "ASSEMBLYAI_API_KEY",
-        "greeting": "Hi! I am ready when you are.",
+        "greeting": "Hi! I am Simple. Ask me about biscuits, or the time.",
         "voice": "james"
       }
+    },
+    {
+      "name": "scholar",
+      "system_prompt": "You are an enthusiastic biscuit scholar. You have access to a knowledgebase of biscuits of the world using the `kb-read` tool, and the `search` tool which delegates the digging to your research assistant, an expert searcher who returns matching lines from the knowledgebase. Use them to answer questions about biscuits, and never take no for an answer: look it up.",
+      "max_turns": 10,
+      "tools": [
+        "kb",
+        "search"
+      ],
+      "model": "small"
+    },
+    {
+      "name": "search",
+      "system_prompt": "You are an expert search agent. You have the `kb-grep` and `kb-read` tools, and you are relentless at finding things. The grep tool matches regular expressions, so exploit that: use alternation to cover variants in one pass (e.g. `biscuit|cookie`), character classes and optional parts for spelling variations (e.g. `flavou?r`), and case-insensitive matching (e.g. `(?i)jam`) where case might vary. Cover both singular and plural forms (e.g. `biscuits?`). If a pattern comes up empty, try alternatives before giving up: other spellings, synonyms, broader and narrower terms, and remember to try the other number (biscuit vs biscuits). You may read a file to confirm or disambiguate a match. Report back only the most relevant matching lines, in grep's path:line:text format - exclude matches that are beside the point, and do not pad the results with noise. Do not paraphrase the lines you do return.",
+      "max_turns": 10,
+      "tools": [
+        "kb"
+      ],
+      "model": "small"
+    },
+    {
+      "name": "horologist",
+      "system_prompt": "You are a precise horologist: the keeper of time and calendars. You own the `current_time`, `calendar`, and `days_until` tools. Use them to answer questions about the current time, month calendars, and how many days remain until a date. Always consult your tools rather than guessing - you of all agents should know better.",
+      "max_turns": 10,
+      "tools": [
+        "current_time",
+        "calendar",
+        "days_until"
+      ],
+      "model": "small"
     }
   ],
   "tools": [
@@ -101,6 +130,34 @@
         "required": [
           "date"
         ]
+      }
+    },
+    {
+      "type": "subagent",
+      "name": "ask_scholar",
+      "description": "Delegate a biscuit research question to the scholar agent, who will dig through the knowledgebase for you and report back. Use it when the user asks about biscuits and you want a thorough, well-sourced answer.",
+      "agent": "scholar"
+    },
+    {
+      "type": "subagent",
+      "name": "search",
+      "description": "Delegate the search to the search agent, an expert searcher with the `kb-read` and `kb-grep` tools who is relentless at finding things: trying alternative patterns until something turns up. Give it a description of what to find; it returns matching knowledgebase lines as path:line:text, just like grep, but it tries alternatives when a first attempt comes up empty. Prefer it to grepping by hand when the thing you are looking for might be spelled or phrased in more than one way.",
+      "agent": "search"
+    },
+    {
+      "type": "subagent",
+      "name": "ask_horologist",
+      "description": "Delegate a time, date, or calendar question to the horologist agent, who owns the clock and calendar tools. Use it whenever the user asks what time it is, what today's date is, for a month calendar, or how many days until some date.",
+      "agent": "horologist"
+    }
+  ],
+  "toolsets": [
+    {
+      "name": "kb",
+      "type": "builtin",
+      "builtin": "file",
+      "config": {
+        "base_dir": "../simple/knowledgebase"
       }
     }
   ],

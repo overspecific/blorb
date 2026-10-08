@@ -174,7 +174,7 @@ The agent the command runs needs a `voice` block, and the AssemblyAI API key mus
 }
 ```
 
-The block requires `api_key_env`, the environment variable holding the API key. Optional fields are `greeting` (what the agent says on connect), `voice` (the AssemblyAI voice id), `volume` (0-100), `input_command` and `output_command` (the microphone and speaker commands, defaulting to `arecord` and `aplay`), and `ws_url` (the endpoint, defaulting to AssemblyAI's hosted service). The agent's `model` is not used: AssemblyAI's managed model runs the conversation. Its `command` and `builtin` tools do run, on this machine; `subagent` and `decider` tools cannot, because a voice session has no local model turn, and the command fails at startup if one is granted. The command takes `-c | --config <path>`, `--agent <name>`, and `--no-mic` (run without microphone capture, for testing the output path). It runs until interrupted: the first Ctrl-C hangs up cleanly, a second exits immediately.
+The block requires `api_key_env`, the environment variable holding the API key. Optional fields are `greeting` (what the agent says on connect), `voice` (the AssemblyAI voice id), `volume` (0-100), `input_command` and `output_command` (the microphone and speaker commands, defaulting to `arecord` and `aplay`), and `ws_url` (the endpoint, defaulting to AssemblyAI's hosted service). The agent's `model` is not used for the spoken turns: AssemblyAI's managed model runs the conversation. Its tools run on this machine, though: `command` and `builtin` tools work as in `chat`, and `subagent` tools run a normal agent turn through the target agent's configured model, with the subagent activity rendered in the transcript. `decider` tools cannot run (a voice session builds no decision-model path), and the command fails at startup if one is granted. The command takes `-c | --config <path>`, `--agent <name>`, and `--no-mic` (run without microphone capture, for testing the output path). It runs until interrupted: the first Ctrl-C hangs up cleanly, a second exits immediately.
 
 See [examples/voice](examples/voice) for a minimal working setup.
 
@@ -263,7 +263,7 @@ See [examples/plaud](examples/plaud) for a two-agent config exposing the Plaud C
 
 See [examples/decision](examples/decision) for a decision-model router: a `scholar` agent answers biscuit questions from the [simple](examples/simple) example's knowledgebase, calling one `route_question` decider that picks the region file to read and gates retrieval (answer from the excerpt, retrieve, or dig further with a `search` subagent), taking a structured state through a custom `args_schema`.
 
-See [examples/voice](examples/voice) for a single-agent config that runs as a spoken conversation through AssemblyAI, with local command tools.
+See [examples/voice](examples/voice) for the [simple](examples/simple) example run as a spoken conversation through AssemblyAI: the same agents, tools and subagents, with a `voice` block on the main agent.
 
 ## Contributing
 

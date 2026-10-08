@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/overspecific/blorb/internal/config"
+	"github.com/overspecific/blorb/internal/llm"
 )
 
 // syncBuffer is a goroutine-safe bytes.Buffer for capturing session output.
@@ -180,8 +181,8 @@ func startSession(t *testing.T, cfg config.Config, opts Options) (*fakeClient, *
 	if opts.Stdout == nil {
 		opts.Stdout = buf
 	}
-	if opts.NewClient == nil {
-		opts.NewClient = func(_ context.Context, c ClientConfig) (SessionClient, error) {
+	if opts.NewSessionClient == nil {
+		opts.NewSessionClient = func(_ context.Context, c ClientConfig) (SessionClient, error) {
 			fake.markConnected(c)
 			return fake, nil
 		}
@@ -335,9 +336,7 @@ func TestSessionAgentDeltasKeepServerSpacing(t *testing.T) {
 func TestSessionToolCallRenders(t *testing.T) {
 	fake, buf, done := startSession(t, voiceConfig(echoTool()), Options{})
 	fake.waitConnected(t)
-	fake.mu.Lock()
 	runTool := fake.cfg.RunTool
-	fake.mu.Unlock()
 	if runTool == nil {
 		t.Fatal("ClientConfig.RunTool = nil, want a runner")
 	}
@@ -359,9 +358,7 @@ func TestSessionToolCallRenders(t *testing.T) {
 func TestSessionUnknownToolRendersError(t *testing.T) {
 	fake, buf, done := startSession(t, voiceConfig(echoTool()), Options{})
 	fake.waitConnected(t)
-	fake.mu.Lock()
 	runTool := fake.cfg.RunTool
-	fake.mu.Unlock()
 
 	output, isErr := runTool(context.Background(), "nope", json.RawMessage(`{}`))
 	if !isErr {
@@ -463,7 +460,7 @@ func TestSessionNoMicSkipsCapture(t *testing.T) {
 		Config: cfg,
 		Stdout: &syncBuffer{},
 		NoMic:  false,
-		NewClient: func(_ context.Context, _ ClientConfig) (SessionClient, error) {
+		NewSessionClient: func(_ context.Context, _ ClientConfig) (SessionClient, error) {
 			return fake2, nil
 		},
 	})
@@ -472,29 +469,115 @@ func TestSessionNoMicSkipsCapture(t *testing.T) {
 	}
 }
 
-func TestSessionSubagentToolFails(t *testing.T) {
+func TestSessionDeciderToolFails(t *testing.T) {
+	cfg := voiceConfig(echoTool())
+	cfg.Deciders = []config.Decider{{
+		Name:      "triage",
+		Model:     "m",
+		Questions: map[string]config.Question{"q": {Type: config.QuestionTypeNoul}},
+	}}
+	cfg.Tools = append(cfg.Tools, config.ToolEntry{
+		Type:        config.ToolTypeDecider,
+		Name:        "classify",
+		Description: "Classify the state",
+		Decider:     "triage",
+	})
+	cfg.Agents[0].Tools = []string{"echoer", "classify"}
+
+	err := Run(context.Background(), Options{
+		Agent:            cfg.Agents[0],
+		Config:           cfg,
+		Stdout:           &syncBuffer{},
+		NoMic:            true,
+		NewSessionClient: func(_ context.Context, _ ClientConfig) (SessionClient, error) { return newFakeClient(), nil },
+	})
+	if err == nil {
+		t.Fatal("Run error = nil, want a decider exclusion error")
+	}
+	if !strings.Contains(err.Error(), "classify") {
+		t.Errorf("Run error = %v, want it to name the decider tool", err)
+	}
+}
+
+func TestSessionSubagentToolRunsAndRenders(t *testing.T) {
+	// A granted subagent tool runs the target agent through the engine with
+	// the injected LLM client, and its activity renders with the chat
+	// subagent style (labeled [agent] and indented).
 	cfg := voiceConfig(echoTool())
 	cfg.Tools = append(cfg.Tools, config.ToolEntry{
 		Type:        config.ToolTypeSubagent,
 		Name:        "delegate",
 		Description: "Delegate to another agent",
-		Agent:       "assistant",
+		Agent:       "scholar",
+	})
+	cfg.Agents = append(cfg.Agents, config.Agent{
+		Name:         "scholar",
+		SystemPrompt: "You are a scholar.",
+		Model:        "m",
+		MaxTurns:     2,
 	})
 	cfg.Agents[0].Tools = []string{"echoer", "delegate"}
 
-	err := Run(context.Background(), Options{
-		Agent:     cfg.Agents[0],
-		Config:    cfg,
-		Stdout:    &syncBuffer{},
-		NoMic:     true,
-		NewClient: func(_ context.Context, _ ClientConfig) (SessionClient, error) { return newFakeClient(), nil },
-	})
-	if err == nil {
-		t.Fatal("Run error = nil, want a subagent exclusion error")
+	scholarLLM := &cannedClient{responses: []llm.Response{
+		{
+			ID:           "r1",
+			Message:      llm.NewTextMessage(llm.RoleAssistant, "biscuits are lovely"),
+			FinishReason: llm.FinishStop,
+		},
+	}}
+
+	fake := newFakeClient()
+	buf := &syncBuffer{}
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(context.Background(), Options{
+			Agent:  cfg.Agents[0],
+			Config: cfg,
+			Stdout: buf,
+			NoMic:  true,
+			NewSessionClient: func(_ context.Context, c ClientConfig) (SessionClient, error) {
+				fake.markConnected(c)
+				return fake, nil
+			},
+			NewLLMClient: func(_ config.Config, _ config.Agent) (llm.Client, error) {
+				return scholarLLM, nil
+			},
+		})
+	}()
+	fake.waitConnected(t)
+
+	output, isErr := fake.cfg.RunTool(context.Background(), "delegate", json.RawMessage(`{"prompt":"biscuits"}`))
+	if isErr {
+		t.Errorf("subagent tool isErr = true, want false; output %q", output)
 	}
-	if !strings.Contains(err.Error(), "delegate") {
-		t.Errorf("Run error = %v, want it to name the subagent tool", err)
+	if !strings.Contains(output, "biscuits are lovely") {
+		t.Errorf("subagent output = %q, want the scholar's reply", output)
+	}
+	buf.waitFor(t, "[scholar] >>> Assistant:")
+	buf.waitFor(t, "biscuits are lovely")
+
+	fake.push(Event{Type: typeSessionEnded})
+	fake.finish(nil)
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
 	}
 }
 
 func floatPtr(f float64) *float64 { return &f }
+
+// cannedClient is an llm.Client returning one canned response per call.
+type cannedClient struct {
+	mu        sync.Mutex
+	responses []llm.Response
+}
+
+func (c *cannedClient) Chat(_ context.Context, _ llm.Request) (*llm.Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.responses) == 0 {
+		return nil, errors.New("cannedClient: no more responses")
+	}
+	resp := c.responses[0]
+	c.responses = c.responses[1:]
+	return &resp, nil
+}
