@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/overspecific/blorb/internal/config"
 	"github.com/overspecific/blorb/internal/voice"
 )
 
@@ -137,5 +138,11 @@ func TestVoiceCommandMissingAPIKey(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "ASSEMBLYAI_API_KEY") {
 		t.Errorf("error = %q, want the api_key_env name", errOut.String())
+	}
+}
+
+func TestVoiceExampleConfigValidates(t *testing.T) {
+	if _, err := config.Load("examples/voice/blorb.json"); err != nil {
+		t.Fatalf("Load(examples/voice/blorb.json) error = %v, want nil", err)
 	}
 }

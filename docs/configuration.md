@@ -207,6 +207,32 @@ Models work the same way: an agent's `model` must name a defined top-level model
 
 `default_agent` is optional; when set it must name a defined agent, and when absent `blorb chat` requires an explicit `--agent`.
 
+### Voice sessions
+
+An agent with a `voice` block can run as a spoken conversation through the `blorb voice` command. The block's presence enables the command for that agent, the same way a `band` block enables `blorb band`:
+
+```json
+"voice": {
+  "api_key_env": "ASSEMBLYAI_API_KEY",
+  "greeting": "Hi! I am ready when you are.",
+  "voice": "james"
+}
+```
+
+| Field            | Required | Description                                                                                          |
+| ---------------- | -------- | ------------------------------------------------------------------------------------------------------ |
+| `api_key_env`    | yes      | Name of the environment variable holding the AssemblyAI API key.                                     |
+| `greeting`       | no       | What the agent says on connect, spoken verbatim without the model.                                   |
+| `voice`          | no       | The AssemblyAI voice id. Empty means the API's default voice.                                          |
+| `volume`         | no       | Playback volume from 0 to 100. Empty means the voice's native level; an explicit 0 is silence.        |
+| `input_command`  | no       | The microphone capture command as an argument array. Empty defaults to `["arecord", "-q", "-f", "cd", "-r", "24000", "-c", "1"]`, which emits 24 kHz 16-bit mono PCM on stdout. |
+| `output_command` | no       | The speaker playback command as an argument array. Empty defaults to `["aplay", "-q", "-r", "24000", "-f", "s16_le", "-c", "1"]`, which plays the same format from stdin. |
+| `ws_url`         | no       | The Voice Agent WebSocket endpoint. Empty defaults to `wss://agents.assemblyai.com/v1/ws`; set it for a test server or a regional host. |
+
+Validation requires `api_key_env`, rejects a `volume` outside 0 to 100, and requires `ws_url` to be ws/wss with a host when set.
+
+A voice agent does not use its `model`. The Voice Agent API runs the conversation loop server-side - speech recognition, AssemblyAI's managed model, and speech synthesis - so blorb builds no LLM client for the session. The agent's `tools` still run locally, through the same registry the other commands use. Because a voice session has no local model turn, its `subagent` and `decider` tools cannot run, and `blorb voice` fails at startup if the agent is granted one.
+
 ## Deciders
 
 A decider is a named decision-model evaluation: it names a decision model and fixes the typed questions every call asks, so only the state varies per call. A decider produces no text - you send it a state and typed questions, and it returns typed answers with probabilities and confidence values. It is reachable only through a `decider` tool and the `blorb decide` command; deciders are not agents and have no tools, turns, or judges of their own.

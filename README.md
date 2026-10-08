@@ -69,6 +69,7 @@ Commands:
 - `run` - run one agent turn and exit
 - `decide` - evaluate a decider against a state and print the answers as JSON
 - `band` - connect to the Band platform and answer room mentions
+- `voice` - run an agent as a spoken conversation through AssemblyAI
 - `models` - list the models each provider's server has installed
 - `version` - print the version
 - `help` - print help
@@ -161,6 +162,22 @@ The block requires `api_key_env`, the environment variable holding the agent API
 
 See [examples/band](examples/band) for a minimal working setup.
 
+### Talking to an agent
+
+`blorb voice` runs an agent as a live voice session through AssemblyAI's Voice Agent API. You speak into the microphone, AssemblyAI runs the conversation loop server-side (speech recognition, its own model, and speech synthesis), the agent's tools run locally, and the reply plays out loud. The console prints a live transcript while it happens: your words as they are recognised, the agent's words in step with the audio, and tool activity as it runs.
+
+The agent the command runs needs a `voice` block, and the AssemblyAI API key must be in the environment:
+
+```json
+"voice": {
+  "api_key_env": "ASSEMBLYAI_API_KEY"
+}
+```
+
+The block requires `api_key_env`, the environment variable holding the API key. Optional fields are `greeting` (what the agent says on connect), `voice` (the AssemblyAI voice id), `volume` (0-100), `input_command` and `output_command` (the microphone and speaker commands, defaulting to `arecord` and `aplay`), and `ws_url` (the endpoint, defaulting to AssemblyAI's hosted service). The agent's `model` is not used: AssemblyAI's managed model runs the conversation. Its `command` and `builtin` tools do run, on this machine; `subagent` and `decider` tools cannot, because a voice session has no local model turn, and the command fails at startup if one is granted. The command takes `-c | --config <path>`, `--agent <name>`, and `--no-mic` (run without microphone capture, for testing the output path). It runs until interrupted: the first Ctrl-C hangs up cleanly, a second exits immediately.
+
+See [examples/voice](examples/voice) for a minimal working setup.
+
 ## Configuration
 
 A `blorb.json` defines the shared provider, model, and tool vocabularies and the agents that use them:
@@ -232,7 +249,7 @@ A `blorb.json` defines the shared provider, model, and tool vocabularies and the
 
 With this config, `./blorb chat` runs `simple` (the `default_agent`), `./blorb chat --agent quiet` runs the quiet one, and `./blorb chat --agent nope` fails naming the defined agents. Both agents share the `echo` tool; only `simple` also uses the `read` builtin. Both models share one provider - one server declaration, two model entries.
 
-See [docs/configuration.md](docs/configuration.md) for the complete field reference: providers (and their sampling fields), models (tool choice, logprobs, structured output, decision models), agents, deciders, tools (command, builtin, subagent, decider), toolsets, judges, wire logging, and Prefactor tracing.
+See [docs/configuration.md](docs/configuration.md) for the complete field reference: providers (and their sampling fields), models (tool choice, logprobs, structured output, decision models), agents (including voice sessions), deciders, tools (command, builtin, subagent, decider), toolsets, judges, wire logging, and Prefactor tracing.
 
 ## Examples
 
@@ -245,6 +262,8 @@ See [examples/ollama-cloud](examples/ollama-cloud) for a single-agent variant po
 See [examples/plaud](examples/plaud) for a two-agent config exposing the Plaud CLI (`files` and `transcript`) as command tools the agents can call to list the user's recordings and fetch their transcripts, plus a `summarize` subagent tool that delegates to a summarizer agent returning a JSON summary with action items.
 
 See [examples/decision](examples/decision) for a decision-model router: a `scholar` agent answers biscuit questions from the [simple](examples/simple) example's knowledgebase, calling one `route_question` decider that picks the region file to read and gates retrieval (answer from the excerpt, retrieve, or dig further with a `search` subagent), taking a structured state through a custom `args_schema`.
+
+See [examples/voice](examples/voice) for a single-agent config that runs as a spoken conversation through AssemblyAI, with one local command tool.
 
 ## Contributing
 

@@ -36,3 +36,22 @@ The positional `[state]` argument uses the same syntax as `run`'s prompt: a lite
 stdout is the answers JSON, one object keyed by question name. There is no usage footer: the JSON body is the output a script consumes (usage still lands in the wire logs). A decider-level failure - the server rejected the request - is written to stderr and exits `1`; there is no parent model to react to it, so the failure is yours to see.
 
 Exit codes: `0` on a completed decision, `1` on any error, `130` on Ctrl-C (SIGINT), matching `run`.
+
+## `blorb voice`
+
+`blorb voice` runs one agent as a live voice session through AssemblyAI's Voice Agent API. You speak into the microphone, AssemblyAI runs the conversation loop server-side (speech recognition, its own model, and speech synthesis), the agent's tools run locally, and the reply plays out loud on the speakers. The console prints a live transcript the whole time: your words as they are recognised, the agent's words in step with the audio, and tool activity as it runs.
+
+The agent needs a `voice` block; the API key named by its `api_key_env` must be in the environment:
+
+```sh
+export ASSEMBLYAI_API_KEY="your-api-key"
+./blorb voice --config examples/voice/blorb.json
+```
+
+Flags: `-c | --config <path>`, `--agent <name>` (defaults to the config's `default_agent`), and `--no-mic` (run without microphone capture, so the session is agent-talk-only; useful for testing the output path without a microphone). A selected agent with no `voice` block exits `1` with an error naming the example config.
+
+The conversation's language model is AssemblyAI's, configured through them, so the agent's `model` entry is not used and no LLM client is built. Tools, though, run on this machine: the agent's granted `command` and `builtin` tools work exactly as they do in `chat`. A voice session cannot run `subagent` or `decider` tools, which would each need a local model turn; a config that grants one fails at startup listing the offending tools.
+
+Capture and playback shell out to the audio commands in the `voice` block, which default to `arecord` and `aplay` (ALSA). A laptop microphone and speaker in the same room feed the speaker's audio back to the microphone; use headphones.
+
+Stop with Ctrl-C: the first interrupt sends a clean hang-up (so billing stops at once) and the session winds down, a second exits immediately. Exit codes: `0` on a clean session, `1` on any error, matching `run`.

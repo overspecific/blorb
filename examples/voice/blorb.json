@@ -1,0 +1,43 @@
+{
+  "default_agent": "assistant",
+  "models": [
+    {
+      "name": "small",
+      "model_name": "Gemma-4-E4B-it-GGUF",
+      "provider": "local"
+    }
+  ],
+  "agents": [
+    {
+      "name": "assistant",
+      "system_prompt": "You are a friendly voice assistant. Keep your answers short: they are spoken aloud. You can tell the current time with your clock tool.",
+      "max_turns": 10,
+      "tools": [
+        "clock"
+      ],
+      "model": "small",
+      "voice": {
+        "api_key_env": "ASSEMBLYAI_API_KEY",
+        "greeting": "Hi! I am ready when you are.",
+        "voice": "james"
+      }
+    }
+  ],
+  "tools": [
+    {
+      "type": "command",
+      "name": "clock",
+      "description": "Returns the current date and time. Use it whenever the user asks what time or day it is.",
+      "command": [
+        "date"
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:13305/v1"
+    }
+  ]
+}
